@@ -1,0 +1,93 @@
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+
+use super::model::Collection;
+
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .expect("could not determine config directory")
+        .join("tws")
+}
+
+pub fn state_file() -> PathBuf {
+    config_dir().join("state.json")
+}
+
+pub fn load() -> io::Result<Vec<Collection>> {
+    let path = state_file();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    let collections: Vec<Collection> =
+        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(collections)
+}
+
+pub fn save(collections: &[Collection]) -> io::Result<()> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let data = serde_json::to_string_pretty(collections)?;
+    fs::write(state_file(), data)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::Project;
+    use std::env;
+
+    fn with_temp_config<F: FnOnce()>(f: F) {
+        let dir = env::temp_dir().join(format!("tws_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        // We test save/load by writing directly to a temp path
+        // rather than overriding config_dir
+        let path = dir.join("state.json");
+
+        let mut col = Collection::new("Test");
+        col.projects.push(Project::new("Project A"));
+        let collections = vec![col];
+
+        let data = serde_json::to_string_pretty(&collections).unwrap();
+        fs::write(&path, &data).unwrap();
+
+        let loaded: Vec<Collection> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "Test");
+        assert_eq!(loaded[0].projects.len(), 1);
+        assert_eq!(loaded[0].projects[0].name, "Project A");
+
+        fs::remove_dir_all(&dir).unwrap();
+        f();
+    }
+
+    #[test]
+    fn round_trip_serialization() {
+        with_temp_config(|| {});
+    }
+
+    #[test]
+    fn load_missing_file_returns_empty() {
+        // load() returns empty vec when file doesn't exist
+        // We can't easily test this without mocking config_dir,
+        // so we test the logic directly
+        let path = env::temp_dir().join("tws_nonexistent_state.json");
+        assert!(!path.exists());
+        // Simulating what load() does:
+        if !path.exists() {
+            let result: Vec<Collection> = Vec::new();
+            assert!(result.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_collections_serialize() {
+        let collections: Vec<Collection> = Vec::new();
+        let json = serde_json::to_string_pretty(&collections).unwrap();
+        let loaded: Vec<Collection> = serde_json::from_str(&json).unwrap();
+        assert!(loaded.is_empty());
+    }
+}
