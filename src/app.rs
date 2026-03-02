@@ -1,9 +1,11 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::Block;
 use tui_tree_widget::{Tree, TreeState};
 
+use crate::components::status_bar::{self, StatusContext};
 use crate::components::{confirm_modal, input_modal, tree_view};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
@@ -95,6 +97,7 @@ impl App {
     fn draw(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
+            let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
 
             // Always draw the tree
             let items = tree_view::build_tree_items(&self.state);
@@ -112,9 +115,13 @@ impl App {
                 .node_open_symbol("▾ ")
                 .node_no_children_symbol("  ");
 
-            frame.render_stateful_widget(tree, area, &mut self.tree_state);
+            frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
 
-            // Draw modal overlay if active
+            // Render status bar
+            let status_ctx = self.status_context();
+            status_bar::render(frame, status_ctx, chunks[1]);
+
+            // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
                 Mode::Input { purpose, buffer } => {
@@ -149,6 +156,23 @@ impl App {
         Ok(())
     }
 
+    /// Build a `StatusContext` from the current mode and selection.
+    fn status_context(&self) -> StatusContext {
+        match &self.mode {
+            Mode::Input { .. } => StatusContext::Input,
+            Mode::Confirm { .. } => StatusContext::Confirm,
+            Mode::Normal => {
+                let selected = self.state.resolve_selection(self.tree_state.selected());
+                match selected {
+                    SelectedItem::None => StatusContext::NormalNone,
+                    SelectedItem::Collection(_) => StatusContext::NormalCollection,
+                    SelectedItem::Project(_, _) => StatusContext::NormalProject,
+                    SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                }
+            }
+        }
+    }
+
     fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
         match code {
             KeyCode::Char('q') => self.running = false,
@@ -170,9 +194,7 @@ impl App {
             KeyCode::Enter => {
                 let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
-                    SelectedItem::Collection(..) => {
-                        self.tree_state.toggle_selected();
-                    }
+                    SelectedItem::Collection(..) => {}
                     SelectedItem::Project(col_idx, proj_idx) => {
                         self.mode = Mode::Input {
                             purpose: InputPurpose::NewSession { col_idx, proj_idx },

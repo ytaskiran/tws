@@ -9,3 +9,8 @@ pub const HIGHLIGHT_STYLE: Style = Style::new()
 pub const SESSION_STYLE: Style = Style::new().fg(Color::Green);
 pub const BORDER_STYLE: Style = Style::new().fg(Color::DarkGray);
 pub const TITLE_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+pub const STATUSBAR_KEY_STYLE: Style = Style::new()
+    .fg(Color::White)
+    .bg(Color::DarkGray)
+    .add_modifier(Modifier::BOLD);
+pub const STATUSBAR_DESC_STYLE: Style = Style::new().fg(Color::DarkGray);
