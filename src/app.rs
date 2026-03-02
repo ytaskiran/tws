@@ -430,8 +430,8 @@ impl App {
     /// Attach or switch to a tmux session by name.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         if tmux::is_inside_tmux() {
-            // Inside tmux: switch-client is non-blocking, TUI keeps running
             let _ = tmux::switch_client(session_name);
+            self.running = false;
         } else {
             // Outside tmux: suspend TUI, attach (blocks), then resume TUI
             tui::restore()?;
