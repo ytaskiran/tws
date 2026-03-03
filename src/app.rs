@@ -430,11 +430,44 @@ impl App {
                     self.save_state();
                 }
                 InputPurpose::RenameCollection { idx } => {
+                    // Collect old tmux session names before the rename changes the prefix.
+                    let old_sessions: Vec<(String, String, usize)> = self.state.collections[idx]
+                        .projects
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(pi, proj)| {
+                            self.state.sessions_for_project(proj.id)
+                                .into_iter()
+                                .map(move |s| (s.tmux_session_name.clone(), s.display_name.clone(), pi))
+                        })
+                        .collect();
                     self.state.rename_collection(idx, trimmed);
+                    for (old_name, label, proj_idx) in &old_sessions {
+                        if let Some(new_name) = self.state.make_session_name(idx, *proj_idx, label) {
+                            let _ = tmux::rename_session(old_name, &new_name);
+                        }
+                    }
+                    self.do_refresh_sessions();
                     self.save_state();
                 }
                 InputPurpose::RenameProject { col_idx, proj_idx } => {
+                    // Collect old tmux session names before the rename changes the prefix.
+                    let old_sessions: Vec<(String, String)> = self.state.collections[col_idx]
+                        .projects.get(proj_idx)
+                        .map(|proj| {
+                            self.state.sessions_for_project(proj.id)
+                                .into_iter()
+                                .map(|s| (s.tmux_session_name.clone(), s.display_name.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     self.state.rename_project(col_idx, proj_idx, trimmed);
+                    for (old_name, label) in &old_sessions {
+                        if let Some(new_name) = self.state.make_session_name(col_idx, proj_idx, label) {
+                            let _ = tmux::rename_session(old_name, &new_name);
+                        }
+                    }
+                    self.do_refresh_sessions();
                     self.save_state();
                 }
                 InputPurpose::NewSession { col_idx, proj_idx } => {
