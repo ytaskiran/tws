@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
@@ -108,7 +108,8 @@ impl App {
             // Tree area or empty state
             let block = Block::bordered()
                 .border_type(BorderType::Rounded)
-                .border_style(theme::BORDER_STYLE);
+                .border_style(theme::BORDER_STYLE)
+                .padding(Padding::new(1, 1, 0, 0));
 
             if self.state.collections.is_empty() {
                 let available_height = chunks[0].height.saturating_sub(2);

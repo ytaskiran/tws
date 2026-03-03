@@ -39,14 +39,15 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
     };
 
-    // Left side: key hints
+    // Left side: key hints (plain, no pill background)
     let mut left_spans = Vec::new();
     for (i, (key, desc)) in hints.iter().enumerate() {
         if i > 0 {
-            left_spans.push(Span::raw("  "));
+            left_spans.push(Span::styled("   ", theme::STATUSBAR_DESC_STYLE));
         }
-        left_spans.push(Span::styled(format!(" {} ", key), theme::STATUSBAR_KEY_STYLE));
-        left_spans.push(Span::styled(format!(" {}", desc), theme::STATUSBAR_DESC_STYLE));
+        left_spans.push(Span::styled(*key, theme::STATUSBAR_KEY_STYLE));
+        left_spans.push(Span::styled(" · ", theme::STATUSBAR_DESC_STYLE));
+        left_spans.push(Span::styled(*desc, theme::STATUSBAR_DESC_STYLE));
     }
 
     // Right side: session count or app name
