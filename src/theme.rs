@@ -21,12 +21,9 @@ pub const HIGHLIGHT_STYLE: Style = Style::new()
 pub const BORDER_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
 pub const SEPARATOR_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
 
-// Status bar
-pub const STATUSBAR_KEY_STYLE: Style = Style::new()
-    .fg(Color::White)
-    .bg(SUBTLE_BORDER)
-    .add_modifier(Modifier::BOLD);
-pub const STATUSBAR_DESC_STYLE: Style = Style::new().fg(MUTED_TEXT);
+// Status bar — intentionally very dim/receded
+pub const STATUSBAR_KEY_STYLE: Style = Style::new().fg(Color::Rgb(150, 150, 150));
+pub const STATUSBAR_DESC_STYLE: Style = Style::new().fg(Color::Rgb(75, 75, 75));
 
 // Modals
 pub const MODAL_BORDER_STYLE: Style = Style::new().fg(ACCENT);
