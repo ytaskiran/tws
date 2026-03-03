@@ -1,28 +1,31 @@
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
 
+use crate::theme;
+
 pub fn render(frame: &mut Frame, message: &str, area: Rect) {
-    let popup = centered_rect(50, 5, area);
+    let popup = centered_rect(50, 7, area);
     frame.render_widget(Clear, popup);
 
     let text = vec![
         Line::from(message),
         Line::from(""),
         Line::from(vec![
-            Span::styled("y", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::raw("es / "),
-            Span::styled("n", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::raw("o"),
+            Span::styled("y", theme::MODAL_TITLE_STYLE),
+            Span::styled(" to confirm  ", theme::MODAL_MUTED_STYLE),
+            Span::styled("esc", theme::MODAL_TITLE_STYLE),
+            Span::styled(" to cancel", theme::MODAL_MUTED_STYLE),
         ]),
     ];
 
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(" Confirm ")
-        .title_style(Style::new().fg(Color::Red).add_modifier(Modifier::BOLD))
-        .border_style(Style::new().fg(Color::Red));
+        .title_style(theme::MODAL_TITLE_STYLE)
+        .border_style(theme::MODAL_BORDER_STYLE)
+        .padding(Padding::new(1, 1, 1, 0));
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup);

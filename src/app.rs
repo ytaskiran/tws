@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
-use ratatui::widgets::Block;
+use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
@@ -97,29 +98,64 @@ impl App {
     fn draw(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
-            let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+            let chunks = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
 
-            // Always draw the tree
-            let items = tree_view::build_tree_items(&self.state);
-            let tree = Tree::new(&items)
-                .expect("collection IDs are unique")
-                .block(
-                    Block::bordered()
-                        .title(" tws ")
-                        .title_style(theme::TITLE_STYLE)
-                        .border_style(theme::BORDER_STYLE),
-                )
-                .highlight_style(theme::HIGHLIGHT_STYLE)
-                .highlight_symbol("▶ ")
-                .node_closed_symbol("▸ ")
-                .node_open_symbol("▾ ")
-                .node_no_children_symbol("  ");
+            // Tree area or empty state
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(theme::BORDER_STYLE);
 
-            frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
+            if self.state.collections.is_empty() {
+                let available_height = chunks[0].height.saturating_sub(2);
+                let content_height = 4u16;
+                let top_padding = (available_height.saturating_sub(content_height)) / 2;
 
-            // Render status bar
+                let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw("Welcome to "),
+                    Span::styled("tws", theme::EMPTY_TITLE_STYLE),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Press a to create your first collection.",
+                    theme::EMPTY_HINT_STYLE,
+                )));
+
+                let paragraph = Paragraph::new(lines)
+                    .block(block)
+                    .alignment(Alignment::Center);
+                frame.render_widget(paragraph, chunks[0]);
+            } else {
+                let items = tree_view::build_tree_items(&self.state);
+                let tree = Tree::new(&items)
+                    .expect("collection IDs are unique")
+                    .block(block)
+                    .highlight_style(theme::HIGHLIGHT_STYLE)
+                    .highlight_symbol("  ")
+                    .node_closed_symbol("\u{203A} ")
+                    .node_open_symbol("\u{2304} ")
+                    .node_no_children_symbol("  ");
+
+                frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
+            }
+
+            // Separator line
+            let separator = "\u{2500}".repeat(chunks[1].width as usize);
+            frame.render_widget(
+                Paragraph::new(Line::styled(separator, theme::SEPARATOR_STYLE)),
+                chunks[1],
+            );
+
+            // Status bar
+            let active_count = self.state.active_sessions.iter().filter(|s| s.alive).count();
             let status_ctx = self.status_context();
-            status_bar::render(frame, status_ctx, chunks[1]);
+            status_bar::render(frame, status_ctx, chunks[2], active_count);
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
