@@ -427,14 +427,51 @@ impl App {
         if let Mode::Confirm { purpose } = old_mode {
             match purpose {
                 ConfirmPurpose::DeleteCollection { idx, .. } => {
+                    // Refresh first so active_sessions reflects any sessions created
+                    // since the last 2-second tick.
+                    self.do_refresh_sessions();
+                    let session_names: Vec<String> = self.state.collections[idx]
+                        .projects
+                        .iter()
+                        .flat_map(|proj| self.state.sessions_for_project(proj.id))
+                        .map(|s| s.tmux_session_name.clone())
+                        .collect();
+                    for name in session_names {
+                        let _ = tmux::kill_session(&name);
+                    }
                     self.state.delete_collection(idx);
-                    self.tree_state.select_first();
+                    // Select the item that slid into this position, or the one before
+                    // it, rather than always jumping to the first collection.
+                    let new_sel = self.state.collections.get(idx)
+                        .or_else(|| self.state.collections.last())
+                        .map(|c| vec![c.id.to_string()])
+                        .unwrap_or_default();
+                    self.tree_state.select(new_sel);
                     self.save_state();
+                    self.do_refresh_sessions();
                 }
                 ConfirmPurpose::DeleteProject { col_idx, proj_idx, .. } => {
+                    // Refresh first so active_sessions is current.
+                    self.do_refresh_sessions();
+                    let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
+                    let session_names: Vec<String> = self.state.sessions_for_project(proj_id)
+                        .iter()
+                        .map(|s| s.tmux_session_name.clone())
+                        .collect();
+                    for name in session_names {
+                        let _ = tmux::kill_session(&name);
+                    }
                     self.state.delete_project(col_idx, proj_idx);
-                    self.tree_state.select_first();
+                    // Select the project that slid into this position, or the one
+                    // before it, falling back to the collection itself.
+                    let col = &self.state.collections[col_idx];
+                    let new_sel = col.projects.get(proj_idx)
+                        .or_else(|| col.projects.last())
+                        .map(|p| vec![col.id.to_string(), p.id.to_string()])
+                        .unwrap_or_else(|| vec![col.id.to_string()]);
+                    self.tree_state.select(new_sel);
                     self.save_state();
+                    self.do_refresh_sessions();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
                     let _ = tmux::kill_session(&session_name);
