@@ -52,10 +52,7 @@ pub fn build_tree_items<'a>(state: &'a AppState) -> Vec<TreeItem<'a, String>> {
 
             TreeItem::new(
                 col.id.to_string(),
-                Text::from(vec![
-                    Line::from(""),
-                    Line::from(Span::styled(col.name.as_str(), theme::COLLECTION_STYLE)),
-                ]),
+                Text::styled(col.name.as_str(), theme::COLLECTION_STYLE),
                 children,
             )
             .expect("project IDs are unique within a collection")
