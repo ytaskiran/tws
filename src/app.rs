@@ -1,9 +1,12 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::widgets::Block;
+use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
+use crate::components::status_bar::{self, StatusContext};
 use crate::components::{confirm_modal, input_modal, tree_view};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
@@ -62,9 +65,18 @@ impl App {
         }
     }
 
-    pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
-        // Initial session refresh
+    pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
+        // Initial session refresh (must run first so session children exist in the tree)
         self.do_refresh_sessions();
+
+        // Restore expansion state
+        for path in ui_state.open_nodes {
+            self.tree_state.open(path);
+        }
+        // Restore last selection
+        if let Some(sel) = ui_state.selected {
+            self.tree_state.select(sel);
+        }
 
         while self.running {
             // Periodic session refresh
@@ -89,32 +101,73 @@ impl App {
                 }
             }
         }
+        self.save_ui_state();
         Ok(())
     }
 
     fn draw(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
 
-            // Always draw the tree
-            let items = tree_view::build_tree_items(&self.state);
-            let tree = Tree::new(&items)
-                .expect("collection IDs are unique")
-                .block(
-                    Block::bordered()
-                        .title(" tws ")
-                        .title_style(theme::TITLE_STYLE)
-                        .border_style(theme::BORDER_STYLE),
-                )
-                .highlight_style(theme::HIGHLIGHT_STYLE)
-                .highlight_symbol("▶ ")
-                .node_closed_symbol("▸ ")
-                .node_open_symbol("▾ ")
-                .node_no_children_symbol("  ");
+            // Tree area or empty state
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(theme::BORDER_STYLE);
 
-            frame.render_stateful_widget(tree, area, &mut self.tree_state);
+            if self.state.collections.is_empty() {
+                let available_height = chunks[0].height.saturating_sub(2);
+                let content_height = 4u16;
+                let top_padding = (available_height.saturating_sub(content_height)) / 2;
 
-            // Draw modal overlay if active
+                let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw("Welcome to "),
+                    Span::styled("tws", theme::EMPTY_TITLE_STYLE),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Press a to create your first collection.",
+                    theme::EMPTY_HINT_STYLE,
+                )));
+
+                let paragraph = Paragraph::new(lines)
+                    .block(block)
+                    .alignment(Alignment::Center);
+                frame.render_widget(paragraph, chunks[0]);
+            } else {
+                let items = tree_view::build_tree_items(&self.state);
+                let tree = Tree::new(&items)
+                    .expect("collection IDs are unique")
+                    .block(block)
+                    .highlight_style(theme::HIGHLIGHT_STYLE)
+                    .highlight_symbol("  ")
+                    .node_closed_symbol("\u{203A} ")
+                    .node_open_symbol("\u{2304} ")
+                    .node_no_children_symbol("  ");
+
+                frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
+            }
+
+            // Separator line
+            let separator = "\u{2500}".repeat(chunks[1].width as usize);
+            frame.render_widget(
+                Paragraph::new(Line::styled(separator, theme::SEPARATOR_STYLE)),
+                chunks[1],
+            );
+
+            // Status bar
+            let active_count = self.state.active_sessions.iter().filter(|s| s.alive).count();
+            let status_ctx = self.status_context();
+            status_bar::render(frame, status_ctx, chunks[2], active_count);
+
+            // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
                 Mode::Input { purpose, buffer } => {
@@ -149,6 +202,23 @@ impl App {
         Ok(())
     }
 
+    /// Build a `StatusContext` from the current mode and selection.
+    fn status_context(&self) -> StatusContext {
+        match &self.mode {
+            Mode::Input { .. } => StatusContext::Input,
+            Mode::Confirm { .. } => StatusContext::Confirm,
+            Mode::Normal => {
+                let selected = self.state.resolve_selection(self.tree_state.selected());
+                match selected {
+                    SelectedItem::None => StatusContext::NormalNone,
+                    SelectedItem::Collection(_) => StatusContext::NormalCollection,
+                    SelectedItem::Project(_, _) => StatusContext::NormalProject,
+                    SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                }
+            }
+        }
+    }
+
     fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
         match code {
             KeyCode::Char('q') => self.running = false,
@@ -170,9 +240,7 @@ impl App {
             KeyCode::Enter => {
                 let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
-                    SelectedItem::Collection(..) => {
-                        self.tree_state.toggle_selected();
-                    }
+                    SelectedItem::Collection(..) => {}
                     SelectedItem::Project(col_idx, proj_idx) => {
                         self.mode = Mode::Input {
                             purpose: InputPurpose::NewSession { col_idx, proj_idx },
@@ -369,14 +437,51 @@ impl App {
         if let Mode::Confirm { purpose } = old_mode {
             match purpose {
                 ConfirmPurpose::DeleteCollection { idx, .. } => {
+                    // Refresh first so active_sessions reflects any sessions created
+                    // since the last 2-second tick.
+                    self.do_refresh_sessions();
+                    let session_names: Vec<String> = self.state.collections[idx]
+                        .projects
+                        .iter()
+                        .flat_map(|proj| self.state.sessions_for_project(proj.id))
+                        .map(|s| s.tmux_session_name.clone())
+                        .collect();
+                    for name in session_names {
+                        let _ = tmux::kill_session(&name);
+                    }
                     self.state.delete_collection(idx);
-                    self.tree_state.select_first();
+                    // Select the item that slid into this position, or the one before
+                    // it, rather than always jumping to the first collection.
+                    let new_sel = self.state.collections.get(idx)
+                        .or_else(|| self.state.collections.last())
+                        .map(|c| vec![c.id.to_string()])
+                        .unwrap_or_default();
+                    self.tree_state.select(new_sel);
                     self.save_state();
+                    self.do_refresh_sessions();
                 }
                 ConfirmPurpose::DeleteProject { col_idx, proj_idx, .. } => {
+                    // Refresh first so active_sessions is current.
+                    self.do_refresh_sessions();
+                    let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
+                    let session_names: Vec<String> = self.state.sessions_for_project(proj_id)
+                        .iter()
+                        .map(|s| s.tmux_session_name.clone())
+                        .collect();
+                    for name in session_names {
+                        let _ = tmux::kill_session(&name);
+                    }
                     self.state.delete_project(col_idx, proj_idx);
-                    self.tree_state.select_first();
+                    // Select the project that slid into this position, or the one
+                    // before it, falling back to the collection itself.
+                    let col = &self.state.collections[col_idx];
+                    let new_sel = col.projects.get(proj_idx)
+                        .or_else(|| col.projects.last())
+                        .map(|p| vec![col.id.to_string(), p.id.to_string()])
+                        .unwrap_or_else(|| vec![col.id.to_string()]);
+                    self.tree_state.select(new_sel);
                     self.save_state();
+                    self.do_refresh_sessions();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
                     let _ = tmux::kill_session(&session_name);
@@ -408,8 +513,8 @@ impl App {
     /// Attach or switch to a tmux session by name.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         if tmux::is_inside_tmux() {
-            // Inside tmux: switch-client is non-blocking, TUI keeps running
             let _ = tmux::switch_client(session_name);
+            self.running = false;
         } else {
             // Outside tmux: suspend TUI, attach (blocks), then resume TUI
             tui::restore()?;
@@ -431,6 +536,18 @@ impl App {
     fn save_state(&self) {
         if let Err(e) = persistence::save(&self.state.collections) {
             eprintln!("Failed to save state: {}", e);
+        }
+    }
+
+    fn save_ui_state(&self) {
+        let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
+        let selected = {
+            let sel = self.tree_state.selected();
+            if sel.is_empty() { None } else { Some(sel.to_vec()) }
+        };
+        let ui = persistence::UiState { open_nodes, selected };
+        if let Err(e) = persistence::save_ui(&ui) {
+            eprintln!("Failed to save UI state: {}", e);
         }
     }
 }

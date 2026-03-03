@@ -13,6 +13,7 @@ use core::state::AppState;
 
 fn main() -> std::io::Result<()> {
     let collections = persistence::load()?;
+    let ui_state = persistence::load_ui();
     let state = AppState {
         collections,
         active_sessions: Vec::new(),
@@ -20,7 +21,7 @@ fn main() -> std::io::Result<()> {
 
     let mut terminal = tui::init()?;
     let mut app = App::new(state);
-    let result = app.run(&mut terminal);
+    let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
     result
 }
