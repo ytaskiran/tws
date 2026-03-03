@@ -141,7 +141,12 @@ impl AppState {
     /// Get the name of a selected item (for pre-filling rename input).
     pub fn selected_name(&self, selected: &SelectedItem) -> Option<String> {
         match selected {
-            SelectedItem::None | SelectedItem::Session(..) => None,
+            SelectedItem::None => None,
+            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
+                let proj_id = self.collections.get(*col_idx)?.projects.get(*proj_idx)?.id;
+                let sessions = self.sessions_for_project(proj_id);
+                sessions.get(*sess_idx).map(|s| s.display_name.clone())
+            }
             SelectedItem::Collection(idx) => {
                 self.collections.get(*idx).map(|c| c.name.clone())
             }

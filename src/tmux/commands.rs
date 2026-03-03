@@ -54,6 +54,14 @@ pub fn kill_session(name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
+/// Renames a tmux session.
+pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
+    let status = Command::new("tmux")
+        .args(["rename-session", "-t", old_name, new_name])
+        .status()?;
+    Ok(status.success())
+}
+
 /// Switches the current tmux client to the given session.
 /// Non-blocking — only works when already inside tmux.
 pub fn switch_client(name: &str) -> std::io::Result<bool> {

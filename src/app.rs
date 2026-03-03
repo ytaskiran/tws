@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
@@ -22,6 +22,11 @@ enum InputPurpose {
     RenameCollection { idx: usize },
     RenameProject { col_idx: usize, proj_idx: usize },
     NewSession { col_idx: usize, proj_idx: usize },
+    RenameSession {
+        col_idx: usize,
+        proj_idx: usize,
+        old_tmux_name: String,
+    },
 }
 
 /// What the confirm modal is confirming.
@@ -116,9 +121,7 @@ impl App {
             .split(area);
 
             // Tree area or empty state
-            let block = Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(theme::BORDER_STYLE);
+            let block = Block::default();
 
             if self.state.collections.is_empty() {
                 let available_height = chunks[0].height.saturating_sub(2);
@@ -177,6 +180,7 @@ impl App {
                         InputPurpose::RenameCollection { .. } => "Rename Collection",
                         InputPurpose::RenameProject { .. } => "Rename Project",
                         InputPurpose::NewSession { .. } => "Session Name",
+                        InputPurpose::RenameSession { .. } => "Rename Session",
                     };
                     input_modal::render(frame, title, buffer, area);
                 }
@@ -330,8 +334,19 @@ impl App {
             SelectedItem::Project(col_idx, proj_idx) => {
                 InputPurpose::RenameProject { col_idx, proj_idx }
             }
-            // Can't rename sessions
-            SelectedItem::Session(..) | SelectedItem::None => return,
+            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
+                let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
+                let sessions = self.state.sessions_for_project(proj_id);
+                match sessions.get(sess_idx) {
+                    Some(session) => InputPurpose::RenameSession {
+                        col_idx,
+                        proj_idx,
+                        old_tmux_name: session.tmux_session_name.clone(),
+                    },
+                    None => return,
+                }
+            }
+            SelectedItem::None => return,
         };
         self.mode = Mode::Input {
             purpose,
@@ -425,6 +440,12 @@ impl App {
                 InputPurpose::NewSession { col_idx, proj_idx } => {
                     if let Some(session_name) = self.state.make_session_name(col_idx, proj_idx, &trimmed) {
                         self.launch_session(&session_name, terminal)?;
+                    }
+                }
+                InputPurpose::RenameSession { col_idx, proj_idx, old_tmux_name } => {
+                    if let Some(new_tmux_name) = self.state.make_session_name(col_idx, proj_idx, &trimmed) {
+                        let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
+                        self.do_refresh_sessions();
                     }
                 }
             }

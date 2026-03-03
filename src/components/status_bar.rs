@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             ("d", "delete"),
             ("x", "kill sessions"),
         ],
-        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("x", "kill")],
+        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("x", "kill")],
         StatusContext::Input => &[("Enter", "confirm"), ("Esc", "cancel")],
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
     };
