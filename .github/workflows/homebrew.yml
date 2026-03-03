@@ -1,0 +1,29 @@
+# After a GitHub Release is published, update the Homebrew tap formula.
+# Requires a separate repo: ytaskiran/homebrew-tws with a Formula/tws.rb file.
+# Users install with: brew install ytaskiran/tws/tws
+#
+# To set up:
+#   1. Create repo ytaskiran/homebrew-tws
+#   2. Copy the Formula/tws.rb template from this repo into it
+#   3. Create a personal access token with repo scope
+#   4. Add it as a secret named HOMEBREW_TAP_TOKEN in this repo
+
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  homebrew:
+    runs-on: ubuntu-latest
+    if: "!github.event.release.prerelease"
+
+    steps:
+      - name: Update Homebrew formula
+        uses: dawidd6/action-homebrew-bump-formula@v4
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          tap: ytaskiran/homebrew-tws
+          formula: tws
+          tag: ${{ github.event.release.tag_name }}
