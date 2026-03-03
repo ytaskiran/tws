@@ -65,9 +65,18 @@ impl App {
         }
     }
 
-    pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
-        // Initial session refresh
+    pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
+        // Initial session refresh (must run first so session children exist in the tree)
         self.do_refresh_sessions();
+
+        // Restore expansion state
+        for path in ui_state.open_nodes {
+            self.tree_state.open(path);
+        }
+        // Restore last selection
+        if let Some(sel) = ui_state.selected {
+            self.tree_state.select(sel);
+        }
 
         while self.running {
             // Periodic session refresh
@@ -92,6 +101,7 @@ impl App {
                 }
             }
         }
+        self.save_ui_state();
         Ok(())
     }
 
@@ -526,6 +536,18 @@ impl App {
     fn save_state(&self) {
         if let Err(e) = persistence::save(&self.state.collections) {
             eprintln!("Failed to save state: {}", e);
+        }
+    }
+
+    fn save_ui_state(&self) {
+        let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
+        let selected = {
+            let sel = self.tree_state.selected();
+            if sel.is_empty() { None } else { Some(sel.to_vec()) }
+        };
+        let ui = persistence::UiState { open_nodes, selected };
+        if let Err(e) = persistence::save_ui(&ui) {
+            eprintln!("Failed to save UI state: {}", e);
         }
     }
 }

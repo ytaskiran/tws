@@ -4,6 +4,36 @@ use std::path::PathBuf;
 
 use super::model::Collection;
 
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct UiState {
+    pub open_nodes: Vec<Vec<String>>,
+    pub selected: Option<Vec<String>>,
+}
+
+pub fn ui_state_file() -> PathBuf {
+    config_dir().join("ui-state.json")
+}
+
+pub fn load_ui() -> UiState {
+    let path = ui_state_file();
+    if !path.exists() {
+        return UiState::default();
+    }
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return UiState::default(),
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+pub fn save_ui(ui: &UiState) -> io::Result<()> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let data = serde_json::to_string_pretty(ui)?;
+    fs::write(ui_state_file(), data)?;
+    Ok(())
+}
+
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .expect("could not determine config directory")
