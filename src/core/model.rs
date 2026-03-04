@@ -5,7 +5,6 @@ use uuid::Uuid;
 pub struct Collection {
     pub id: Uuid,
     pub name: String,
-    #[serde(alias = "projects")]
     pub threads: Vec<Thread>,
 }
 
