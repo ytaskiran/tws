@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use super::model::{Collection, Project, Session, tmux_session_name_labeled, tmux_session_prefix};
+use super::model::{Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix};
 
 pub struct AppState {
     pub collections: Vec<Collection>,
@@ -14,9 +14,9 @@ pub enum SelectedItem {
     None,
     /// A collection is selected (index into collections vec).
     Collection(usize),
-    /// A project is selected (collection index, project index).
-    Project(usize, usize),
-    /// A session is selected (collection index, project index, session index within active_sessions for that project).
+    /// A thread is selected (collection index, thread index).
+    Thread(usize, usize),
+    /// A session is selected (collection index, thread index, session index within active_sessions for that thread).
     Session(usize, usize, usize),
 }
 
@@ -31,17 +31,17 @@ impl AppState {
     /// Creates sample data for development/testing.
     pub fn with_sample_data() -> Self {
         let mut work = Collection::new("Work");
-        work.projects.push(Project::new("Edge Device Pipeline"));
-        work.projects.push(Project::new("Model Training Infra"));
-        work.projects.push(Project::new("CI/CD Overhaul"));
+        work.threads.push(Thread::new("Edge Device Pipeline"));
+        work.threads.push(Thread::new("Model Training Infra"));
+        work.threads.push(Thread::new("CI/CD Overhaul"));
 
         let mut learning = Collection::new("Learning");
-        learning.projects.push(Project::new("Rust Book"));
-        learning.projects.push(Project::new("Ratatui Experiments"));
+        learning.threads.push(Thread::new("Rust Book"));
+        learning.threads.push(Thread::new("Ratatui Experiments"));
 
         let mut podcast = Collection::new("Derin Notlar Podcast");
-        podcast.projects.push(Project::new("Episode 12"));
-        podcast.projects.push(Project::new("Episode 13 - Planning"));
+        podcast.threads.push(Thread::new("Episode 12"));
+        podcast.threads.push(Thread::new("Episode 13 - Planning"));
 
         let personal = Collection::new("Personal");
 
@@ -65,10 +65,10 @@ impl AppState {
             }
             2 => {
                 let col_id = &selected[0];
-                let proj_id = &selected[1];
+                let thread_id = &selected[1];
                 if let Some(col_idx) = self.find_collection_idx(col_id) {
-                    if let Some(proj_idx) = self.find_project_idx(col_idx, proj_id) {
-                        SelectedItem::Project(col_idx, proj_idx)
+                    if let Some(thread_idx) = self.find_thread_idx(col_idx, thread_id) {
+                        SelectedItem::Thread(col_idx, thread_idx)
                     } else {
                         SelectedItem::None
                     }
@@ -77,18 +77,18 @@ impl AppState {
                 }
             }
             _ => {
-                // Depth 3: collection / project / session
+                // Depth 3: collection / thread / session
                 let col_id = &selected[0];
-                let proj_id = &selected[1];
+                let thread_id = &selected[1];
                 let sess_name = &selected[2];
                 if let Some(col_idx) = self.find_collection_idx(col_id) {
-                    if let Some(proj_idx) = self.find_project_idx(col_idx, proj_id) {
-                        let proj = &self.collections[col_idx].projects[proj_idx];
-                        let sessions = self.sessions_for_project(proj.id);
+                    if let Some(thread_idx) = self.find_thread_idx(col_idx, thread_id) {
+                        let thread = &self.collections[col_idx].threads[thread_idx];
+                        let sessions = self.sessions_for_thread(thread.id);
                         if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *sess_name) {
-                            SelectedItem::Session(col_idx, proj_idx, sess_idx)
+                            SelectedItem::Session(col_idx, thread_idx, sess_idx)
                         } else {
-                            SelectedItem::Project(col_idx, proj_idx)
+                            SelectedItem::Thread(col_idx, thread_idx)
                         }
                     } else {
                         SelectedItem::None
@@ -104,9 +104,9 @@ impl AppState {
         self.collections.push(Collection::new(name));
     }
 
-    pub fn add_project(&mut self, collection_idx: usize, name: String) {
+    pub fn add_thread(&mut self, collection_idx: usize, name: String) {
         if let Some(col) = self.collections.get_mut(collection_idx) {
-            col.projects.push(Project::new(name));
+            col.threads.push(Thread::new(name));
         }
     }
 
@@ -116,10 +116,10 @@ impl AppState {
         }
     }
 
-    pub fn rename_project(&mut self, col_idx: usize, proj_idx: usize, new_name: String) {
+    pub fn rename_thread(&mut self, col_idx: usize, thread_idx: usize, new_name: String) {
         if let Some(col) = self.collections.get_mut(col_idx) {
-            if let Some(proj) = col.projects.get_mut(proj_idx) {
-                proj.name = new_name;
+            if let Some(thread) = col.threads.get_mut(thread_idx) {
+                thread.name = new_name;
             }
         }
     }
@@ -130,10 +130,10 @@ impl AppState {
         }
     }
 
-    pub fn delete_project(&mut self, col_idx: usize, proj_idx: usize) {
+    pub fn delete_thread(&mut self, col_idx: usize, thread_idx: usize) {
         if let Some(col) = self.collections.get_mut(col_idx) {
-            if proj_idx < col.projects.len() {
-                col.projects.remove(proj_idx);
+            if thread_idx < col.threads.len() {
+                col.threads.remove(thread_idx);
             }
         }
     }
@@ -142,63 +142,63 @@ impl AppState {
     pub fn selected_name(&self, selected: &SelectedItem) -> Option<String> {
         match selected {
             SelectedItem::None => None,
-            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
-                let proj_id = self.collections.get(*col_idx)?.projects.get(*proj_idx)?.id;
-                let sessions = self.sessions_for_project(proj_id);
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread_id = self.collections.get(*col_idx)?.threads.get(*thread_idx)?.id;
+                let sessions = self.sessions_for_thread(thread_id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
             }
             SelectedItem::Collection(idx) => {
                 self.collections.get(*idx).map(|c| c.name.clone())
             }
-            SelectedItem::Project(col_idx, proj_idx) => self
+            SelectedItem::Thread(col_idx, thread_idx) => self
                 .collections
                 .get(*col_idx)
-                .and_then(|c| c.projects.get(*proj_idx))
+                .and_then(|c| c.threads.get(*thread_idx))
                 .map(|p| p.name.clone()),
         }
     }
 
-    /// Generate the session prefix for a given collection/project index pair.
-    pub fn session_prefix_for(&self, col_idx: usize, proj_idx: usize) -> Option<String> {
+    /// Generate the session prefix for a given collection/thread index pair.
+    pub fn session_prefix_for(&self, col_idx: usize, thread_idx: usize) -> Option<String> {
         let col = self.collections.get(col_idx)?;
-        let proj = col.projects.get(proj_idx)?;
-        Some(tmux_session_prefix(&col.name, &proj.name))
+        let thread = col.threads.get(thread_idx)?;
+        Some(tmux_session_prefix(&col.name, &thread.name))
     }
 
-    /// Generate a labeled session name for a project using the user-provided label.
-    pub fn make_session_name(&self, col_idx: usize, proj_idx: usize, label: &str) -> Option<String> {
+    /// Generate a labeled session name for a thread using the user-provided label.
+    pub fn make_session_name(&self, col_idx: usize, thread_idx: usize, label: &str) -> Option<String> {
         let col = self.collections.get(col_idx)?;
-        let proj = col.projects.get(proj_idx)?;
-        Some(tmux_session_name_labeled(&col.name, &proj.name, label))
+        let thread = col.threads.get(thread_idx)?;
+        Some(tmux_session_name_labeled(&col.name, &thread.name, label))
     }
 
-    /// Get all active sessions belonging to a given project.
-    pub fn sessions_for_project(&self, project_id: Uuid) -> Vec<&Session> {
+    /// Get all active sessions belonging to a given thread.
+    pub fn sessions_for_thread(&self, thread_id: Uuid) -> Vec<&Session> {
         self.active_sessions
             .iter()
-            .filter(|s| s.project_id == project_id && s.alive)
+            .filter(|s| s.thread_id == thread_id && s.alive)
             .collect()
     }
 
-    /// Check whether a project has any active sessions.
-    pub fn has_active_session(&self, col_idx: usize, proj_idx: usize) -> bool {
+    /// Check whether a thread has any active sessions.
+    pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
         if let Some(col) = self.collections.get(col_idx) {
-            if let Some(proj) = col.projects.get(proj_idx) {
-                return self.active_sessions.iter().any(|s| s.project_id == proj.id && s.alive);
+            if let Some(thread) = col.threads.get(thread_idx) {
+                return self.active_sessions.iter().any(|s| s.thread_id == thread.id && s.alive);
             }
         }
         false
     }
 
     /// Refresh active_sessions by matching live tmux session names against
-    /// our collection/project hierarchy. Matches by prefix to support
-    /// multiple labeled sessions per project (e.g. `tws_work_pipeline_bugfix`).
+    /// our collection/thread hierarchy. Matches by prefix to support
+    /// multiple labeled sessions per thread (e.g. `tws_work_pipeline_bugfix`).
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[String]) {
         self.active_sessions.clear();
 
         for col in &self.collections {
-            for proj in &col.projects {
-                let prefix = tmux_session_prefix(&col.name, &proj.name);
+            for thread in &col.threads {
+                let prefix = tmux_session_prefix(&col.name, &thread.name);
                 for session_name in live_tmux_sessions {
                     // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix) {
@@ -207,7 +207,7 @@ impl AppState {
                                 self.active_sessions.push(Session {
                                     tmux_session_name: session_name.clone(),
                                     display_name: label.to_string(),
-                                    project_id: proj.id,
+                                    thread_id: thread.id,
                                     alive: true,
                                 });
                             }
@@ -223,11 +223,11 @@ impl AppState {
         self.collections.iter().position(|c| c.id == id)
     }
 
-    fn find_project_idx(&self, col_idx: usize, uuid_str: &str) -> Option<usize> {
+    fn find_thread_idx(&self, col_idx: usize, uuid_str: &str) -> Option<usize> {
         let id: Uuid = uuid_str.parse().ok()?;
         self.collections
             .get(col_idx)?
-            .projects
+            .threads
             .iter()
             .position(|p| p.id == id)
     }
@@ -246,12 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn add_project_to_collection() {
+    fn add_thread_to_collection() {
         let mut state = AppState::new();
         state.add_collection("Work".into());
-        state.add_project(0, "Pipeline".into());
-        assert_eq!(state.collections[0].projects.len(), 1);
-        assert_eq!(state.collections[0].projects[0].name, "Pipeline");
+        state.add_thread(0, "Pipeline".into());
+        assert_eq!(state.collections[0].threads.len(), 1);
+        assert_eq!(state.collections[0].threads[0].name, "Pipeline");
     }
 
     #[test]
@@ -263,12 +263,12 @@ mod tests {
     }
 
     #[test]
-    fn rename_project() {
+    fn rename_thread() {
         let mut state = AppState::new();
         state.add_collection("Work".into());
-        state.add_project(0, "Old".into());
-        state.rename_project(0, 0, "New".into());
-        assert_eq!(state.collections[0].projects[0].name, "New");
+        state.add_thread(0, "Old".into());
+        state.rename_thread(0, 0, "New".into());
+        assert_eq!(state.collections[0].threads[0].name, "New");
     }
 
     #[test]
@@ -282,14 +282,14 @@ mod tests {
     }
 
     #[test]
-    fn delete_project() {
+    fn delete_thread() {
         let mut state = AppState::new();
         state.add_collection("Work".into());
-        state.add_project(0, "A".into());
-        state.add_project(0, "B".into());
-        state.delete_project(0, 0);
-        assert_eq!(state.collections[0].projects.len(), 1);
-        assert_eq!(state.collections[0].projects[0].name, "B");
+        state.add_thread(0, "A".into());
+        state.add_thread(0, "B".into());
+        state.delete_thread(0, 0);
+        assert_eq!(state.collections[0].threads.len(), 1);
+        assert_eq!(state.collections[0].threads[0].name, "B");
     }
 
     #[test]
@@ -303,16 +303,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_project_selection() {
+    fn resolve_thread_selection() {
         let state = AppState::with_sample_data();
         let col_id = state.collections[0].id.to_string();
-        let proj_id = state.collections[0].projects[1].id.to_string();
-        match state.resolve_selection(&[col_id, proj_id]) {
-            SelectedItem::Project(col_idx, proj_idx) => {
+        let thread_id = state.collections[0].threads[1].id.to_string();
+        match state.resolve_selection(&[col_id, thread_id]) {
+            SelectedItem::Thread(col_idx, thread_idx) => {
                 assert_eq!(col_idx, 0);
-                assert_eq!(proj_idx, 1);
+                assert_eq!(thread_idx, 1);
             }
-            _ => panic!("expected Project"),
+            _ => panic!("expected Thread"),
         }
     }
 
@@ -358,8 +358,8 @@ mod tests {
         assert_eq!(state.active_sessions[0].display_name, "bugfix");
         assert_eq!(state.active_sessions[1].display_name, "hotfix");
         assert_eq!(
-            state.active_sessions[0].project_id,
-            state.collections[0].projects[0].id
+            state.active_sessions[0].thread_id,
+            state.collections[0].threads[0].id
         );
     }
 
@@ -397,12 +397,12 @@ mod tests {
         state.refresh_sessions(&live);
 
         let col_id = state.collections[0].id.to_string();
-        let proj_id = state.collections[0].projects[0].id.to_string();
+        let thread_id = state.collections[0].threads[0].id.to_string();
         let sess_name = "tws_work_edge-device-pipeline_bugfix".to_string();
-        match state.resolve_selection(&[col_id, proj_id, sess_name]) {
-            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
+        match state.resolve_selection(&[col_id, thread_id, sess_name]) {
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
                 assert_eq!(col_idx, 0);
-                assert_eq!(proj_idx, 0);
+                assert_eq!(thread_idx, 0);
                 assert_eq!(sess_idx, 0);
             }
             _ => panic!("expected Session"),
@@ -419,11 +419,11 @@ mod tests {
         state.refresh_sessions(&live);
 
         let col_id = state.collections[0].id.to_string();
-        let proj_id = state.collections[0].projects[0].id.to_string();
+        let thread_id = state.collections[0].threads[0].id.to_string();
 
         // Select the second session
         let sess_name = "tws_work_edge-device-pipeline_hotfix".to_string();
-        match state.resolve_selection(&[col_id, proj_id, sess_name]) {
+        match state.resolve_selection(&[col_id, thread_id, sess_name]) {
             SelectedItem::Session(_, _, sess_idx) => assert_eq!(sess_idx, 1),
             _ => panic!("expected Session"),
         }

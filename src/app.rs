@@ -18,13 +18,13 @@ use crate::tui::{self, Tui};
 /// What the input modal is being used for.
 enum InputPurpose {
     AddCollection,
-    AddProject { collection_idx: usize },
+    AddThread { collection_idx: usize },
     RenameCollection { idx: usize },
-    RenameProject { col_idx: usize, proj_idx: usize },
-    NewSession { col_idx: usize, proj_idx: usize },
+    RenameThread { col_idx: usize, thread_idx: usize },
+    NewSession { col_idx: usize, thread_idx: usize },
     RenameSession {
         col_idx: usize,
-        proj_idx: usize,
+        thread_idx: usize,
         old_tmux_name: String,
     },
 }
@@ -32,9 +32,9 @@ enum InputPurpose {
 /// What the confirm modal is confirming.
 enum ConfirmPurpose {
     DeleteCollection { idx: usize, name: String },
-    DeleteProject { col_idx: usize, proj_idx: usize, name: String },
+    DeleteThread { col_idx: usize, thread_idx: usize, name: String },
     KillSession { session_name: String },
-    KillAllSessions { col_idx: usize, proj_idx: usize, project_name: String },
+    KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
 }
 
 enum Mode {
@@ -176,9 +176,9 @@ impl App {
                 Mode::Input { purpose, buffer } => {
                     let title = match purpose {
                         InputPurpose::AddCollection => "New Collection",
-                        InputPurpose::AddProject { .. } => "New Project",
+                        InputPurpose::AddThread { .. } => "New Thread",
                         InputPurpose::RenameCollection { .. } => "Rename Collection",
-                        InputPurpose::RenameProject { .. } => "Rename Project",
+                        InputPurpose::RenameThread { .. } => "Rename Thread",
                         InputPurpose::NewSession { .. } => "Session Name",
                         InputPurpose::RenameSession { .. } => "Rename Session",
                     };
@@ -189,14 +189,14 @@ impl App {
                         ConfirmPurpose::DeleteCollection { name, .. } => {
                             format!("Delete collection \"{}\"?", name)
                         }
-                        ConfirmPurpose::DeleteProject { name, .. } => {
-                            format!("Delete project \"{}\"?", name)
+                        ConfirmPurpose::DeleteThread { name, .. } => {
+                            format!("Delete thread \"{}\"?", name)
                         }
                         ConfirmPurpose::KillSession { session_name } => {
                             format!("Kill session \"{}\"?", session_name)
                         }
-                        ConfirmPurpose::KillAllSessions { project_name, .. } => {
-                            format!("Kill all sessions for \"{}\"?", project_name)
+                        ConfirmPurpose::KillAllSessions { thread_name, .. } => {
+                            format!("Kill all sessions for \"{}\"?", thread_name)
                         }
                     };
                     confirm_modal::render(frame, &message, area);
@@ -216,7 +216,7 @@ impl App {
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
-                    SelectedItem::Project(_, _) => StatusContext::NormalProject,
+                    SelectedItem::Thread(_, _) => StatusContext::NormalThread,
                     SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
                 }
             }
@@ -245,15 +245,15 @@ impl App {
                 let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
                     SelectedItem::Collection(..) => {}
-                    SelectedItem::Project(col_idx, proj_idx) => {
+                    SelectedItem::Thread(col_idx, thread_idx) => {
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::NewSession { col_idx, proj_idx },
+                            purpose: InputPurpose::NewSession { col_idx, thread_idx },
                             buffer: String::new(),
                         };
                     }
-                    SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
-                        let sessions = self.state.sessions_for_project(
-                            self.state.collections[col_idx].projects[proj_idx].id,
+                    SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                        let sessions = self.state.sessions_for_thread(
+                            self.state.collections[col_idx].threads[thread_idx].id,
                         );
                         if let Some(session) = sessions.get(sess_idx) {
                             let name = session.tmux_session_name.clone();
@@ -310,8 +310,8 @@ impl App {
     fn start_add(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match selected {
-            SelectedItem::Collection(idx) | SelectedItem::Project(idx, _) | SelectedItem::Session(idx, _, _) => {
-                InputPurpose::AddProject {
+            SelectedItem::Collection(idx) | SelectedItem::Thread(idx, _) | SelectedItem::Session(idx, _, _) => {
+                InputPurpose::AddThread {
                     collection_idx: idx,
                 }
             }
@@ -331,16 +331,16 @@ impl App {
         };
         let purpose = match selected {
             SelectedItem::Collection(idx) => InputPurpose::RenameCollection { idx },
-            SelectedItem::Project(col_idx, proj_idx) => {
-                InputPurpose::RenameProject { col_idx, proj_idx }
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                InputPurpose::RenameThread { col_idx, thread_idx }
             }
-            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
-                let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
-                let sessions = self.state.sessions_for_project(proj_id);
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                let sessions = self.state.sessions_for_thread(thread_id);
                 match sessions.get(sess_idx) {
                     Some(session) => InputPurpose::RenameSession {
                         col_idx,
-                        proj_idx,
+                        thread_idx,
                         old_tmux_name: session.tmux_session_name.clone(),
                     },
                     None => return,
@@ -361,13 +361,13 @@ impl App {
                 let name = self.state.collections[*idx].name.clone();
                 ConfirmPurpose::DeleteCollection { idx: *idx, name }
             }
-            SelectedItem::Project(col_idx, proj_idx) => {
-                let name = self.state.collections[*col_idx].projects[*proj_idx]
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                let name = self.state.collections[*col_idx].threads[*thread_idx]
                     .name
                     .clone();
-                ConfirmPurpose::DeleteProject {
+                ConfirmPurpose::DeleteThread {
                     col_idx: *col_idx,
-                    proj_idx: *proj_idx,
+                    thread_idx: *thread_idx,
                     name,
                 }
             }
@@ -380,9 +380,9 @@ impl App {
     fn start_kill_session(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
-            SelectedItem::Session(col_idx, proj_idx, sess_idx) => {
-                let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
-                let sessions = self.state.sessions_for_project(proj_id);
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                let sessions = self.state.sessions_for_thread(thread_id);
                 if let Some(session) = sessions.get(sess_idx) {
                     let name = session.tmux_session_name.clone();
                     self.mode = Mode::Confirm {
@@ -390,17 +390,17 @@ impl App {
                     };
                 }
             }
-            SelectedItem::Project(col_idx, proj_idx) => {
-                // If the project has active sessions, offer to kill all of them
-                if self.state.has_active_session(col_idx, proj_idx) {
-                    let project_name = self.state.collections[col_idx].projects[proj_idx]
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                // If the thread has active sessions, offer to kill all of them
+                if self.state.has_active_session(col_idx, thread_idx) {
+                    let thread_name = self.state.collections[col_idx].threads[thread_idx]
                         .name
                         .clone();
                     self.mode = Mode::Confirm {
                         purpose: ConfirmPurpose::KillAllSessions {
                             col_idx,
-                            proj_idx,
-                            project_name,
+                            thread_idx,
+                            thread_name,
                         },
                     };
                 }
@@ -422,9 +422,9 @@ impl App {
                     self.state.add_collection(trimmed);
                     self.save_state();
                 }
-                InputPurpose::AddProject { collection_idx } => {
-                    self.state.add_project(collection_idx, trimmed);
-                    // Auto-expand the collection so the new project is visible
+                InputPurpose::AddThread { collection_idx } => {
+                    self.state.add_thread(collection_idx, trimmed);
+                    // Auto-expand the collection so the new thread is visible
                     let col_id = self.state.collections[collection_idx].id.to_string();
                     self.tree_state.open(vec![col_id]);
                     self.save_state();
@@ -432,51 +432,51 @@ impl App {
                 InputPurpose::RenameCollection { idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
                     let old_sessions: Vec<(String, String, usize)> = self.state.collections[idx]
-                        .projects
+                        .threads
                         .iter()
                         .enumerate()
-                        .flat_map(|(pi, proj)| {
-                            self.state.sessions_for_project(proj.id)
+                        .flat_map(|(pi, thread)| {
+                            self.state.sessions_for_thread(thread.id)
                                 .into_iter()
                                 .map(move |s| (s.tmux_session_name.clone(), s.display_name.clone(), pi))
                         })
                         .collect();
                     self.state.rename_collection(idx, trimmed);
-                    for (old_name, label, proj_idx) in &old_sessions {
-                        if let Some(new_name) = self.state.make_session_name(idx, *proj_idx, label) {
+                    for (old_name, label, thread_idx) in &old_sessions {
+                        if let Some(new_name) = self.state.make_session_name(idx, *thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
                         }
                     }
                     self.do_refresh_sessions();
                     self.save_state();
                 }
-                InputPurpose::RenameProject { col_idx, proj_idx } => {
+                InputPurpose::RenameThread { col_idx, thread_idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
                     let old_sessions: Vec<(String, String)> = self.state.collections[col_idx]
-                        .projects.get(proj_idx)
-                        .map(|proj| {
-                            self.state.sessions_for_project(proj.id)
+                        .threads.get(thread_idx)
+                        .map(|thread| {
+                            self.state.sessions_for_thread(thread.id)
                                 .into_iter()
                                 .map(|s| (s.tmux_session_name.clone(), s.display_name.clone()))
                                 .collect()
                         })
                         .unwrap_or_default();
-                    self.state.rename_project(col_idx, proj_idx, trimmed);
+                    self.state.rename_thread(col_idx, thread_idx, trimmed);
                     for (old_name, label) in &old_sessions {
-                        if let Some(new_name) = self.state.make_session_name(col_idx, proj_idx, label) {
+                        if let Some(new_name) = self.state.make_session_name(col_idx, thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
                         }
                     }
                     self.do_refresh_sessions();
                     self.save_state();
                 }
-                InputPurpose::NewSession { col_idx, proj_idx } => {
-                    if let Some(session_name) = self.state.make_session_name(col_idx, proj_idx, &trimmed) {
+                InputPurpose::NewSession { col_idx, thread_idx } => {
+                    if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
                         self.launch_session(&session_name, terminal)?;
                     }
                 }
-                InputPurpose::RenameSession { col_idx, proj_idx, old_tmux_name } => {
-                    if let Some(new_tmux_name) = self.state.make_session_name(col_idx, proj_idx, &trimmed) {
+                InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
+                    if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
                         let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
                         self.do_refresh_sessions();
                     }
@@ -495,9 +495,9 @@ impl App {
                     // since the last 2-second tick.
                     self.do_refresh_sessions();
                     let session_names: Vec<String> = self.state.collections[idx]
-                        .projects
+                        .threads
                         .iter()
-                        .flat_map(|proj| self.state.sessions_for_project(proj.id))
+                        .flat_map(|thread| self.state.sessions_for_thread(thread.id))
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
                     for name in session_names {
@@ -514,23 +514,23 @@ impl App {
                     self.save_state();
                     self.do_refresh_sessions();
                 }
-                ConfirmPurpose::DeleteProject { col_idx, proj_idx, .. } => {
+                ConfirmPurpose::DeleteThread { col_idx, thread_idx, .. } => {
                     // Refresh first so active_sessions is current.
                     self.do_refresh_sessions();
-                    let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
-                    let session_names: Vec<String> = self.state.sessions_for_project(proj_id)
+                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                    let session_names: Vec<String> = self.state.sessions_for_thread(thread_id)
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
                     for name in session_names {
                         let _ = tmux::kill_session(&name);
                     }
-                    self.state.delete_project(col_idx, proj_idx);
-                    // Select the project that slid into this position, or the one
+                    self.state.delete_thread(col_idx, thread_idx);
+                    // Select the thread that slid into this position, or the one
                     // before it, falling back to the collection itself.
                     let col = &self.state.collections[col_idx];
-                    let new_sel = col.projects.get(proj_idx)
-                        .or_else(|| col.projects.last())
+                    let new_sel = col.threads.get(thread_idx)
+                        .or_else(|| col.threads.last())
                         .map(|p| vec![col.id.to_string(), p.id.to_string()])
                         .unwrap_or_else(|| vec![col.id.to_string()]);
                     self.tree_state.select(new_sel);
@@ -541,11 +541,11 @@ impl App {
                     let _ = tmux::kill_session(&session_name);
                     self.do_refresh_sessions();
                 }
-                ConfirmPurpose::KillAllSessions { col_idx, proj_idx, .. } => {
-                    let proj_id = self.state.collections[col_idx].projects[proj_idx].id;
+                ConfirmPurpose::KillAllSessions { col_idx, thread_idx, .. } => {
+                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
                     let names: Vec<String> = self
                         .state
-                        .sessions_for_project(proj_id)
+                        .sessions_for_thread(thread_id)
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();

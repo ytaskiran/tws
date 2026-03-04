@@ -5,11 +5,12 @@ use uuid::Uuid;
 pub struct Collection {
     pub id: Uuid,
     pub name: String,
-    pub projects: Vec<Project>,
+    #[serde(alias = "projects")]
+    pub threads: Vec<Thread>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
+pub struct Thread {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
@@ -20,7 +21,7 @@ pub struct Project {
 pub struct Session {
     pub tmux_session_name: String,
     pub display_name: String,
-    pub project_id: Uuid,
+    pub thread_id: Uuid,
     pub alive: bool,
 }
 
@@ -29,12 +30,12 @@ impl Collection {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
-            projects: Vec::new(),
+            threads: Vec::new(),
         }
     }
 }
 
-impl Project {
+impl Thread {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -72,18 +73,18 @@ pub fn slugify(s: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
-/// Generates the base prefix for tmux session names for a given collection/project.
-/// Format: `tws_{collection_slug}_{project_slug}`
+/// Generates the base prefix for tmux session names for a given collection/thread.
+/// Format: `tws_{collection_slug}_{thread_slug}`
 ///
 /// Individual sessions append `_1`, `_2`, etc.
-pub fn tmux_session_prefix(collection_name: &str, project_name: &str) -> String {
-    format!("tws_{}_{}", slugify(collection_name), slugify(project_name))
+pub fn tmux_session_prefix(collection_name: &str, thread_name: &str) -> String {
+    format!("tws_{}_{}", slugify(collection_name), slugify(thread_name))
 }
 
 /// Generates a labeled tmux session name.
-/// Format: `tws_{collection_slug}_{project_slug}_{label_slug}`
-pub fn tmux_session_name_labeled(collection_name: &str, project_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_session_prefix(collection_name, project_name), slugify(label))
+/// Format: `tws_{collection_slug}_{thread_slug}_{label_slug}`
+pub fn tmux_session_name_labeled(collection_name: &str, thread_name: &str, label: &str) -> String {
+    format!("{}_{}", tmux_session_prefix(collection_name, thread_name), slugify(label))
 }
 
 #[cfg(test)]
@@ -98,21 +99,21 @@ mod tests {
     }
 
     #[test]
-    fn project_has_unique_id() {
-        let a = Project::new("Rust Book");
-        let b = Project::new("Rust Book");
+    fn thread_has_unique_id() {
+        let a = Thread::new("Rust Book");
+        let b = Thread::new("Rust Book");
         assert_ne!(a.id, b.id);
     }
 
     #[test]
     fn collection_starts_empty() {
         let c = Collection::new("Test");
-        assert!(c.projects.is_empty());
+        assert!(c.threads.is_empty());
     }
 
     #[test]
-    fn project_description_defaults_to_none() {
-        let p = Project::new("Test");
+    fn thread_description_defaults_to_none() {
+        let p = Thread::new("Test");
         assert!(p.description.is_none());
     }
 

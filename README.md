@@ -1,11 +1,11 @@
 # tws
 
-tmux workspace manager — organize sessions into collections and projects.
+tmux workspace manager — organize sessions into collections and threads.
 
-tws replaces tmux's built-in session picker (`prefix + s`) with a TUI that adds an organizational layer on top of tmux sessions. Group your sessions into **projects**, and projects into **collections**.
+tws replaces tmux's built-in session picker (`prefix + s`) with a TUI that adds an organizational layer on top of tmux sessions. Group your sessions into **threads**, and threads into **collections**.
 
 - **Collections** — top-level groups (e.g. "work", "personal", "infra")
-- **Projects** — within a collection, each with one or more tmux sessions
+- **Threads** — within a collection, each with one or more tmux sessions
 - **Sessions** — ephemeral tmux sessions, launched and managed from tws
 
 ## Install

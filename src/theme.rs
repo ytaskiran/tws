@@ -9,8 +9,8 @@ pub const DIM_TEXT: Color = Color::Rgb(160, 160, 160);
 
 // Tree hierarchy styles
 pub const COLLECTION_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
-pub const PROJECT_STYLE: Style = Style::new().fg(Color::White);
-pub const PROJECT_DIM_STYLE: Style = Style::new().fg(DIM_TEXT);
+pub const THREAD_STYLE: Style = Style::new().fg(Color::White);
+pub const THREAD_DIM_STYLE: Style = Style::new().fg(DIM_TEXT);
 pub const SESSION_STYLE: Style = Style::new().fg(SAGE_GREEN);
 pub const HIGHLIGHT_STYLE: Style = Style::new()
     .fg(Color::Black)

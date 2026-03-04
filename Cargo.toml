@@ -2,7 +2,7 @@
 name = "tws"
 version = "0.1.0"
 edition = "2024"
-description = "tmux workspace manager — organize sessions into collections and projects"
+description = "tmux workspace manager — organize sessions into collections and threads"
 authors = ["Yusuf Taskiran"]
 license = "MIT"
 repository = "https://github.com/ytaskiran/tws"

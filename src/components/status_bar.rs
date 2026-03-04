@@ -10,7 +10,7 @@ use crate::theme;
 pub enum StatusContext {
     NormalNone,
     NormalCollection,
-    NormalProject,
+    NormalThread,
     NormalSession,
     Input,
     Confirm,
@@ -22,14 +22,14 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::NormalCollection => &[
             ("q", "quit"),
             ("Space", "toggle"),
-            ("a", "add project"),
+            ("a", "add thread"),
             ("r", "rename"),
             ("d", "delete"),
         ],
-        StatusContext::NormalProject => &[
+        StatusContext::NormalThread => &[
             ("q", "quit"),
             ("Enter", "new session"),
-            ("a", "add project"),
+            ("a", "add thread"),
             ("r", "rename"),
             ("d", "delete"),
             ("x", "kill sessions"),

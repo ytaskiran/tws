@@ -66,7 +66,7 @@ pub fn save(collections: &[Collection]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::Project;
+    use crate::core::model::Thread;
     use std::env;
 
     fn with_temp_config<F: FnOnce()>(f: F) {
@@ -77,7 +77,7 @@ mod tests {
         let path = dir.join("state.json");
 
         let mut col = Collection::new("Test");
-        col.projects.push(Project::new("Project A"));
+        col.threads.push(Thread::new("Thread A"));
         let collections = vec![col];
 
         let data = serde_json::to_string_pretty(&collections).unwrap();
@@ -87,8 +87,8 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "Test");
-        assert_eq!(loaded[0].projects.len(), 1);
-        assert_eq!(loaded[0].projects[0].name, "Project A");
+        assert_eq!(loaded[0].threads.len(), 1);
+        assert_eq!(loaded[0].threads[0].name, "Thread A");
 
         fs::remove_dir_all(&dir).unwrap();
         f();
