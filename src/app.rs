@@ -263,6 +263,9 @@ impl App {
                     SelectedItem::None => {}
                 }
             }
+            KeyCode::Esc => {
+                self.tree_state.select(Vec::new());
+            }
             KeyCode::Char('a') => self.start_add(),
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('d') => self.start_delete(),
