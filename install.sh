@@ -100,7 +100,7 @@ install_binary() {
 
 configure_tmux() {
     printf '%s' "Add tws keybinding to tmux.conf? (prefix + s) [y/N] "
-    read -r answer
+    read -r answer < /dev/tty
 
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
         info "Skipped. To add manually, put this in your tmux.conf:"
