@@ -119,7 +119,7 @@ configure_tmux() {
     fi
 
     # Check if binding already exists
-    if grep -q "tws" "$tmux_conf" 2>/dev/null; then
+    if grep -q '^[^#]*display-popup.*tws' "$tmux_conf" 2>/dev/null; then
         ok "tws binding already exists in $tmux_conf — skipping"
         return
     fi
