@@ -97,32 +97,46 @@ install_binary() {
 configure_path() {
     local export_line='export PATH="$HOME/.local/bin:$PATH"'
 
-    # Detect shell rc file
-    local rc_file=""
+    # Detect shell rc and profile files
+    local rc_file="" profile_file=""
     case "$(basename "$SHELL")" in
-        zsh)  rc_file="$HOME/.zshrc" ;;
-        bash) rc_file="$HOME/.bashrc" ;;
+        zsh)
+            rc_file="$HOME/.zshrc"
+            profile_file="$HOME/.zprofile"
+            ;;
+        bash)
+            rc_file="$HOME/.bashrc"
+            profile_file="$HOME/.bash_profile"
+            ;;
     esac
 
     if [ -z "$rc_file" ]; then
-        info "Add this to your shell rc:"
+        info "Add this to your shell rc and profile:"
         echo "  $export_line"
         return
     fi
 
-    printf '%s' "Add $INSTALL_DIR to PATH in $rc_file? [y/N] "
+    printf '%s' "Add $INSTALL_DIR to PATH in $rc_file and $profile_file? [y/N] "
     read -r answer < /dev/tty
 
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped. Add this manually to $rc_file:"
+        info "Skipped. Add this manually to $rc_file and $profile_file:"
         echo "  $export_line"
         return
     fi
 
-    echo "" >> "$rc_file"
-    echo '# tws' >> "$rc_file"
-    echo "$export_line" >> "$rc_file"
-    ok "Added PATH entry to $rc_file (restart your shell or run: source $rc_file)"
+    for file in "$rc_file" "$profile_file"; do
+        if grep -q '$HOME/.local/bin' "$file" 2>/dev/null; then
+            ok "PATH entry already exists in $file — skipping"
+            continue
+        fi
+        echo "" >> "$file"
+        echo '# tws' >> "$file"
+        echo "$export_line" >> "$file"
+        ok "Added PATH entry to $file"
+    done
+
+    info "Restart your shell or run: source $rc_file"
 }
 
 # --- 4. Configure tmux ---
@@ -162,6 +176,12 @@ configure_tmux() {
     echo "" >> "$tmux_conf"
     echo "# tws — tmux workspace manager (prefix + s)" >> "$tmux_conf"
     echo "$BIND_LINE" >> "$tmux_conf"
+
+    # Ensure pre-existing tmux sessions pick up PATH changes
+    if ! grep -q 'update-environment.*PATH' "$tmux_conf" 2>/dev/null; then
+        echo 'set -ga update-environment " PATH"' >> "$tmux_conf"
+    fi
+
     ok "Added keybinding to $tmux_conf"
 }
 
