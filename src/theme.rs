@@ -37,3 +37,6 @@ pub const EMPTY_HINT_STYLE: Style = Style::new().fg(MUTED_TEXT);
 // Badges
 pub const BADGE_DOT_STYLE: Style = Style::new().fg(SAGE_GREEN);
 pub const BADGE_COUNT_STYLE: Style = Style::new().fg(MUTED_TEXT);
+
+// Flash messages
+pub const FLASH_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);

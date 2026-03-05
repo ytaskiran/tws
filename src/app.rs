@@ -54,6 +54,7 @@ pub struct App {
     pub running: bool,
     mode: Mode,
     last_refresh: Instant,
+    flash: Option<(String, Instant)>,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -67,7 +68,12 @@ impl App {
             running: true,
             mode: Mode::Normal,
             last_refresh: Instant::now(),
+            flash: None,
         }
+    }
+
+    fn set_flash(&mut self, msg: &str) {
+        self.flash = Some((msg.to_string(), Instant::now()));
     }
 
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
@@ -111,6 +117,17 @@ impl App {
     }
 
     fn draw(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
+        // Compute flash outside the closure — we need &mut self to expire it,
+        // but the closure also borrows self mutably via render_stateful_widget.
+        let flash_msg: Option<String> = match &self.flash {
+            Some((msg, t)) if t.elapsed() < Duration::from_secs(2) => Some(msg.clone()),
+            Some(_) => {
+                self.flash = None;
+                None
+            }
+            None => None,
+        };
+
         terminal.draw(|frame| {
             let area = frame.area();
             let chunks = Layout::vertical([
@@ -168,7 +185,7 @@ impl App {
             // Status bar
             let active_count = self.state.active_sessions.iter().filter(|s| s.alive).count();
             let status_ctx = self.status_context();
-            status_bar::render(frame, status_ctx, chunks[2], active_count);
+            status_bar::render(frame, status_ctx, chunks[2], active_count, flash_msg.as_deref());
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
@@ -424,6 +441,7 @@ impl App {
                 InputPurpose::AddCollection => {
                     self.state.add_collection(trimmed);
                     self.save_state();
+                    self.set_flash("Collection created");
                 }
                 InputPurpose::AddThread { collection_idx } => {
                     self.state.add_thread(collection_idx, trimmed);
@@ -431,6 +449,7 @@ impl App {
                     let col_id = self.state.collections[collection_idx].id.to_string();
                     self.tree_state.open(vec![col_id]);
                     self.save_state();
+                    self.set_flash("Thread added");
                 }
                 InputPurpose::RenameCollection { idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
@@ -452,6 +471,7 @@ impl App {
                     }
                     self.do_refresh_sessions();
                     self.save_state();
+                    self.set_flash("Collection renamed");
                 }
                 InputPurpose::RenameThread { col_idx, thread_idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
@@ -472,16 +492,19 @@ impl App {
                     }
                     self.do_refresh_sessions();
                     self.save_state();
+                    self.set_flash("Thread renamed");
                 }
                 InputPurpose::NewSession { col_idx, thread_idx } => {
                     if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
                         self.launch_session(&session_name, terminal)?;
+                        self.set_flash("Session launched");
                     }
                 }
                 InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
                     if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
                         let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
                         self.do_refresh_sessions();
+                        self.set_flash("Session renamed");
                     }
                 }
             }
@@ -516,6 +539,7 @@ impl App {
                     self.tree_state.select(new_sel);
                     self.save_state();
                     self.do_refresh_sessions();
+                    self.set_flash("Collection deleted");
                 }
                 ConfirmPurpose::DeleteThread { col_idx, thread_idx, .. } => {
                     // Refresh first so active_sessions is current.
@@ -539,10 +563,12 @@ impl App {
                     self.tree_state.select(new_sel);
                     self.save_state();
                     self.do_refresh_sessions();
+                    self.set_flash("Thread deleted");
                 }
                 ConfirmPurpose::KillSession { session_name } => {
                     let _ = tmux::kill_session(&session_name);
                     self.do_refresh_sessions();
+                    self.set_flash("Session killed");
                 }
                 ConfirmPurpose::KillAllSessions { col_idx, thread_idx, .. } => {
                     let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
@@ -556,6 +582,7 @@ impl App {
                         let _ = tmux::kill_session(&name);
                     }
                     self.do_refresh_sessions();
+                    self.set_flash("All sessions killed");
                 }
             }
         }

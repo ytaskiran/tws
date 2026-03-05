@@ -16,7 +16,7 @@ pub enum StatusContext {
     Confirm,
 }
 
-pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize) {
+pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>) {
     let hints: &[(&str, &str)] = match ctx {
         StatusContext::NormalNone => &[("q", "quit"), ("a", "add collection")],
         StatusContext::NormalCollection => &[
@@ -39,15 +39,19 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
     };
 
-    // Left side: key hints (plain, no pill background)
+    // Left side: flash message (if active) or key hints
     let mut left_spans = Vec::new();
-    for (i, (key, desc)) in hints.iter().enumerate() {
-        if i > 0 {
-            left_spans.push(Span::styled("   ", theme::STATUSBAR_DESC_STYLE));
+    if let Some(msg) = flash {
+        left_spans.push(Span::styled(msg, theme::FLASH_STYLE));
+    } else {
+        for (i, (key, desc)) in hints.iter().enumerate() {
+            if i > 0 {
+                left_spans.push(Span::styled("   ", theme::STATUSBAR_DESC_STYLE));
+            }
+            left_spans.push(Span::styled(*key, theme::STATUSBAR_KEY_STYLE));
+            left_spans.push(Span::styled(" · ", theme::STATUSBAR_DESC_STYLE));
+            left_spans.push(Span::styled(*desc, theme::STATUSBAR_DESC_STYLE));
         }
-        left_spans.push(Span::styled(*key, theme::STATUSBAR_KEY_STYLE));
-        left_spans.push(Span::styled(" · ", theme::STATUSBAR_DESC_STYLE));
-        left_spans.push(Span::styled(*desc, theme::STATUSBAR_DESC_STYLE));
     }
 
     // Right side: session count or app name

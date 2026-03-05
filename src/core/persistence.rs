@@ -10,7 +10,7 @@ pub struct UiState {
     pub selected: Option<Vec<String>>,
 }
 
-pub fn ui_state_file() -> PathBuf {
+fn ui_state_file() -> PathBuf {
     config_dir().join("ui-state.json")
 }
 
@@ -34,13 +34,13 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
     Ok(())
 }
 
-pub fn config_dir() -> PathBuf {
+fn config_dir() -> PathBuf {
     dirs::config_dir()
         .expect("could not determine config directory")
         .join("tws")
 }
 
-pub fn state_file() -> PathBuf {
+fn state_file() -> PathBuf {
     config_dir().join("state.json")
 }
 

@@ -46,7 +46,7 @@ impl Thread {
 
 /// Converts a string to a URL-style slug: lowercase, non-alphanumeric → hyphens,
 /// consecutive hyphens collapsed, leading/trailing hyphens stripped.
-pub fn slugify(s: &str) -> String {
+fn slugify(s: &str) -> String {
     let slug: String = s
         .to_lowercase()
         .chars()
