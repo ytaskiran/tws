@@ -89,11 +89,40 @@ install_binary() {
         *":$INSTALL_DIR:"*) ;;
         *)
             warn "$INSTALL_DIR is not in your PATH"
-            echo "  Add this to your shell rc (~/.bashrc, ~/.zshrc, etc.):"
-            echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-            echo ""
+            configure_path
             ;;
     esac
+}
+
+configure_path() {
+    local export_line='export PATH="$HOME/.local/bin:$PATH"'
+
+    # Detect shell rc file
+    local rc_file=""
+    case "$(basename "$SHELL")" in
+        zsh)  rc_file="$HOME/.zshrc" ;;
+        bash) rc_file="$HOME/.bashrc" ;;
+    esac
+
+    if [ -z "$rc_file" ]; then
+        info "Add this to your shell rc:"
+        echo "  $export_line"
+        return
+    fi
+
+    printf '%s' "Add $INSTALL_DIR to PATH in $rc_file? [y/N] "
+    read -r answer < /dev/tty
+
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped. Add this manually to $rc_file:"
+        echo "  $export_line"
+        return
+    fi
+
+    echo "" >> "$rc_file"
+    echo '# tws' >> "$rc_file"
+    echo "$export_line" >> "$rc_file"
+    ok "Added PATH entry to $rc_file (restart your shell or run: source $rc_file)"
 }
 
 # --- 4. Configure tmux ---
