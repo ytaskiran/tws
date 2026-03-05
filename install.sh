@@ -5,6 +5,7 @@ REPO="ytaskiran/tws"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 BIND_LINE='bind-key s display-popup -E -w 80% -h 80% "tws"'
+tmpdir=""
 
 # --- Helpers ---
 
@@ -63,9 +64,8 @@ get_binary() {
     local url="https://github.com/$REPO/releases/download/${latest_tag}/${archive}"
 
     info "Downloading $archive..."
-    local tmpdir
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    trap 'rm -rf "$tmpdir"' EXIT  # safe: tmpdir is global, initialized to ""
 
     curl -fSL --progress-bar "$url" -o "$tmpdir/$archive" \
         || err "Download failed. Is there a release for $target?"
