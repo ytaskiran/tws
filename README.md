@@ -27,7 +27,7 @@ Run the same command again. It fetches the latest release and replaces the binar
 If you skipped the tmux setup during install, add this to your `tmux.conf`:
 
 ```
-bind-key s display-popup -E -w 80% -h 80% "tws"
+bind-key s display-popup -E -w 100% -h 100% -b none "tws"
 ```
 
 ## Usage
