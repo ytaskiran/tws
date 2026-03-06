@@ -58,7 +58,7 @@ pub struct App {
 }
 
 /// How often to poll tmux for session changes (seconds).
-const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 impl App {
     pub fn new(state: AppState) -> Self {
