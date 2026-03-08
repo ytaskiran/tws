@@ -22,6 +22,8 @@ pub struct Session {
     pub display_name: String,
     pub thread_id: Uuid,
     pub alive: bool,
+    /// Unix timestamp of last attachment (0 = unknown). Used for recent-sessions bar.
+    pub last_attached: i64,
 }
 
 impl Collection {

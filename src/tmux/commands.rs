@@ -29,6 +29,32 @@ pub fn list_tws_sessions() -> Vec<String> {
         .collect()
 }
 
+/// Returns tws-prefixed sessions with their `last_attached` Unix timestamps.
+/// Each entry is `(session_name, last_attached_timestamp)`.
+pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}\t#{session_last_attached}"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    let (name, ts_str) = line.split_once('\t')?;
+                    if !name.starts_with("tws_") {
+                        return None;
+                    }
+                    let ts = ts_str.parse::<i64>().unwrap_or(0);
+                    Some((name.to_string(), ts))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Checks whether a tmux session with the given name exists.
 pub fn has_session(name: &str) -> bool {
     Command::new("tmux")

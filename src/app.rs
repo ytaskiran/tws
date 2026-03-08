@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{confirm_modal, input_modal, tree_view};
+use crate::components::{confirm_modal, input_modal, recent_bar, tree_view};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
 use crate::event;
@@ -128,14 +128,52 @@ impl App {
             None => None,
         };
 
+        // Pre-compute recent sessions data outside the closure to avoid borrow conflicts.
+        // Only show the bar in Normal mode when there are recent sessions.
+        let is_normal = matches!(self.mode, Mode::Normal);
+        let recent_data: Vec<(String, String)> = if is_normal {
+            self.state
+                .recent_sessions(5)
+                .iter()
+                .filter_map(|s| {
+                    let (col_name, thread_name) = self.state.resolve_thread_path(s.thread_id)?;
+                    let path = format!("{}/{}/{}", col_name, thread_name, s.display_name);
+                    Some((s.tmux_session_name.clone(), path))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let recent_count = recent_data.len() as u16;
+        let show_recent = !recent_data.is_empty();
+
         terminal.draw(|frame| {
             let area = frame.area();
-            let chunks = Layout::vertical([
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
+
+            // Build layout: tree, [recent bar], separator, status bar
+            let constraints = if show_recent {
+                vec![
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(recent_count),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ]
+            } else {
+                vec![
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ]
+            };
+            let chunks = Layout::vertical(constraints).split(area);
+
+            // Index variables for separator and status bar positions
+            let (recent_sep_idx, recent_idx, sep_idx, status_idx) = if show_recent {
+                (Some(1), Some(2), 3, 4)
+            } else {
+                (None, None, 1, 2)
+            };
 
             // Tree area or empty state
             let block = Block::default();
@@ -175,17 +213,31 @@ impl App {
                 frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
             }
 
+            // Separator between tree and recent bar
+            if let Some(idx) = recent_sep_idx {
+                let sep = "\u{2500}".repeat(chunks[idx].width as usize);
+                frame.render_widget(
+                    Paragraph::new(Line::styled(sep, theme::SEPARATOR_STYLE)),
+                    chunks[idx],
+                );
+            }
+
+            // Recent sessions bar (only in Normal mode with active sessions)
+            if let Some(idx) = recent_idx {
+                recent_bar::render(frame, &recent_data, chunks[idx]);
+            }
+
             // Separator line
-            let separator = "\u{2500}".repeat(chunks[1].width as usize);
+            let separator = "\u{2500}".repeat(chunks[sep_idx].width as usize);
             frame.render_widget(
                 Paragraph::new(Line::styled(separator, theme::SEPARATOR_STYLE)),
-                chunks[1],
+                chunks[sep_idx],
             );
 
             // Status bar
             let active_count = self.state.active_sessions.iter().filter(|s| s.alive).count();
             let status_ctx = self.status_context();
-            status_bar::render(frame, status_ctx, chunks[2], active_count, flash_msg.as_deref());
+            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref());
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
@@ -287,6 +339,13 @@ impl App {
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.start_kill_session(),
+            KeyCode::Char(c @ '1'..='5') => {
+                let recent = self.state.recent_sessions(5);
+                if let Some(session) = recent.get((c as usize) - ('1' as usize)) {
+                    let name = session.tmux_session_name.clone();
+                    self.attach_to_session(&name, terminal)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -612,7 +671,7 @@ impl App {
     }
 
     fn do_refresh_sessions(&mut self) {
-        let live = tmux::list_tws_sessions();
+        let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
     }

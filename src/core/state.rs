@@ -193,13 +193,15 @@ impl AppState {
     /// Refresh active_sessions by matching live tmux session names against
     /// our collection/thread hierarchy. Matches by prefix to support
     /// multiple labeled sessions per thread (e.g. `tws_work_pipeline_bugfix`).
-    pub fn refresh_sessions(&mut self, live_tmux_sessions: &[String]) {
+    ///
+    /// Each entry is `(session_name, last_attached_timestamp)`.
+    pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
         self.active_sessions.clear();
 
         for col in &self.collections {
             for thread in &col.threads {
                 let prefix = tmux_session_prefix(&col.name, &thread.name);
-                for session_name in live_tmux_sessions {
+                for (session_name, last_attached) in live_tmux_sessions {
                     // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix) {
                         if let Some(label) = rest.strip_prefix('_') {
@@ -209,6 +211,7 @@ impl AppState {
                                     display_name: label.to_string(),
                                     thread_id: thread.id,
                                     alive: true,
+                                    last_attached: *last_attached,
                                 });
                             }
                         }
@@ -216,6 +219,32 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Given a thread ID, find its collection and thread names.
+    /// Returns `(collection_name, thread_name)`.
+    pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(String, String)> {
+        for col in &self.collections {
+            for thread in &col.threads {
+                if thread.id == thread_id {
+                    return Some((col.name.clone(), thread.name.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the `n` most recently attached alive sessions, sorted by
+    /// recency (most recent first). Sessions with `last_attached == 0` are excluded.
+    pub fn recent_sessions(&self, n: usize) -> Vec<&Session> {
+        let mut recent: Vec<&Session> = self
+            .active_sessions
+            .iter()
+            .filter(|s| s.alive && s.last_attached > 0)
+            .collect();
+        recent.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
+        recent.truncate(n);
+        recent
     }
 
     fn find_collection_idx(&self, uuid_str: &str) -> Option<usize> {
@@ -350,8 +379,8 @@ mod tests {
     fn refresh_sessions_discovers_labeled() {
         let mut state = AppState::with_sample_data();
         let live = vec![
-            "tws_work_edge-device-pipeline_bugfix".to_string(),
-            "tws_work_edge-device-pipeline_hotfix".to_string(),
+            ("tws_work_edge-device-pipeline_bugfix".to_string(), 0),
+            ("tws_work_edge-device-pipeline_hotfix".to_string(), 0),
         ];
         state.refresh_sessions(&live);
         assert_eq!(state.active_sessions.len(), 2);
@@ -366,7 +395,7 @@ mod tests {
     #[test]
     fn refresh_sessions_ignores_non_matching() {
         let mut state = AppState::with_sample_data();
-        let live = vec!["some-other-session".to_string()];
+        let live = vec![("some-other-session".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.active_sessions.is_empty());
     }
@@ -375,7 +404,7 @@ mod tests {
     fn refresh_sessions_ignores_bare_prefix() {
         let mut state = AppState::with_sample_data();
         // The bare prefix without _label should NOT match
-        let live = vec!["tws_work_edge-device-pipeline".to_string()];
+        let live = vec![("tws_work_edge-device-pipeline".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.active_sessions.is_empty());
     }
@@ -384,7 +413,7 @@ mod tests {
     fn has_active_session_works() {
         let mut state = AppState::with_sample_data();
         assert!(!state.has_active_session(0, 0));
-        let live = vec!["tws_work_edge-device-pipeline_bugfix".to_string()];
+        let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.has_active_session(0, 0));
         assert!(!state.has_active_session(0, 1));
@@ -393,7 +422,7 @@ mod tests {
     #[test]
     fn resolve_session_selection() {
         let mut state = AppState::with_sample_data();
-        let live = vec!["tws_work_edge-device-pipeline_bugfix".to_string()];
+        let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 0)];
         state.refresh_sessions(&live);
 
         let col_id = state.collections[0].id.to_string();
@@ -413,8 +442,8 @@ mod tests {
     fn resolve_session_selection_multiple() {
         let mut state = AppState::with_sample_data();
         let live = vec![
-            "tws_work_edge-device-pipeline_bugfix".to_string(),
-            "tws_work_edge-device-pipeline_hotfix".to_string(),
+            ("tws_work_edge-device-pipeline_bugfix".to_string(), 0),
+            ("tws_work_edge-device-pipeline_hotfix".to_string(), 0),
         ];
         state.refresh_sessions(&live);
 
@@ -427,5 +456,28 @@ mod tests {
             SelectedItem::Session(_, _, sess_idx) => assert_eq!(sess_idx, 1),
             _ => panic!("expected Session"),
         }
+    }
+
+    #[test]
+    fn recent_sessions_sorted_by_recency() {
+        let mut state = AppState::with_sample_data();
+        let live = vec![
+            ("tws_work_edge-device-pipeline_bugfix".to_string(), 1000),
+            ("tws_work_edge-device-pipeline_hotfix".to_string(), 3000),
+            ("tws_work_model-training-infra_main".to_string(), 2000),
+        ];
+        state.refresh_sessions(&live);
+
+        let recent = state.recent_sessions(5);
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].display_name, "hotfix");       // ts 3000
+        assert_eq!(recent[1].display_name, "main");          // ts 2000
+        assert_eq!(recent[2].display_name, "bugfix");        // ts 1000
+
+        // Truncation works
+        let recent2 = state.recent_sessions(2);
+        assert_eq!(recent2.len(), 2);
+        assert_eq!(recent2[0].display_name, "hotfix");
+        assert_eq!(recent2[1].display_name, "main");
     }
 }

@@ -40,3 +40,7 @@ pub const BADGE_COUNT_STYLE: Style = Style::new().fg(MUTED_TEXT);
 
 // Flash messages
 pub const FLASH_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+
+// Recent sessions bar
+pub const RECENT_NUMBER_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+pub const RECENT_NAME_STYLE: Style = Style::new().fg(DIM_TEXT);
