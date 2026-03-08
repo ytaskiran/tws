@@ -19,7 +19,7 @@ pub fn build_tree_items<'a>(state: &'a AppState) -> Vec<TreeItem<'a, String>> {
                     let session_children: Vec<TreeItem<'a, String>> = state
                         .active_sessions
                         .iter()
-                        .filter(|s| s.thread_id == thread.id && s.alive)
+                        .filter(|s| s.thread_id == thread.id)
                         .map(|s| {
                             TreeItem::new_leaf(
                                 s.tmux_session_name.clone(),

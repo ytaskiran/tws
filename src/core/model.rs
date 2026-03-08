@@ -21,7 +21,6 @@ pub struct Session {
     pub tmux_session_name: String,
     pub display_name: String,
     pub thread_id: Uuid,
-    pub alive: bool,
     /// Unix timestamp of last attachment (0 = unknown). Used for recent-sessions bar.
     pub last_attached: i64,
 }

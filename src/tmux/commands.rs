@@ -21,14 +21,6 @@ pub fn list_sessions() -> Vec<String> {
     }
 }
 
-/// Returns only sessions whose names start with "tws_".
-pub fn list_tws_sessions() -> Vec<String> {
-    list_sessions()
-        .into_iter()
-        .filter(|name| name.starts_with("tws_"))
-        .collect()
-}
-
 /// Returns tws-prefixed sessions with their `last_attached` Unix timestamps.
 /// Each entry is `(session_name, last_attached_timestamp)`.
 pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
@@ -53,15 +45,6 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
         }
         _ => Vec::new(),
     }
-}
-
-/// Checks whether a tmux session with the given name exists.
-pub fn has_session(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", name])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
 }
 
 /// Creates a new detached tmux session with the given name.

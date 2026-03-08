@@ -21,36 +21,6 @@ pub enum SelectedItem {
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
-            collections: Vec::new(),
-            active_sessions: Vec::new(),
-        }
-    }
-
-    /// Creates sample data for development/testing.
-    pub fn with_sample_data() -> Self {
-        let mut work = Collection::new("Work");
-        work.threads.push(Thread::new("Edge Device Pipeline"));
-        work.threads.push(Thread::new("Model Training Infra"));
-        work.threads.push(Thread::new("CI/CD Overhaul"));
-
-        let mut learning = Collection::new("Learning");
-        learning.threads.push(Thread::new("Rust Book"));
-        learning.threads.push(Thread::new("Ratatui Experiments"));
-
-        let mut podcast = Collection::new("Derin Notlar Podcast");
-        podcast.threads.push(Thread::new("Episode 12"));
-        podcast.threads.push(Thread::new("Episode 13 - Planning"));
-
-        let personal = Collection::new("Personal");
-
-        Self {
-            collections: vec![work, learning, podcast, personal],
-            active_sessions: Vec::new(),
-        }
-    }
-
     /// Resolve a tree selection path (from TreeState::selected()) to a SelectedItem.
     pub fn resolve_selection(&self, selected: &[String]) -> SelectedItem {
         match selected.len() {
@@ -158,13 +128,6 @@ impl AppState {
         }
     }
 
-    /// Generate the session prefix for a given collection/thread index pair.
-    pub fn session_prefix_for(&self, col_idx: usize, thread_idx: usize) -> Option<String> {
-        let col = self.collections.get(col_idx)?;
-        let thread = col.threads.get(thread_idx)?;
-        Some(tmux_session_prefix(&col.name, &thread.name))
-    }
-
     /// Generate a labeled session name for a thread using the user-provided label.
     pub fn make_session_name(&self, col_idx: usize, thread_idx: usize, label: &str) -> Option<String> {
         let col = self.collections.get(col_idx)?;
@@ -176,7 +139,7 @@ impl AppState {
     pub fn sessions_for_thread(&self, thread_id: Uuid) -> Vec<&Session> {
         self.active_sessions
             .iter()
-            .filter(|s| s.thread_id == thread_id && s.alive)
+            .filter(|s| s.thread_id == thread_id)
             .collect()
     }
 
@@ -184,7 +147,7 @@ impl AppState {
     pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
         if let Some(col) = self.collections.get(col_idx) {
             if let Some(thread) = col.threads.get(thread_idx) {
-                return self.active_sessions.iter().any(|s| s.thread_id == thread.id && s.alive);
+                return self.active_sessions.iter().any(|s| s.thread_id == thread.id);
             }
         }
         false
@@ -210,7 +173,6 @@ impl AppState {
                                     tmux_session_name: session_name.clone(),
                                     display_name: label.to_string(),
                                     thread_id: thread.id,
-                                    alive: true,
                                     last_attached: *last_attached,
                                 });
                             }
@@ -234,13 +196,13 @@ impl AppState {
         None
     }
 
-    /// Returns the `n` most recently attached alive sessions, sorted by
+    /// Returns the `n` most recently attached sessions, sorted by
     /// recency (most recent first). Sessions with `last_attached == 0` are excluded.
     pub fn recent_sessions(&self, n: usize) -> Vec<&Session> {
         let mut recent: Vec<&Session> = self
             .active_sessions
             .iter()
-            .filter(|s| s.alive && s.last_attached > 0)
+            .filter(|s| s.last_attached > 0)
             .collect();
         recent.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
         recent.truncate(n);
@@ -259,6 +221,46 @@ impl AppState {
             .threads
             .iter()
             .position(|p| p.id == id)
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            collections: Vec::new(),
+            active_sessions: Vec::new(),
+        }
+    }
+
+    /// Creates sample data for development/testing.
+    pub fn with_sample_data() -> Self {
+        let mut work = Collection::new("Work");
+        work.threads.push(Thread::new("Edge Device Pipeline"));
+        work.threads.push(Thread::new("Model Training Infra"));
+        work.threads.push(Thread::new("CI/CD Overhaul"));
+
+        let mut learning = Collection::new("Learning");
+        learning.threads.push(Thread::new("Rust Book"));
+        learning.threads.push(Thread::new("Ratatui Experiments"));
+
+        let mut podcast = Collection::new("Derin Notlar Podcast");
+        podcast.threads.push(Thread::new("Episode 12"));
+        podcast.threads.push(Thread::new("Episode 13 - Planning"));
+
+        let personal = Collection::new("Personal");
+
+        Self {
+            collections: vec![work, learning, podcast, personal],
+            active_sessions: Vec::new(),
+        }
+    }
+
+    /// Generate the session prefix for a given collection/thread index pair.
+    pub fn session_prefix_for(&self, col_idx: usize, thread_idx: usize) -> Option<String> {
+        let col = self.collections.get(col_idx)?;
+        let thread = col.threads.get(thread_idx)?;
+        Some(tmux_session_prefix(&col.name, &thread.name))
     }
 }
 

@@ -128,7 +128,8 @@ impl App {
             None => None,
         };
 
-        // Pre-compute recent sessions data outside the closure to avoid borrow conflicts.
+        // Pre-compute recent sessions data outside the closure for readability.
+        // (Only flash_msg *must* be outside — it mutates self.flash on expiry.)
         // Only show the bar in Normal mode when there are recent sessions.
         let is_normal = matches!(self.mode, Mode::Normal);
         let recent_data: Vec<(String, String)> = if is_normal {
@@ -150,7 +151,7 @@ impl App {
         terminal.draw(|frame| {
             let area = frame.area();
 
-            // Build layout: tree, [recent bar], separator, status bar
+            // Build layout: tree, [separator, recent bar], separator, status bar
             let constraints = if show_recent {
                 vec![
                     Constraint::Min(0),
@@ -235,7 +236,7 @@ impl App {
             );
 
             // Status bar
-            let active_count = self.state.active_sessions.iter().filter(|s| s.alive).count();
+            let active_count = self.state.active_sessions.len();
             let status_ctx = self.status_context();
             status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref());
 

@@ -18,7 +18,6 @@ pub const HIGHLIGHT_STYLE: Style = Style::new()
     .add_modifier(Modifier::BOLD);
 
 // Chrome
-pub const BORDER_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
 pub const SEPARATOR_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
 
 // Status bar — intentionally very dim/receded
