@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{confirm_modal, input_modal, recent_bar, tree_view};
+use crate::components::{confirm_modal, finder_modal, input_modal, recent_bar, tree_view};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
 use crate::event;
@@ -37,6 +37,45 @@ enum ConfirmPurpose {
     KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
 }
 
+struct FinderState {
+    query: String,
+    /// (tmux_session_name, "Collection/Thread/session_label"), sorted by recency.
+    all_entries: Vec<(String, String)>,
+    /// Indices into all_entries matching current query.
+    filtered: Vec<usize>,
+    /// Cursor position within filtered.
+    cursor: usize,
+}
+
+impl FinderState {
+    fn new(entries: Vec<(String, String)>) -> Self {
+        let filtered = (0..entries.len()).collect();
+        Self {
+            query: String::new(),
+            all_entries: entries,
+            filtered,
+            cursor: 0,
+        }
+    }
+
+    fn update_filter(&mut self) {
+        let q = self.query.to_lowercase();
+        self.filtered = if q.is_empty() {
+            (0..self.all_entries.len()).collect()
+        } else {
+            self.all_entries
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, path))| path.to_lowercase().contains(&q))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if self.cursor >= self.filtered.len() {
+            self.cursor = self.filtered.len().saturating_sub(1);
+        }
+    }
+}
+
 enum Mode {
     Normal,
     Input {
@@ -45,6 +84,9 @@ enum Mode {
     },
     Confirm {
         purpose: ConfirmPurpose,
+    },
+    Finder {
+        state: FinderState,
     },
 }
 
@@ -109,6 +151,9 @@ impl App {
                     Mode::Normal => self.handle_normal_key(key.code, terminal)?,
                     Mode::Input { .. } => self.handle_input_key(key.code, terminal)?,
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code),
+                    Mode::Finder { .. } => {
+                        self.handle_finder_key(key.code, key.modifiers, terminal)?
+                    }
                 }
             }
         }
@@ -271,6 +316,16 @@ impl App {
                     };
                     confirm_modal::render(frame, &message, area);
                 }
+                Mode::Finder { state } => {
+                    finder_modal::render(
+                        frame,
+                        &state.query,
+                        &state.all_entries,
+                        &state.filtered,
+                        state.cursor,
+                        area,
+                    );
+                }
             }
         })?;
         Ok(())
@@ -281,6 +336,7 @@ impl App {
         match &self.mode {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
+            Mode::Finder { .. } => StatusContext::Finder,
             Mode::Normal => {
                 let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
@@ -340,6 +396,13 @@ impl App {
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.start_kill_session(),
+            KeyCode::Char('/') => {
+                if self.state.active_sessions.is_empty() {
+                    self.set_flash("No active sessions");
+                    return Ok(());
+                }
+                self.start_finder();
+            }
             KeyCode::Char(c @ '1'..='5') => {
                 let recent = self.state.recent_sessions(5);
                 if let Some(session) = recent.get((c as usize) - ('1' as usize)) {
@@ -487,6 +550,78 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn start_finder(&mut self) {
+        let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
+        sessions.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
+
+        let entries: Vec<(String, String)> = sessions
+            .iter()
+            .filter_map(|s| {
+                let (col, thread) = self.state.resolve_thread_path(s.thread_id)?;
+                Some((
+                    s.tmux_session_name.clone(),
+                    format!("{}/{}/{}", col, thread, s.display_name),
+                ))
+            })
+            .collect();
+
+        self.mode = Mode::Finder {
+            state: FinderState::new(entries),
+        };
+    }
+
+    fn handle_finder_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let nav_down = code == KeyCode::Down || (ctrl && code == KeyCode::Char('j'));
+        let nav_up = code == KeyCode::Up || (ctrl && code == KeyCode::Char('k'));
+
+        if nav_down {
+            if let Mode::Finder { state } = &mut self.mode {
+                if !state.filtered.is_empty() {
+                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+                }
+            }
+        } else if nav_up {
+            if let Mode::Finder { state } = &mut self.mode {
+                state.cursor = state.cursor.saturating_sub(1);
+            }
+        } else {
+            match code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Enter => {
+                    let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+                    if let Mode::Finder { state } = old_mode {
+                        if let Some(&idx) = state.filtered.get(state.cursor) {
+                            let name = state.all_entries[idx].0.clone();
+                            self.attach_to_session(&name, terminal)?;
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Mode::Finder { state } = &mut self.mode {
+                        state.query.pop();
+                        state.update_filter();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Mode::Finder { state } = &mut self.mode {
+                        state.query.push(c);
+                        state.update_filter();
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn confirm_input(&mut self, terminal: &mut Tui) -> std::io::Result<()> {

@@ -14,17 +14,19 @@ pub enum StatusContext {
     NormalSession,
     Input,
     Confirm,
+    Finder,
 }
 
 pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>) {
     let hints: &[(&str, &str)] = match ctx {
-        StatusContext::NormalNone => &[("q", "quit"), ("a", "add collection")],
+        StatusContext::NormalNone => &[("q", "quit"), ("a", "add collection"), ("/", "find")],
         StatusContext::NormalCollection => &[
             ("q", "quit"),
             ("Space", "toggle"),
             ("a", "add thread"),
             ("r", "rename"),
             ("d", "delete"),
+            ("/", "find"),
         ],
         StatusContext::NormalThread => &[
             ("q", "quit"),
@@ -33,10 +35,12 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             ("r", "rename"),
             ("d", "delete"),
             ("x", "kill sessions"),
+            ("/", "find"),
         ],
-        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("x", "kill")],
+        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("x", "kill"), ("/", "find")],
         StatusContext::Input => &[("Enter", "confirm"), ("Esc", "cancel")],
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
+        StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
     };
 
     // Left side: flash message (if active) or key hints

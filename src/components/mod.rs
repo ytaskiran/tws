@@ -1,4 +1,5 @@
 pub mod confirm_modal;
+pub mod finder_modal;
 pub mod input_modal;
 pub mod recent_bar;
 pub mod status_bar;
