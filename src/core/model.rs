@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub struct Collection {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub is_root: bool,
     pub threads: Vec<Thread>,
 }
 
@@ -30,6 +32,16 @@ impl Collection {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
+            is_root: false,
+            threads: Vec::new(),
+        }
+    }
+
+    pub fn new_root() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            is_root: true,
             threads: Vec::new(),
         }
     }
@@ -71,6 +83,18 @@ fn slugify(s: &str) -> String {
 
     // Strip leading/trailing hyphens
     result.trim_matches('-').to_string()
+}
+
+/// Generates the base prefix for root thread tmux sessions.
+/// Format: `twsr_{thread_slug}`
+pub fn tmux_root_session_prefix(thread_name: &str) -> String {
+    format!("twsr_{}", slugify(thread_name))
+}
+
+/// Generates a labeled tmux session name for a root thread.
+/// Format: `twsr_{thread_slug}_{label_slug}`
+pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String {
+    format!("{}_{}", tmux_root_session_prefix(thread_name), slugify(label))
 }
 
 /// Generates the base prefix for tmux session names for a given collection/thread.
@@ -159,6 +183,30 @@ mod tests {
         assert_eq!(
             tmux_session_name_labeled("Work", "Edge Device Pipeline", "Hot Fix 2"),
             "tws_work_edge-device-pipeline_hot-fix-2"
+        );
+    }
+
+    #[test]
+    fn tmux_root_session_prefix_format() {
+        assert_eq!(
+            tmux_root_session_prefix("general"),
+            "twsr_general"
+        );
+        assert_eq!(
+            tmux_root_session_prefix("My Quick Thread"),
+            "twsr_my-quick-thread"
+        );
+    }
+
+    #[test]
+    fn tmux_root_session_name_labeled_format() {
+        assert_eq!(
+            tmux_root_session_name_labeled("general", "bugfix"),
+            "twsr_general_bugfix"
+        );
+        assert_eq!(
+            tmux_root_session_name_labeled("My Quick Thread", "Hot Fix 2"),
+            "twsr_my-quick-thread_hot-fix-2"
         );
     }
 

@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use super::model::{Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix};
+use super::model::{Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
 
 pub struct AppState {
     pub collections: Vec<Collection>,
@@ -22,29 +22,44 @@ pub enum SelectedItem {
 
 impl AppState {
     /// Resolve a tree selection path (from TreeState::selected()) to a SelectedItem.
+    ///
+    /// Path lengths:
+    /// - 0 → None
+    /// - 1 → collection UUID, or root thread UUID
+    /// - 2 → (col_uuid, thread_uuid) for regular threads, or (thread_uuid, session_name) for root sessions
+    /// - 3 → (col_uuid, thread_uuid, session_name) for regular sessions
     pub fn resolve_selection(&self, selected: &[String]) -> SelectedItem {
         match selected.len() {
             0 => SelectedItem::None,
             1 => {
                 let id = &selected[0];
+                // Try collection first, then root thread
                 if let Some(idx) = self.find_collection_idx(id) {
                     SelectedItem::Collection(idx)
+                } else if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(id) {
+                    SelectedItem::Thread(col_idx, thread_idx)
                 } else {
                     SelectedItem::None
                 }
             }
             2 => {
-                let col_id = &selected[0];
-                let thread_id = &selected[1];
-                if let Some(col_idx) = self.find_collection_idx(col_id) {
-                    if let Some(thread_idx) = self.find_thread_idx(col_idx, thread_id) {
-                        SelectedItem::Thread(col_idx, thread_idx)
-                    } else {
-                        SelectedItem::None
+                let first = &selected[0];
+                let second = &selected[1];
+                // Try regular thread first (col_uuid + thread_uuid)
+                if let Some(col_idx) = self.find_collection_idx(first) {
+                    if let Some(thread_idx) = self.find_thread_idx(col_idx, second) {
+                        return SelectedItem::Thread(col_idx, thread_idx);
                     }
-                } else {
-                    SelectedItem::None
                 }
+                // Try root session (thread_uuid + session_name)
+                if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(first) {
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *second) {
+                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                    }
+                }
+                SelectedItem::None
             }
             _ => {
                 // Depth 3: collection / thread / session
@@ -132,7 +147,11 @@ impl AppState {
     pub fn make_session_name(&self, col_idx: usize, thread_idx: usize, label: &str) -> Option<String> {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
-        Some(tmux_session_name_labeled(&col.name, &thread.name, label))
+        if col.is_root {
+            Some(tmux_root_session_name_labeled(&thread.name, label))
+        } else {
+            Some(tmux_session_name_labeled(&col.name, &thread.name, label))
+        }
     }
 
     /// Get all active sessions belonging to a given thread.
@@ -163,7 +182,11 @@ impl AppState {
 
         for col in &self.collections {
             for thread in &col.threads {
-                let prefix = tmux_session_prefix(&col.name, &thread.name);
+                let prefix = if col.is_root {
+                    tmux_root_session_prefix(&thread.name)
+                } else {
+                    tmux_session_prefix(&col.name, &thread.name)
+                };
                 for (session_name, last_attached) in live_tmux_sessions {
                     // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix) {
@@ -183,13 +206,23 @@ impl AppState {
         }
     }
 
+    /// Format a session's display path: `Collection/Thread/label` or `Thread/label` for root threads.
+    pub fn session_display_path(&self, session: &Session) -> Option<String> {
+        let (col_name, thread_name) = self.resolve_thread_path(session.thread_id)?;
+        Some(match col_name {
+            Some(c) => format!("{}/{}/{}", c, thread_name, session.display_name),
+            None => format!("{}/{}", thread_name, session.display_name),
+        })
+    }
+
     /// Given a thread ID, find its collection and thread names.
-    /// Returns `(collection_name, thread_name)`.
-    pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(String, String)> {
+    /// Returns `(Option<collection_name>, thread_name)`. Collection name is `None` for root threads.
+    pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(Option<String>, String)> {
         for col in &self.collections {
             for thread in &col.threads {
                 if thread.id == thread_id {
-                    return Some((col.name.clone(), thread.name.clone()));
+                    let col_name = if col.is_root { None } else { Some(col.name.clone()) };
+                    return Some((col_name, thread.name.clone()));
                 }
             }
         }
@@ -207,6 +240,49 @@ impl AppState {
         recent.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
         recent.truncate(n);
         recent
+    }
+
+    /// Find the index of the root collection (where `is_root == true`).
+    pub fn find_root_collection_idx(&self) -> Option<usize> {
+        self.collections.iter().position(|c| c.is_root)
+    }
+
+    /// Find a thread within the root collection by UUID string.
+    /// Returns `(col_idx, thread_idx)`.
+    pub fn find_root_thread_by_uuid(&self, uuid_str: &str) -> Option<(usize, usize)> {
+        let id: Uuid = uuid_str.parse().ok()?;
+        let col_idx = self.find_root_collection_idx()?;
+        let thread_idx = self.collections[col_idx]
+            .threads
+            .iter()
+            .position(|t| t.id == id)?;
+        Some((col_idx, thread_idx))
+    }
+
+    /// Returns the index of the root collection, creating one if it doesn't exist.
+    pub fn ensure_root_collection(&mut self) -> usize {
+        if let Some(idx) = self.find_root_collection_idx() {
+            idx
+        } else {
+            self.collections.push(Collection::new_root());
+            self.collections.len() - 1
+        }
+    }
+
+    /// Ensures the root collection has a "general" thread.
+    /// Returns `(col_idx, thread_idx)`.
+    pub fn ensure_general_thread(&mut self) -> (usize, usize) {
+        let col_idx = self.ensure_root_collection();
+        if let Some(thread_idx) = self.collections[col_idx]
+            .threads
+            .iter()
+            .position(|t| t.name == "general")
+        {
+            (col_idx, thread_idx)
+        } else {
+            self.collections[col_idx].threads.push(Thread::new("general"));
+            (col_idx, self.collections[col_idx].threads.len() - 1)
+        }
     }
 
     fn find_collection_idx(&self, uuid_str: &str) -> Option<usize> {
@@ -260,7 +336,11 @@ impl AppState {
     pub fn session_prefix_for(&self, col_idx: usize, thread_idx: usize) -> Option<String> {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
-        Some(tmux_session_prefix(&col.name, &thread.name))
+        if col.is_root {
+            Some(tmux_root_session_prefix(&thread.name))
+        } else {
+            Some(tmux_session_prefix(&col.name, &thread.name))
+        }
     }
 }
 
@@ -458,6 +538,156 @@ mod tests {
             SelectedItem::Session(_, _, sess_idx) => assert_eq!(sess_idx, 1),
             _ => panic!("expected Session"),
         }
+    }
+
+    #[test]
+    fn ensure_root_collection_creates_once() {
+        let mut state = AppState::new();
+        let idx1 = state.ensure_root_collection();
+        let idx2 = state.ensure_root_collection();
+        assert_eq!(idx1, idx2);
+        assert_eq!(state.collections.len(), 1);
+        assert!(state.collections[idx1].is_root);
+    }
+
+    #[test]
+    fn ensure_general_thread_creates_once() {
+        let mut state = AppState::new();
+        let (c1, t1) = state.ensure_general_thread();
+        let (c2, t2) = state.ensure_general_thread();
+        assert_eq!((c1, t1), (c2, t2));
+        assert_eq!(state.collections[c1].threads.len(), 1);
+        assert_eq!(state.collections[c1].threads[t1].name, "general");
+    }
+
+    #[test]
+    fn refresh_sessions_discovers_root_sessions() {
+        let mut state = AppState::new();
+        let (col_idx, _) = state.ensure_general_thread();
+        state.add_thread(col_idx, "scratch".into());
+        let live = vec![
+            ("twsr_general_quick".to_string(), 100),
+            ("twsr_scratch_dev".to_string(), 200),
+        ];
+        state.refresh_sessions(&live);
+        assert_eq!(state.active_sessions.len(), 2);
+        assert_eq!(state.active_sessions[0].display_name, "quick");
+        assert_eq!(state.active_sessions[1].display_name, "dev");
+    }
+
+    #[test]
+    fn resolve_root_thread_selection() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        match state.resolve_selection(&[thread_id]) {
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                assert_eq!(col_idx, 0);
+                assert_eq!(thread_idx, 0);
+            }
+            _ => panic!("expected Thread"),
+        }
+    }
+
+    #[test]
+    fn resolve_root_session_selection() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        let live = vec![("twsr_general_quick".to_string(), 100)];
+        state.refresh_sessions(&live);
+
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        let sess_name = "twsr_general_quick".to_string();
+        match state.resolve_selection(&[thread_id, sess_name]) {
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                assert_eq!(col_idx, 0);
+                assert_eq!(thread_idx, 0);
+                assert_eq!(sess_idx, 0);
+            }
+            _ => panic!("expected Session"),
+        }
+    }
+
+    #[test]
+    fn make_session_name_root() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        let name = state.make_session_name(0, 0, "bugfix").unwrap();
+        assert_eq!(name, "twsr_general_bugfix");
+    }
+
+    #[test]
+    fn resolve_thread_path_root() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        let thread_id = state.collections[0].threads[0].id;
+        let (col_name, thread_name) = state.resolve_thread_path(thread_id).unwrap();
+        assert!(col_name.is_none());
+        assert_eq!(thread_name, "general");
+    }
+
+    #[test]
+    fn session_display_path_regular() {
+        let mut state = AppState::with_sample_data();
+        let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 0)];
+        state.refresh_sessions(&live);
+        let path = state.session_display_path(&state.active_sessions[0]).unwrap();
+        assert_eq!(path, "Work/Edge Device Pipeline/bugfix");
+    }
+
+    #[test]
+    fn session_display_path_root() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        let live = vec![("twsr_general_quick".to_string(), 0)];
+        state.refresh_sessions(&live);
+        let path = state.session_display_path(&state.active_sessions[0]).unwrap();
+        assert_eq!(path, "general/quick");
+    }
+
+    #[test]
+    fn resolve_selection_prefers_collection_over_root_thread() {
+        // Mixed state: regular collections + root collection
+        let mut state = AppState::with_sample_data();
+        state.ensure_general_thread();
+
+        // 1-segment path with a regular collection UUID → must resolve to Collection, not root thread
+        let col_id = state.collections[0].id.to_string();
+        match state.resolve_selection(&[col_id]) {
+            SelectedItem::Collection(idx) => assert_eq!(idx, 0),
+            _ => panic!("expected Collection"),
+        }
+    }
+
+    #[test]
+    fn resolve_selection_prefers_regular_thread_over_root_session() {
+        // Mixed state: regular collections + root collection with an active session
+        let mut state = AppState::with_sample_data();
+        state.ensure_general_thread();
+        let live = vec![("twsr_general_quick".to_string(), 0)];
+        state.refresh_sessions(&live);
+
+        // 2-segment path with (col_uuid, thread_uuid) → must resolve to regular Thread
+        let col_id = state.collections[0].id.to_string();
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        match state.resolve_selection(&[col_id, thread_id]) {
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                assert_eq!(col_idx, 0);
+                assert_eq!(thread_idx, 0);
+                assert_eq!(state.collections[col_idx].name, "Work");
+            }
+            _ => panic!("expected Thread"),
+        }
+    }
+
+    #[test]
+    fn refresh_sessions_ignores_bare_root_prefix() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        // Bare root prefix without _label should NOT match
+        let live = vec![("twsr_general".to_string(), 0)];
+        state.refresh_sessions(&live);
+        assert!(state.active_sessions.is_empty());
     }
 
     #[test]

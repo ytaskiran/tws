@@ -35,7 +35,7 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
                 .lines()
                 .filter_map(|line| {
                     let (name, ts_str) = line.split_once('\t')?;
-                    if !name.starts_with("tws_") {
+                    if !name.starts_with("tws_") && !name.starts_with("twsr_") {
                         return None;
                     }
                     let ts = ts_str.parse::<i64>().unwrap_or(0);

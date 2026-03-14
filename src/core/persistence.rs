@@ -114,6 +114,35 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_without_is_root_defaults_false() {
+        // Simulate loading an old state.json that predates the is_root field
+        let json = r#"[{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Legacy",
+            "threads": []
+        }]"#;
+        let collections: Vec<Collection> = serde_json::from_str(json).unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].name, "Legacy");
+        assert!(!collections[0].is_root);
+    }
+
+    #[test]
+    fn root_collection_round_trip() {
+        let mut col = Collection::new_root();
+        col.threads.push(Thread::new("general"));
+        let collections = vec![col];
+
+        let json = serde_json::to_string_pretty(&collections).unwrap();
+        let loaded: Vec<Collection> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].is_root);
+        assert_eq!(loaded[0].threads.len(), 1);
+        assert_eq!(loaded[0].threads[0].name, "general");
+    }
+
+    #[test]
     fn empty_collections_serialize() {
         let collections: Vec<Collection> = Vec::new();
         let json = serde_json::to_string_pretty(&collections).unwrap();

@@ -19,7 +19,7 @@ pub enum StatusContext {
 
 pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>) {
     let hints: &[(&str, &str)] = match ctx {
-        StatusContext::NormalNone => &[("q", "quit"), ("a", "add collection"), ("/", "find")],
+        StatusContext::NormalNone => &[("q", "quit"), ("Enter", "quick session"), ("a", "add thread"), ("A", "add collection"), ("/", "find")],
         StatusContext::NormalCollection => &[
             ("q", "quit"),
             ("Space", "toggle"),

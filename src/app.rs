@@ -182,8 +182,7 @@ impl App {
                 .recent_sessions(5)
                 .iter()
                 .filter_map(|s| {
-                    let (col_name, thread_name) = self.state.resolve_thread_path(s.thread_id)?;
-                    let path = format!("{}/{}/{}", col_name, thread_name, s.display_name);
+                    let path = self.state.session_display_path(s)?;
                     Some((s.tmux_session_name.clone(), path))
                 })
                 .collect()
@@ -224,7 +223,8 @@ impl App {
             // Tree area or empty state
             let block = Block::default();
 
-            if self.state.collections.is_empty() {
+            let items = tree_view::build_tree_items(&self.state);
+            if items.is_empty() {
                 let available_height = chunks[0].height.saturating_sub(2);
                 let content_height = 4u16;
                 let top_padding = (available_height.saturating_sub(content_height)) / 2;
@@ -237,7 +237,7 @@ impl App {
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "Press a to create your first collection.",
+                    "Press Enter for a quick session, or a to add a thread.",
                     theme::EMPTY_HINT_STYLE,
                 )));
 
@@ -246,7 +246,6 @@ impl App {
                     .alignment(Alignment::Center);
                 frame.render_widget(paragraph, chunks[0]);
             } else {
-                let items = tree_view::build_tree_items(&self.state);
                 let tree = Tree::new(&items)
                     .expect("collection IDs are unique")
                     .block(block)
@@ -367,32 +366,17 @@ impl App {
             KeyCode::Char(' ') => {
                 self.tree_state.toggle_selected();
             }
-            KeyCode::Enter => {
-                let selected = self.state.resolve_selection(self.tree_state.selected());
-                match selected {
-                    SelectedItem::Collection(..) => {}
-                    SelectedItem::Thread(col_idx, thread_idx) => {
-                        self.mode = Mode::Input {
-                            purpose: InputPurpose::NewSession { col_idx, thread_idx },
-                            buffer: String::new(),
-                        };
-                    }
-                    SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                        let sessions = self.state.sessions_for_thread(
-                            self.state.collections[col_idx].threads[thread_idx].id,
-                        );
-                        if let Some(session) = sessions.get(sess_idx) {
-                            let name = session.tmux_session_name.clone();
-                            self.attach_to_session(&name, terminal)?;
-                        }
-                    }
-                    SelectedItem::None => {}
-                }
-            }
+            KeyCode::Enter => self.start_enter(terminal)?,
             KeyCode::Esc => {
                 self.tree_state.select(Vec::new());
             }
             KeyCode::Char('a') => self.start_add(),
+            KeyCode::Char('A') => {
+                self.mode = Mode::Input {
+                    purpose: InputPurpose::AddCollection,
+                    buffer: String::new(),
+                };
+            }
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.start_kill_session(),
@@ -458,7 +442,10 @@ impl App {
                     collection_idx: idx,
                 }
             }
-            SelectedItem::None => InputPurpose::AddCollection,
+            SelectedItem::None => {
+                let col_idx = self.state.ensure_root_collection();
+                InputPurpose::AddThread { collection_idx: col_idx }
+            }
         };
         self.mode = Mode::Input {
             purpose,
@@ -552,6 +539,36 @@ impl App {
         }
     }
 
+    fn start_enter(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
+        let selected = self.state.resolve_selection(self.tree_state.selected());
+        match selected {
+            SelectedItem::Collection(..) => {}
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                self.mode = Mode::Input {
+                    purpose: InputPurpose::NewSession { col_idx, thread_idx },
+                    buffer: String::new(),
+                };
+            }
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let sessions = self.state.sessions_for_thread(
+                    self.state.collections[col_idx].threads[thread_idx].id,
+                );
+                if let Some(session) = sessions.get(sess_idx) {
+                    let name = session.tmux_session_name.clone();
+                    self.attach_to_session(&name, terminal)?;
+                }
+            }
+            SelectedItem::None => {
+                let (col_idx, thread_idx) = self.state.ensure_general_thread();
+                self.mode = Mode::Input {
+                    purpose: InputPurpose::NewSession { col_idx, thread_idx },
+                    buffer: String::new(),
+                };
+            }
+        }
+        Ok(())
+    }
+
     fn start_finder(&mut self) {
         let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
         sessions.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
@@ -559,11 +576,8 @@ impl App {
         let entries: Vec<(String, String)> = sessions
             .iter()
             .filter_map(|s| {
-                let (col, thread) = self.state.resolve_thread_path(s.thread_id)?;
-                Some((
-                    s.tmux_session_name.clone(),
-                    format!("{}/{}/{}", col, thread, s.display_name),
-                ))
+                let path = self.state.session_display_path(s)?;
+                Some((s.tmux_session_name.clone(), path))
             })
             .collect();
 
@@ -691,6 +705,7 @@ impl App {
                 }
                 InputPurpose::NewSession { col_idx, thread_idx } => {
                     if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
+                        self.save_state();
                         self.launch_session(&session_name, terminal)?;
                         self.set_flash("Session launched");
                     }
