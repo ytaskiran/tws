@@ -394,6 +394,7 @@ impl App {
                     self.attach_to_session(&name, terminal)?;
                 }
             }
+            KeyCode::Char('e') => self.toggle_expand_all(),
             _ => {}
         }
         Ok(())
@@ -825,6 +826,38 @@ impl App {
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
+    }
+
+    fn toggle_expand_all(&mut self) {
+        let mut all_paths: Vec<Vec<String>> = Vec::new();
+
+        for col in &self.state.collections {
+            if col.is_root {
+                for thread in &col.threads {
+                    if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
+                        all_paths.push(vec![thread.id.to_string()]);
+                    }
+                }
+            } else {
+                all_paths.push(vec![col.id.to_string()]);
+                for thread in &col.threads {
+                    if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
+                        all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
+                    }
+                }
+            }
+        }
+
+        let all_open = !all_paths.is_empty()
+            && all_paths.iter().all(|p| self.tree_state.opened().contains(p));
+
+        if all_open {
+            self.tree_state.close_all();
+        } else {
+            for path in all_paths {
+                self.tree_state.open(path);
+            }
+        }
     }
 
     fn save_state(&self) {
