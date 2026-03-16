@@ -82,6 +82,14 @@ install_binary() {
 
     get_binary "$target"
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
+
+    # Strip macOS quarantine/provenance attributes so Gatekeeper
+    # doesn't kill the ad-hoc-signed binary on first launch.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        xattr -dr com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        xattr -dr com.apple.provenance "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+    fi
+
     ok "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
 
     # PATH check
