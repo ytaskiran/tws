@@ -228,17 +228,14 @@ impl App {
         let sidebar_title = sidebar_info.unwrap_or_default();
         let notes_focused = matches!(self.focus, Focus::Notes);
 
-        // Ensure cursor is visible before we snapshot editor state for rendering
-        // (We don't know the exact sidebar height yet, but 20 is a reasonable default
-        // that will be refined once we know the actual area. The real scroll adjustment
-        // happens via the height we pass here — close enough for smooth scrolling.)
+        // Approximate visible height; actual sidebar size isn't known until layout
         self.note_editor.ensure_visible(20);
 
-        // Clone editor display data to avoid borrow conflicts in the closure
+        // Clone editor lines to avoid borrow conflicts (closure needs &mut self.tree_state)
         let editor_lines = self.note_editor.lines.clone();
-        let editor_cursor_row = self.note_editor.cursor_row;
-        let editor_cursor_col = self.note_editor.cursor_col;
+        let editor_cursor = (self.note_editor.cursor_row, self.note_editor.cursor_col);
         let editor_scroll = self.note_editor.scroll_offset;
+        let editor_is_empty = self.note_editor.is_empty();
         let editor_has_target = self.note_editor.target_key.is_some();
 
         terminal.draw(|frame| {
@@ -322,17 +319,17 @@ impl App {
 
             // Notes sidebar
             if let Some(sb_area) = sidebar_area {
-                // Build a temporary NoteEditor view from pre-computed data
-                let view_editor = NoteEditor {
-                    lines: editor_lines.clone(),
-                    cursor_row: editor_cursor_row,
-                    cursor_col: editor_cursor_col,
-                    scroll_offset: editor_scroll,
-                    target_key: None, // not needed for rendering
-                    dirty: false,
-                };
                 let title = format!("Notes: {}", sidebar_title);
-                notes_sidebar::render(frame, &view_editor, &title, notes_focused && editor_has_target, sb_area);
+                notes_sidebar::render(
+                    frame,
+                    &editor_lines,
+                    editor_cursor,
+                    editor_scroll,
+                    editor_is_empty,
+                    &title,
+                    notes_focused && editor_has_target,
+                    sb_area,
+                );
             }
 
             // Separator between tree and recent bar
@@ -358,7 +355,7 @@ impl App {
 
             // Status bar
             let active_count = self.state.active_sessions.len();
-            let status_ctx = self.status_context();
+            let status_ctx = self.status_context(&selected_item);
             status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref());
 
             // Draw modal overlay if active (over full area so it centers properly)
@@ -407,8 +404,8 @@ impl App {
         Ok(())
     }
 
-    /// Build a `StatusContext` from the current mode and selection.
-    fn status_context(&self) -> StatusContext {
+    /// Build a `StatusContext` from the current mode and already-resolved selection.
+    fn status_context(&self, selected: &SelectedItem) -> StatusContext {
         match &self.mode {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
@@ -417,7 +414,6 @@ impl App {
                 if matches!(self.focus, Focus::Notes) {
                     return StatusContext::Notes;
                 }
-                let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
@@ -439,39 +435,28 @@ impl App {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
 
         // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
-        if code == KeyCode::Tab {
-            let has_selection = !matches!(
-                self.state.resolve_selection(self.tree_state.selected()),
-                SelectedItem::None
-            );
-            if has_selection {
-                match self.focus {
-                    Focus::Tree => {
-                        self.sync_note_editor();
-                        self.focus = Focus::Notes;
-                    }
-                    Focus::Notes => {
-                        self.flush_note_editor();
-                        self.focus = Focus::Tree;
-                    }
-                }
-            }
-            return Ok(());
-        }
+        let is_focus_switch = code == KeyCode::Tab
+            || (ctrl && code == KeyCode::Left)
+            || (ctrl && code == KeyCode::Right);
 
-        if ctrl && code == KeyCode::Left {
-            self.flush_note_editor();
-            self.focus = Focus::Tree;
-            return Ok(());
-        }
-        if ctrl && code == KeyCode::Right {
-            let has_selection = !matches!(
-                self.state.resolve_selection(self.tree_state.selected()),
-                SelectedItem::None
-            );
-            if has_selection {
-                self.sync_note_editor();
-                self.focus = Focus::Notes;
+        if is_focus_switch {
+            let wants_notes = code == KeyCode::Tab && matches!(self.focus, Focus::Tree)
+                || (ctrl && code == KeyCode::Right);
+            let wants_tree = code == KeyCode::Tab && matches!(self.focus, Focus::Notes)
+                || (ctrl && code == KeyCode::Left);
+
+            if wants_notes {
+                let has_selection = !matches!(
+                    self.state.resolve_selection(self.tree_state.selected()),
+                    SelectedItem::None
+                );
+                if has_selection {
+                    self.sync_note_editor();
+                    self.focus = Focus::Notes;
+                }
+            } else if wants_tree {
+                self.flush_note_editor();
+                self.focus = Focus::Tree;
             }
             return Ok(());
         }

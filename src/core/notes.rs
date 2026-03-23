@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use super::persistence;
+
 /// File-based note storage. Each note is a `.md` file in `~/.config/tws/notes/`.
 ///
 /// Keys are UUID strings (for collections/threads) or tmux session names (for sessions).
@@ -11,10 +13,7 @@ pub struct NoteStore {
 impl NoteStore {
     /// Create a new NoteStore, ensuring the notes directory exists.
     pub fn new() -> Self {
-        let dir = dirs::config_dir()
-            .expect("could not determine config directory")
-            .join("tws")
-            .join("notes");
+        let dir = persistence::config_dir().join("notes");
         fs::create_dir_all(&dir).expect("could not create notes directory");
         Self { dir }
     }

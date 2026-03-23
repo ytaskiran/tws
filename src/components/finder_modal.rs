@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
@@ -45,12 +45,7 @@ pub fn render(
     let query_line = Line::from(vec![
         Span::styled("/", theme::MODAL_MUTED_STYLE),
         Span::raw(query),
-        Span::styled(
-            "\u{2588}",
-            Style::new()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::SLOW_BLINK),
-        ),
+        Span::styled("\u{2588}", theme::CURSOR_STYLE),
     ]);
     frame.render_widget(Paragraph::new(query_line), chunks[0]);
 

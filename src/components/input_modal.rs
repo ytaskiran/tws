@@ -1,5 +1,4 @@
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
@@ -12,12 +11,7 @@ pub fn render(frame: &mut Frame, title: &str, input: &str, area: Rect) {
 
     let display_text = Line::from(vec![
         Span::raw(input),
-        Span::styled(
-            "\u{2588}",
-            Style::new()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::SLOW_BLINK),
-        ),
+        Span::styled("\u{2588}", theme::CURSOR_STYLE),
     ]);
 
     let block = Block::bordered()

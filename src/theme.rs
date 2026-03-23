@@ -24,6 +24,11 @@ pub const SEPARATOR_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
 pub const STATUSBAR_KEY_STYLE: Style = Style::new().fg(Color::Rgb(150, 150, 150));
 pub const STATUSBAR_DESC_STYLE: Style = Style::new().fg(Color::Rgb(75, 75, 75));
 
+// Shared cursor (blinking block character)
+pub const CURSOR_STYLE: Style = Style::new()
+    .fg(ACCENT)
+    .add_modifier(Modifier::SLOW_BLINK);
+
 // Modals
 pub const MODAL_BORDER_STYLE: Style = Style::new().fg(ACCENT);
 pub const MODAL_TITLE_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);

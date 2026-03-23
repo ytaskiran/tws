@@ -34,7 +34,7 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
     Ok(())
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     dirs::config_dir()
         .expect("could not determine config directory")
         .join("tws")
