@@ -7,7 +7,8 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{confirm_modal, finder_modal, input_modal, recent_bar, tree_view};
+use crate::components::{confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
 use crate::event;
@@ -76,6 +77,12 @@ impl FinderState {
     }
 }
 
+/// Which pane has keyboard focus during normal mode.
+enum Focus {
+    Tree,
+    Notes,
+}
+
 enum Mode {
     Normal,
     Input {
@@ -95,6 +102,9 @@ pub struct App {
     pub tree_state: TreeState<String>,
     pub running: bool,
     mode: Mode,
+    focus: Focus,
+    notes: NoteStore,
+    note_editor: NoteEditor,
     last_refresh: Instant,
     flash: Option<(String, Instant)>,
 }
@@ -109,6 +119,9 @@ impl App {
             tree_state: TreeState::default(),
             running: true,
             mode: Mode::Normal,
+            focus: Focus::Tree,
+            notes: NoteStore::new(),
+            note_editor: NoteEditor::new(),
             last_refresh: Instant::now(),
             flash: None,
         }
@@ -148,7 +161,9 @@ impl App {
                 }
 
                 match &self.mode {
-                    Mode::Normal => self.handle_normal_key(key.code, terminal)?,
+                    Mode::Normal => {
+                        self.handle_normal_mode(key.code, key.modifiers, terminal)?;
+                    }
                     Mode::Input { .. } => self.handle_input_key(key.code, terminal)?,
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code),
                     Mode::Finder { .. } => {
@@ -157,6 +172,7 @@ impl App {
                 }
             }
         }
+        self.flush_note_editor();
         self.save_ui_state();
         Ok(())
     }
@@ -192,6 +208,39 @@ impl App {
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
 
+        // Pre-compute sidebar data: resolve which note to display.
+        let selected_item = self.state.resolve_selection(self.tree_state.selected());
+        let sidebar_info: Option<String> = match &selected_item {
+            SelectedItem::None => None,
+            SelectedItem::Collection(idx) => {
+                Some(self.state.collections[*idx].name.clone())
+            }
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                Some(self.state.collections[*col_idx].threads[*thread_idx].name.clone())
+            }
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread = &self.state.collections[*col_idx].threads[*thread_idx];
+                let sessions = self.state.sessions_for_thread(thread.id);
+                sessions.get(*sess_idx).map(|s| s.display_name.clone())
+            }
+        };
+        let show_sidebar = sidebar_info.is_some() && is_normal;
+        let sidebar_title = sidebar_info.unwrap_or_default();
+        let notes_focused = matches!(self.focus, Focus::Notes);
+
+        // Ensure cursor is visible before we snapshot editor state for rendering
+        // (We don't know the exact sidebar height yet, but 20 is a reasonable default
+        // that will be refined once we know the actual area. The real scroll adjustment
+        // happens via the height we pass here — close enough for smooth scrolling.)
+        self.note_editor.ensure_visible(20);
+
+        // Clone editor display data to avoid borrow conflicts in the closure
+        let editor_lines = self.note_editor.lines.clone();
+        let editor_cursor_row = self.note_editor.cursor_row;
+        let editor_cursor_col = self.note_editor.cursor_col;
+        let editor_scroll = self.note_editor.scroll_offset;
+        let editor_has_target = self.note_editor.target_key.is_some();
+
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -220,12 +269,25 @@ impl App {
                 (None, None, 1, 2)
             };
 
+            // Split content area horizontally if sidebar should show
+            let content_area = chunks[0];
+            let (tree_area, sidebar_area) = if show_sidebar {
+                let horiz = Layout::horizontal([
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(40),
+                ])
+                .split(content_area);
+                (horiz[0], Some(horiz[1]))
+            } else {
+                (content_area, None)
+            };
+
             // Tree area or empty state
             let block = Block::default();
 
             let items = tree_view::build_tree_items(&self.state);
             if items.is_empty() {
-                let available_height = chunks[0].height.saturating_sub(2);
+                let available_height = tree_area.height.saturating_sub(2);
                 let content_height = 4u16;
                 let top_padding = (available_height.saturating_sub(content_height)) / 2;
 
@@ -244,7 +306,7 @@ impl App {
                 let paragraph = Paragraph::new(lines)
                     .block(block)
                     .alignment(Alignment::Center);
-                frame.render_widget(paragraph, chunks[0]);
+                frame.render_widget(paragraph, tree_area);
             } else {
                 let tree = Tree::new(&items)
                     .expect("collection IDs are unique")
@@ -255,7 +317,22 @@ impl App {
                     .node_open_symbol("\u{2304} ")
                     .node_no_children_symbol("  ");
 
-                frame.render_stateful_widget(tree, chunks[0], &mut self.tree_state);
+                frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
+            }
+
+            // Notes sidebar
+            if let Some(sb_area) = sidebar_area {
+                // Build a temporary NoteEditor view from pre-computed data
+                let view_editor = NoteEditor {
+                    lines: editor_lines.clone(),
+                    cursor_row: editor_cursor_row,
+                    cursor_col: editor_cursor_col,
+                    scroll_offset: editor_scroll,
+                    target_key: None, // not needed for rendering
+                    dirty: false,
+                };
+                let title = format!("Notes: {}", sidebar_title);
+                notes_sidebar::render(frame, &view_editor, &title, notes_focused && editor_has_target, sb_area);
             }
 
             // Separator between tree and recent bar
@@ -337,6 +414,9 @@ impl App {
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::Normal => {
+                if matches!(self.focus, Focus::Notes) {
+                    return StatusContext::Notes;
+                }
                 let selected = self.state.resolve_selection(self.tree_state.selected());
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
@@ -346,6 +426,65 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Top-level handler for Normal mode: checks focus-switching keys first,
+    /// then dispatches to the tree or notes handler based on current focus.
+    fn handle_normal_mode(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+
+        // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
+        if code == KeyCode::Tab {
+            let has_selection = !matches!(
+                self.state.resolve_selection(self.tree_state.selected()),
+                SelectedItem::None
+            );
+            if has_selection {
+                match self.focus {
+                    Focus::Tree => {
+                        self.sync_note_editor();
+                        self.focus = Focus::Notes;
+                    }
+                    Focus::Notes => {
+                        self.flush_note_editor();
+                        self.focus = Focus::Tree;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        if ctrl && code == KeyCode::Left {
+            self.flush_note_editor();
+            self.focus = Focus::Tree;
+            return Ok(());
+        }
+        if ctrl && code == KeyCode::Right {
+            let has_selection = !matches!(
+                self.state.resolve_selection(self.tree_state.selected()),
+                SelectedItem::None
+            );
+            if has_selection {
+                self.sync_note_editor();
+                self.focus = Focus::Notes;
+            }
+            return Ok(());
+        }
+
+        match self.focus {
+            Focus::Tree => {
+                self.handle_normal_key(code, terminal)?;
+                // After tree navigation, sync note editor if selection changed
+                self.sync_note_editor();
+            }
+            Focus::Notes => self.handle_notes_key(code),
+        }
+        Ok(())
     }
 
     fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
@@ -639,6 +778,79 @@ impl App {
         Ok(())
     }
 
+    fn handle_notes_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.flush_note_editor();
+                self.focus = Focus::Tree;
+            }
+            KeyCode::Char(c) => self.note_editor.insert_char(c),
+            KeyCode::Backspace => self.note_editor.backspace(),
+            KeyCode::Delete => self.note_editor.delete_char(),
+            KeyCode::Enter => self.note_editor.newline(),
+            KeyCode::Up => self.note_editor.move_up(),
+            KeyCode::Down => self.note_editor.move_down(),
+            KeyCode::Left => self.note_editor.move_left(),
+            KeyCode::Right => self.note_editor.move_right(),
+            _ => {}
+        }
+    }
+
+    /// Derive the note key for the currently selected tree item.
+    fn selected_note_key(&self) -> Option<String> {
+        let selected = self.state.resolve_selection(self.tree_state.selected());
+        match selected {
+            SelectedItem::None => None,
+            SelectedItem::Collection(idx) => {
+                Some(self.state.collections[idx].id.to_string())
+            }
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                Some(self.state.collections[col_idx].threads[thread_idx].id.to_string())
+            }
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread = &self.state.collections[col_idx].threads[thread_idx];
+                let sessions = self.state.sessions_for_thread(thread.id);
+                sessions.get(sess_idx).map(|s| s.tmux_session_name.clone())
+            }
+        }
+    }
+
+    /// Sync the note editor with the current tree selection.
+    /// If the selection changed, flush dirty content and load the new note.
+    fn sync_note_editor(&mut self) {
+        let new_key = self.selected_note_key();
+        if new_key == self.note_editor.target_key {
+            return; // same item, nothing to do
+        }
+
+        // Flush the old note if dirty
+        self.flush_note_editor();
+
+        // Load the new note
+        match new_key {
+            Some(key) => {
+                let text = self.notes.get(&key).unwrap_or_default();
+                self.note_editor.load(key, &text);
+            }
+            None => {
+                self.note_editor.clear();
+                // Also reset focus to tree if nothing is selected
+                self.focus = Focus::Tree;
+            }
+        }
+    }
+
+    /// Write the editor's content to disk if dirty.
+    fn flush_note_editor(&mut self) {
+        if self.note_editor.dirty {
+            if let Some(key) = &self.note_editor.target_key {
+                let text = self.note_editor.to_text();
+                self.notes.set(key, &text);
+                self.note_editor.dirty = false;
+            }
+        }
+    }
+
     fn confirm_input(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         // Take ownership of the mode to extract buffer and purpose
         let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
@@ -731,15 +943,21 @@ impl App {
                     // Refresh first so active_sessions reflects any sessions created
                     // since the last 2-second tick.
                     self.do_refresh_sessions();
-                    let session_names: Vec<String> = self.state.collections[idx]
-                        .threads
-                        .iter()
-                        .flat_map(|thread| self.state.sessions_for_thread(thread.id))
-                        .map(|s| s.tmux_session_name.clone())
-                        .collect();
-                    for name in session_names {
-                        let _ = tmux::kill_session(&name);
+                    // Collect note keys and session names before deletion
+                    let col = &self.state.collections[idx];
+                    let mut note_keys: Vec<String> = vec![col.id.to_string()];
+                    let mut session_names: Vec<String> = Vec::new();
+                    for thread in &col.threads {
+                        note_keys.push(thread.id.to_string());
+                        for s in self.state.sessions_for_thread(thread.id) {
+                            note_keys.push(s.tmux_session_name.clone());
+                            session_names.push(s.tmux_session_name.clone());
+                        }
                     }
+                    for name in &session_names {
+                        let _ = tmux::kill_session(name);
+                    }
+                    self.notes.remove_all(&note_keys);
                     self.state.delete_collection(idx);
                     // Select the item that slid into this position, or the one before
                     // it, rather than always jumping to the first collection.
@@ -751,18 +969,24 @@ impl App {
                     self.save_state();
                     self.do_refresh_sessions();
                     self.set_flash("Collection deleted");
+                    self.sync_note_editor();
                 }
                 ConfirmPurpose::DeleteThread { col_idx, thread_idx, .. } => {
                     // Refresh first so active_sessions is current.
                     self.do_refresh_sessions();
                     let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                    let mut note_keys: Vec<String> = vec![thread_id.to_string()];
                     let session_names: Vec<String> = self.state.sessions_for_thread(thread_id)
                         .iter()
-                        .map(|s| s.tmux_session_name.clone())
+                        .map(|s| {
+                            note_keys.push(s.tmux_session_name.clone());
+                            s.tmux_session_name.clone()
+                        })
                         .collect();
                     for name in session_names {
                         let _ = tmux::kill_session(&name);
                     }
+                    self.notes.remove_all(&note_keys);
                     self.state.delete_thread(col_idx, thread_idx);
                     // Select the thread that slid into this position, or the one
                     // before it, falling back to the collection itself.
@@ -775,11 +999,14 @@ impl App {
                     self.save_state();
                     self.do_refresh_sessions();
                     self.set_flash("Thread deleted");
+                    self.sync_note_editor();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
                     let _ = tmux::kill_session(&session_name);
+                    self.notes.remove(&session_name);
                     self.do_refresh_sessions();
                     self.set_flash("Session killed");
+                    self.sync_note_editor();
                 }
                 ConfirmPurpose::KillAllSessions { col_idx, thread_idx, .. } => {
                     let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
@@ -789,11 +1016,13 @@ impl App {
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
-                    for name in names {
-                        let _ = tmux::kill_session(&name);
+                    for name in &names {
+                        let _ = tmux::kill_session(name);
                     }
+                    self.notes.remove_all(&names);
                     self.do_refresh_sessions();
                     self.set_flash("All sessions killed");
+                    self.sync_note_editor();
                 }
             }
         }

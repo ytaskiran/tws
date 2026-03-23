@@ -43,3 +43,10 @@ pub const FLASH_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BO
 // Recent sessions bar
 pub const RECENT_NUMBER_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
 pub const RECENT_NAME_STYLE: Style = Style::new().fg(DIM_TEXT);
+
+// Notes sidebar
+pub const NOTES_BORDER_FOCUSED: Style = Style::new().fg(ACCENT);
+pub const NOTES_BORDER_UNFOCUSED: Style = Style::new().fg(SUBTLE_BORDER);
+pub const NOTES_TITLE_FOCUSED: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+pub const NOTES_TITLE_UNFOCUSED: Style = Style::new().fg(DIM_TEXT);
+pub const NOTES_PLACEHOLDER_STYLE: Style = Style::new().fg(MUTED_TEXT);
