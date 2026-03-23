@@ -259,7 +259,7 @@ impl AppState {
         Some((col_idx, thread_idx))
     }
 
-    /// Returns the index of the root collection, creating one if it doesn't exist.
+    /// Lazy-init: returns the root collection index, creating it on first call if absent.
     pub fn ensure_root_collection(&mut self) -> usize {
         if let Some(idx) = self.find_root_collection_idx() {
             idx
@@ -269,7 +269,7 @@ impl AppState {
         }
     }
 
-    /// Ensures the root collection has a "general" thread.
+    /// Lazy-init: ensures the root collection has a "general" thread, creating it if absent.
     /// Returns `(col_idx, thread_idx)`.
     pub fn ensure_general_thread(&mut self) -> (usize, usize) {
         let col_idx = self.ensure_root_collection();
