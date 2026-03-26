@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -172,7 +173,6 @@ impl App {
                 }
             }
         }
-        self.flush_note_editor();
         self.save_ui_state();
         Ok(())
     }
@@ -228,12 +228,8 @@ impl App {
         let sidebar_title = sidebar_info.unwrap_or_default();
         let notes_focused = matches!(self.focus, Focus::Notes);
 
-        // Approximate visible height; actual sidebar size isn't known until layout
-        self.note_editor.ensure_visible(20);
-
-        // Clone editor lines to avoid borrow conflicts (closure needs &mut self.tree_state)
+        // Clone editor data to avoid borrow conflicts (closure needs &mut self.tree_state)
         let editor_lines = self.note_editor.lines.clone();
-        let editor_cursor = (self.note_editor.cursor_row, self.note_editor.cursor_col);
         let editor_scroll = self.note_editor.scroll_offset;
         let editor_is_empty = self.note_editor.is_empty();
         let editor_has_target = self.note_editor.target_key.is_some();
@@ -281,7 +277,6 @@ impl App {
 
             // Tree area or empty state
             let block = Block::default();
-
             let items = tree_view::build_tree_items(&self.state);
             if items.is_empty() {
                 let available_height = tree_area.height.saturating_sub(2);
@@ -323,7 +318,6 @@ impl App {
                 notes_sidebar::render(
                     frame,
                     &editor_lines,
-                    editor_cursor,
                     editor_scroll,
                     editor_is_empty,
                     &title,
@@ -455,7 +449,6 @@ impl App {
                     self.focus = Focus::Notes;
                 }
             } else if wants_tree {
-                self.flush_note_editor();
                 self.focus = Focus::Tree;
             }
             return Ok(());
@@ -467,7 +460,7 @@ impl App {
                 // After tree navigation, sync note editor if selection changed
                 self.sync_note_editor();
             }
-            Focus::Notes => self.handle_notes_key(code),
+            Focus::Notes => self.handle_notes_key(code, modifiers, terminal)?,
         }
         Ok(())
     }
@@ -763,22 +756,23 @@ impl App {
         Ok(())
     }
 
-    fn handle_notes_key(&mut self, code: KeyCode) {
+    fn handle_notes_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         match code {
-            KeyCode::Esc => {
-                self.flush_note_editor();
-                self.focus = Focus::Tree;
-            }
-            KeyCode::Char(c) => self.note_editor.insert_char(c),
-            KeyCode::Backspace => self.note_editor.backspace(),
-            KeyCode::Delete => self.note_editor.delete_char(),
-            KeyCode::Enter => self.note_editor.newline(),
-            KeyCode::Up => self.note_editor.move_up(),
-            KeyCode::Down => self.note_editor.move_down(),
-            KeyCode::Left => self.note_editor.move_left(),
-            KeyCode::Right => self.note_editor.move_right(),
+            KeyCode::Enter => self.spawn_external_editor(terminal)?,
+            KeyCode::Esc => self.focus = Focus::Tree,
+            KeyCode::Char('k') | KeyCode::Up => self.note_editor.scroll_up(),
+            KeyCode::Char('j') | KeyCode::Down => self.note_editor.scroll_down(
+                self.note_editor.lines.len(),
+                20, // approximate; actual height isn't known here
+            ),
             _ => {}
         }
+        Ok(())
     }
 
     /// Derive the note key for the currently selected tree item.
@@ -800,16 +794,12 @@ impl App {
         }
     }
 
-    /// Sync the note editor with the current tree selection.
-    /// If the selection changed, flush dirty content and load the new note.
+    /// Sync the note viewer with the current tree selection.
     fn sync_note_editor(&mut self) {
         let new_key = self.selected_note_key();
         if new_key == self.note_editor.target_key {
             return; // same item, nothing to do
         }
-
-        // Flush the old note if dirty
-        self.flush_note_editor();
 
         // Load the new note
         match new_key {
@@ -825,15 +815,31 @@ impl App {
         }
     }
 
-    /// Write the editor's content to disk if dirty.
-    fn flush_note_editor(&mut self) {
-        if self.note_editor.dirty {
-            if let Some(key) = &self.note_editor.target_key {
-                let text = self.note_editor.to_text();
-                self.notes.set(key, &text);
-                self.note_editor.dirty = false;
-            }
+    /// Suspend tws, open the current note in $EDITOR, then resume.
+    fn spawn_external_editor(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
+        let key = match &self.note_editor.target_key {
+            Some(k) => k.clone(),
+            None => return Ok(()),
+        };
+
+        let path = self.notes.note_path(&key);
+        // Ensure the file exists (NoteStore deletes empty files)
+        if !path.exists() {
+            let _ = std::fs::write(&path, "");
         }
+
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+
+        tui::restore()?;
+        let _ = Command::new(&editor).arg(&path).status();
+        *terminal = tui::init()?;
+
+        // Reload content that the external editor may have changed
+        self.note_editor.reload(&self.notes);
+        self.set_flash("Returned from editor");
+        Ok(())
     }
 
     fn confirm_input(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
@@ -990,6 +996,17 @@ impl App {
                     let _ = tmux::kill_session(&session_name);
                     self.notes.remove(&session_name);
                     self.do_refresh_sessions();
+                    // Move selection up to the parent thread so the sidebar stays visible.
+                    // Without this the tree widget clears the selection on the next render
+                    // (killed session is no longer in the tree), causing the sidebar to vanish.
+                    let parent: Vec<String> = self.tree_state.selected()
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .rev()
+                        .cloned()
+                        .collect();
+                    self.tree_state.select(parent);
                     self.set_flash("Session killed");
                     self.sync_note_editor();
                 }
@@ -1006,6 +1023,15 @@ impl App {
                     }
                     self.notes.remove_all(&names);
                     self.do_refresh_sessions();
+                    // Select the parent thread so the sidebar stays visible.
+                    let col = &self.state.collections[col_idx];
+                    let thread = &col.threads[thread_idx];
+                    let thread_path = if col.is_root {
+                        vec![thread.id.to_string()]
+                    } else {
+                        vec![col.id.to_string(), thread.id.to_string()]
+                    };
+                    self.tree_state.select(thread_path);
                     self.set_flash("All sessions killed");
                     self.sync_note_editor();
                 }
