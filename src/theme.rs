@@ -49,9 +49,51 @@ pub const FLASH_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BO
 pub const RECENT_NUMBER_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
 pub const RECENT_NAME_STYLE: Style = Style::new().fg(DIM_TEXT);
 
+// Scrollbar
+pub const SCROLLBAR_THUMB_STYLE: Style = Style::new().fg(MUTED_TEXT);
+pub const SCROLLBAR_TRACK_STYLE: Style = Style::new().fg(SUBTLE_BORDER);
+
 // Notes sidebar
 pub const NOTES_BORDER_FOCUSED: Style = Style::new().fg(ACCENT);
 pub const NOTES_BORDER_UNFOCUSED: Style = Style::new().fg(SUBTLE_BORDER);
 pub const NOTES_TITLE_FOCUSED: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
 pub const NOTES_TITLE_UNFOCUSED: Style = Style::new().fg(DIM_TEXT);
 pub const NOTES_PLACEHOLDER_STYLE: Style = Style::new().fg(MUTED_TEXT);
+
+// Markdown rendering — custom stylesheet for tui-markdown
+#[derive(Clone)]
+pub struct NoteStyleSheet;
+
+impl tui_markdown::StyleSheet for NoteStyleSheet {
+    fn heading(&self, level: u8) -> Style {
+        match level {
+            1 => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            2 => Style::new().fg(ACCENT),
+            _ => Style::new().fg(DIM_TEXT).add_modifier(Modifier::ITALIC),
+        }
+    }
+
+    fn code(&self) -> Style {
+        Style::new().fg(SAGE_GREEN)
+    }
+
+    fn link(&self) -> Style {
+        Style::new()
+            .fg(ACCENT)
+            .add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn blockquote(&self) -> Style {
+        Style::new()
+            .fg(MUTED_TEXT)
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    fn heading_meta(&self) -> Style {
+        Style::new().fg(MUTED_TEXT)
+    }
+
+    fn metadata_block(&self) -> Style {
+        Style::new().fg(MUTED_TEXT)
+    }
+}

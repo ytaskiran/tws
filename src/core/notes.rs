@@ -28,6 +28,8 @@ impl NoteStore {
     }
 
     /// Set the note text for a key. If text is empty, the file is deleted.
+    /// Used in tests; editing in production is done via `$EDITOR`.
+    #[cfg(test)]
     pub fn set(&self, key: &str, text: &str) {
         let path = self.note_path(key);
         if text.trim().is_empty() {
@@ -49,175 +51,67 @@ impl NoteStore {
         }
     }
 
-    fn note_path(&self, key: &str) -> PathBuf {
+    pub fn note_path(&self, key: &str) -> PathBuf {
         self.dir.join(format!("{}.md", key))
     }
 }
 
-/// Multiline text editor for a single note.
-///
-/// Tracks cursor position and scroll offset. The note content is stored as
-/// a `Vec<String>` (one entry per line) for efficient line-based operations.
+/// Read-only note viewer. Holds loaded note content and scroll state
+/// for the preview sidebar. All editing is done via `$EDITOR`.
 pub struct NoteEditor {
-    pub lines: Vec<String>,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
+    pub content: String,
     pub scroll_offset: usize,
-    /// Which note is currently loaded (UUID string or tmux session name).
     pub target_key: Option<String>,
-    /// Whether the content has changed since last save/load.
-    pub dirty: bool,
 }
 
 impl NoteEditor {
     pub fn new() -> Self {
         Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
+            content: String::new(),
             scroll_offset: 0,
             target_key: None,
-            dirty: false,
         }
     }
 
-    /// Load a note's text into the editor, resetting cursor and scroll.
     pub fn load(&mut self, key: String, text: &str) {
         self.target_key = Some(key);
-        self.lines = if text.is_empty() {
-            vec![String::new()]
-        } else {
-            text.split('\n').map(|s| s.to_string()).collect()
-        };
-        self.cursor_row = 0;
-        self.cursor_col = 0;
+        self.content = text.to_string();
         self.scroll_offset = 0;
-        self.dirty = false;
     }
 
-    /// Clear the editor (no note loaded).
+    pub fn reload(&mut self, store: &NoteStore) {
+        if let Some(key) = &self.target_key {
+            self.content = store.get(key).unwrap_or_default();
+            self.scroll_offset = 0;
+        }
+    }
+
     pub fn clear(&mut self) {
         self.target_key = None;
-        self.lines = vec![String::new()];
-        self.cursor_row = 0;
-        self.cursor_col = 0;
+        self.content = String::new();
         self.scroll_offset = 0;
-        self.dirty = false;
     }
 
-    /// Join lines back into a single string.
-    pub fn to_text(&self) -> String {
-        self.lines.join("\n")
-    }
-
-    /// Whether the editor has any meaningful content.
     pub fn is_empty(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].is_empty()
+        self.content.is_empty()
     }
 
-    /// Insert a character at the cursor position.
-    pub fn insert_char(&mut self, c: char) {
-        let line = &mut self.lines[self.cursor_row];
-        // Clamp cursor_col in case the line shrank
-        self.cursor_col = self.cursor_col.min(line.len());
-        line.insert(self.cursor_col, c);
-        self.cursor_col += 1;
-        self.dirty = true;
-    }
-
-    /// Delete the character before the cursor (backspace).
-    pub fn backspace(&mut self) {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_row];
-            self.cursor_col -= 1;
-            line.remove(self.cursor_col);
-            self.dirty = true;
-        } else if self.cursor_row > 0 {
-            // Merge current line into the previous one
-            let current = self.lines.remove(self.cursor_row);
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].len();
-            self.lines[self.cursor_row].push_str(&current);
-            self.dirty = true;
+    pub fn line_count(&self) -> usize {
+        if self.content.is_empty() {
+            0
+        } else {
+            self.content.split('\n').count()
         }
     }
 
-    /// Delete the character at the cursor position.
-    pub fn delete_char(&mut self) {
-        let line_len = self.lines[self.cursor_row].len();
-        if self.cursor_col < line_len {
-            self.lines[self.cursor_row].remove(self.cursor_col);
-            self.dirty = true;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            // Merge next line into current
-            let next = self.lines.remove(self.cursor_row + 1);
-            self.lines[self.cursor_row].push_str(&next);
-            self.dirty = true;
-        }
+    pub fn scroll_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
-    /// Insert a newline at the cursor, splitting the current line.
-    pub fn newline(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        self.cursor_col = self.cursor_col.min(line.len());
-        let rest = line[self.cursor_col..].to_string();
-        line.truncate(self.cursor_col);
-        self.cursor_row += 1;
-        self.lines.insert(self.cursor_row, rest);
-        self.cursor_col = 0;
-        self.dirty = true;
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.clamp_col();
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.clamp_col();
-        }
-    }
-
-    pub fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        } else if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].len();
-        }
-    }
-
-    pub fn move_right(&mut self) {
-        let line_len = self.lines[self.cursor_row].len();
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.cursor_col = 0;
-        }
-    }
-
-    /// Adjust scroll_offset so the cursor row is visible within the given height.
-    pub fn ensure_visible(&mut self, visible_height: usize) {
-        if visible_height == 0 {
-            return;
-        }
-        if self.cursor_row < self.scroll_offset {
-            self.scroll_offset = self.cursor_row;
-        } else if self.cursor_row >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.cursor_row - visible_height + 1;
-        }
-    }
-
-    /// Clamp cursor_col to the current line's length.
-    fn clamp_col(&mut self) {
-        let line_len = self.lines[self.cursor_row].len();
-        if self.cursor_col > line_len {
-            self.cursor_col = line_len;
+    pub fn scroll_down(&mut self, total_lines: usize, visible_height: usize) {
+        let max_offset = total_lines.saturating_sub(visible_height);
+        if self.scroll_offset < max_offset {
+            self.scroll_offset += 1;
         }
     }
 }
@@ -338,249 +232,64 @@ mod note_editor_tests {
     }
 
     #[test]
-    fn new_editor_has_one_empty_line() {
+    fn new_editor_is_empty() {
         let e = NoteEditor::new();
-        assert_eq!(e.lines, vec![""]);
         assert!(e.is_empty());
         assert!(e.target_key.is_none());
     }
 
     #[test]
-    fn load_splits_lines() {
+    fn load_stores_content() {
         let e = editor_with("hello\nworld");
-        assert_eq!(e.lines, vec!["hello", "world"]);
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 0);
-        assert!(!e.dirty);
+        assert_eq!(e.content, "hello\nworld");
+        assert_eq!(e.line_count(), 2);
+        assert_eq!(e.scroll_offset, 0);
     }
 
     #[test]
-    fn load_empty_gives_one_empty_line() {
+    fn load_empty_is_empty() {
         let e = editor_with("");
-        assert_eq!(e.lines, vec![""]);
         assert!(e.is_empty());
-    }
-
-    #[test]
-    fn to_text_joins_lines() {
-        let e = editor_with("a\nb\nc");
-        assert_eq!(e.to_text(), "a\nb\nc");
-    }
-
-    #[test]
-    fn insert_char_at_start() {
-        let mut e = editor_with("ello");
-        e.insert_char('H');
-        assert_eq!(e.lines[0], "Hello");
-        assert_eq!(e.cursor_col, 1);
-        assert!(e.dirty);
-    }
-
-    #[test]
-    fn insert_char_at_end() {
-        let mut e = editor_with("Hi");
-        e.cursor_col = 2;
-        e.insert_char('!');
-        assert_eq!(e.lines[0], "Hi!");
-        assert_eq!(e.cursor_col, 3);
-    }
-
-    #[test]
-    fn backspace_mid_line() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 3;
-        e.backspace();
-        assert_eq!(e.lines[0], "Helo");
-        assert_eq!(e.cursor_col, 2);
-    }
-
-    #[test]
-    fn backspace_at_line_start_merges() {
-        let mut e = editor_with("Hello\nWorld");
-        e.cursor_row = 1;
-        e.cursor_col = 0;
-        e.backspace();
-        assert_eq!(e.lines, vec!["HelloWorld"]);
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 5);
-    }
-
-    #[test]
-    fn backspace_at_start_of_first_line_is_noop() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 0;
-        e.backspace();
-        assert_eq!(e.lines[0], "Hello");
-        assert!(!e.dirty);
-    }
-
-    #[test]
-    fn delete_char_mid_line() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 1;
-        e.delete_char();
-        assert_eq!(e.lines[0], "Hllo");
-    }
-
-    #[test]
-    fn delete_char_at_end_merges_next_line() {
-        let mut e = editor_with("Hello\nWorld");
-        e.cursor_col = 5; // end of "Hello"
-        e.delete_char();
-        assert_eq!(e.lines, vec!["HelloWorld"]);
-    }
-
-    #[test]
-    fn delete_char_at_end_of_last_line_is_noop() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 5;
-        e.delete_char();
-        assert_eq!(e.lines[0], "Hello");
-        assert!(!e.dirty);
-    }
-
-    #[test]
-    fn newline_splits_line() {
-        let mut e = editor_with("HelloWorld");
-        e.cursor_col = 5;
-        e.newline();
-        assert_eq!(e.lines, vec!["Hello", "World"]);
-        assert_eq!(e.cursor_row, 1);
-        assert_eq!(e.cursor_col, 0);
-    }
-
-    #[test]
-    fn newline_at_start() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 0;
-        e.newline();
-        assert_eq!(e.lines, vec!["", "Hello"]);
-        assert_eq!(e.cursor_row, 1);
-        assert_eq!(e.cursor_col, 0);
-    }
-
-    #[test]
-    fn newline_at_end() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 5;
-        e.newline();
-        assert_eq!(e.lines, vec!["Hello", ""]);
-        assert_eq!(e.cursor_row, 1);
-    }
-
-    #[test]
-    fn move_up_down() {
-        let mut e = editor_with("aaa\nbbb\nccc");
-        e.cursor_row = 1;
-        e.cursor_col = 2;
-
-        e.move_up();
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 2);
-
-        e.move_down();
-        assert_eq!(e.cursor_row, 1);
-    }
-
-    #[test]
-    fn move_up_at_top_is_noop() {
-        let mut e = editor_with("Hello");
-        e.move_up();
-        assert_eq!(e.cursor_row, 0);
-    }
-
-    #[test]
-    fn move_down_at_bottom_is_noop() {
-        let mut e = editor_with("Hello");
-        e.move_down();
-        assert_eq!(e.cursor_row, 0);
-    }
-
-    #[test]
-    fn move_up_clamps_col_to_shorter_line() {
-        let mut e = editor_with("Hi\nHello");
-        e.cursor_row = 1;
-        e.cursor_col = 4; // position in "Hello"
-        e.move_up();
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 2); // clamped to "Hi" length
-    }
-
-    #[test]
-    fn move_left_wraps_to_prev_line() {
-        let mut e = editor_with("abc\ndef");
-        e.cursor_row = 1;
-        e.cursor_col = 0;
-        e.move_left();
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 3);
-    }
-
-    #[test]
-    fn move_right_wraps_to_next_line() {
-        let mut e = editor_with("abc\ndef");
-        e.cursor_row = 0;
-        e.cursor_col = 3;
-        e.move_right();
-        assert_eq!(e.cursor_row, 1);
-        assert_eq!(e.cursor_col, 0);
-    }
-
-    #[test]
-    fn move_left_at_start_is_noop() {
-        let mut e = editor_with("Hello");
-        e.move_left();
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 0);
-    }
-
-    #[test]
-    fn move_right_at_end_is_noop() {
-        let mut e = editor_with("Hello");
-        e.cursor_col = 5;
-        e.move_right();
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 5);
-    }
-
-    #[test]
-    fn ensure_visible_scrolls_down() {
-        let mut e = editor_with("a\nb\nc\nd\ne\nf\ng\nh");
-        e.cursor_row = 5;
-        e.scroll_offset = 0;
-        e.ensure_visible(3);
-        assert_eq!(e.scroll_offset, 3); // cursor_row(5) - height(3) + 1
-    }
-
-    #[test]
-    fn ensure_visible_scrolls_up() {
-        let mut e = editor_with("a\nb\nc\nd\ne");
-        e.cursor_row = 1;
-        e.scroll_offset = 3;
-        e.ensure_visible(3);
-        assert_eq!(e.scroll_offset, 1);
-    }
-
-    #[test]
-    fn ensure_visible_noop_when_in_view() {
-        let mut e = editor_with("a\nb\nc\nd\ne");
-        e.cursor_row = 2;
-        e.scroll_offset = 1;
-        e.ensure_visible(3);
-        assert_eq!(e.scroll_offset, 1); // cursor is within [1, 4), no change
+        assert_eq!(e.line_count(), 0);
     }
 
     #[test]
     fn clear_resets_everything() {
         let mut e = editor_with("Hello\nWorld");
-        e.cursor_row = 1;
-        e.cursor_col = 3;
-        e.dirty = true;
+        e.scroll_offset = 5;
         e.clear();
         assert!(e.is_empty());
         assert!(e.target_key.is_none());
-        assert!(!e.dirty);
-        assert_eq!(e.cursor_row, 0);
-        assert_eq!(e.cursor_col, 0);
+        assert_eq!(e.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_up_decrements() {
+        let mut e = editor_with("a\nb\nc");
+        e.scroll_offset = 2;
+        e.scroll_up();
+        assert_eq!(e.scroll_offset, 1);
+    }
+
+    #[test]
+    fn scroll_up_at_zero_is_noop() {
+        let mut e = editor_with("a\nb\nc");
+        e.scroll_up();
+        assert_eq!(e.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_down_increments() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        e.scroll_down(5, 3); // 5 lines, 3 visible → max offset = 2
+        assert_eq!(e.scroll_offset, 1);
+    }
+
+    #[test]
+    fn scroll_down_stops_at_max() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        e.scroll_offset = 2;
+        e.scroll_down(5, 3); // already at max
+        assert_eq!(e.scroll_offset, 2);
     }
 }

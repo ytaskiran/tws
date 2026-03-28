@@ -41,7 +41,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             ("Tab", "notes"),
         ],
         StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("x", "kill"), ("/", "find"), ("Tab", "notes")],
-        StatusContext::Notes => &[("Esc", "tree"), ("Tab", "tree"), ("\u{2191}\u{2193}\u{2190}\u{2192}", "navigate")],
+        StatusContext::Notes => &[("Enter", "edit"), ("Esc", "back"), ("j/k", "scroll")],
         StatusContext::Input => &[("Enter", "confirm"), ("Esc", "cancel")],
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],

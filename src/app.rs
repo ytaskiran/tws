@@ -9,6 +9,7 @@ use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
@@ -106,6 +107,7 @@ pub struct App {
     focus: Focus,
     notes: NoteStore,
     note_editor: NoteEditor,
+    md_renderer: MarkdownRenderer,
     last_refresh: Instant,
     flash: Option<(String, Instant)>,
 }
@@ -123,6 +125,7 @@ impl App {
             focus: Focus::Tree,
             notes: NoteStore::new(),
             note_editor: NoteEditor::new(),
+            md_renderer: MarkdownRenderer::new(),
             last_refresh: Instant::now(),
             flash: None,
         }
@@ -144,6 +147,7 @@ impl App {
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
         }
+        self.sync_note_editor();
 
         while self.running {
             // Periodic session refresh
@@ -228,11 +232,17 @@ impl App {
         let sidebar_title = sidebar_info.unwrap_or_default();
         let notes_focused = matches!(self.focus, Focus::Notes);
 
-        // Clone editor data to avoid borrow conflicts (closure needs &mut self.tree_state)
-        let editor_lines = self.note_editor.lines.clone();
         let editor_scroll = self.note_editor.scroll_offset;
         let editor_is_empty = self.note_editor.is_empty();
         let editor_has_target = self.note_editor.target_key.is_some();
+
+        let rendered_note = if show_sidebar && !editor_is_empty {
+            let (tw, _) = crossterm::terminal::size().unwrap_or((80, 24));
+            let render_width = (tw * 2 / 5).saturating_sub(2);
+            Some(self.md_renderer.render(&self.note_editor.content, render_width).clone())
+        } else {
+            None
+        };
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -317,11 +327,13 @@ impl App {
                 let title = format!("Notes: {}", sidebar_title);
                 notes_sidebar::render(
                     frame,
-                    &editor_lines,
-                    editor_scroll,
-                    editor_is_empty,
-                    &title,
-                    notes_focused && editor_has_target,
+                    &notes_sidebar::SidebarState {
+                        rendered: rendered_note.as_ref(),
+                        scroll_offset: editor_scroll,
+                        is_empty: editor_is_empty,
+                        title: &title,
+                        focused: notes_focused && editor_has_target,
+                    },
                     sb_area,
                 );
             }
@@ -766,10 +778,10 @@ impl App {
             KeyCode::Enter => self.spawn_external_editor(terminal)?,
             KeyCode::Esc => self.focus = Focus::Tree,
             KeyCode::Char('k') | KeyCode::Up => self.note_editor.scroll_up(),
-            KeyCode::Char('j') | KeyCode::Down => self.note_editor.scroll_down(
-                self.note_editor.lines.len(),
-                20, // approximate; actual height isn't known here
-            ),
+            KeyCode::Char('j') | KeyCode::Down => {
+                let total = self.md_renderer.line_count().max(self.note_editor.line_count());
+                self.note_editor.scroll_down(total, 20);
+            }
             _ => {}
         }
         Ok(())
@@ -798,10 +810,10 @@ impl App {
     fn sync_note_editor(&mut self) {
         let new_key = self.selected_note_key();
         if new_key == self.note_editor.target_key {
-            return; // same item, nothing to do
+            return;
         }
 
-        // Load the new note
+        self.md_renderer.invalidate();
         match new_key {
             Some(key) => {
                 let text = self.notes.get(&key).unwrap_or_default();
@@ -836,8 +848,8 @@ impl App {
         let _ = Command::new(&editor).arg(&path).status();
         *terminal = tui::init()?;
 
-        // Reload content that the external editor may have changed
         self.note_editor.reload(&self.notes);
+        self.md_renderer.invalidate();
         self.set_flash("Returned from editor");
         Ok(())
     }

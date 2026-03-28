@@ -193,6 +193,36 @@ configure_tmux() {
     ok "Added keybinding to $tmux_conf"
 }
 
+# --- 5. Optional: glow (rich markdown rendering) ---
+
+configure_glow() {
+    if command -v glow &>/dev/null; then
+        ok "glow found — rich markdown rendering enabled"
+        return
+    fi
+
+    warn "glow not found — notes will use basic markdown rendering"
+    printf '%s' "Install glow for rich markdown preview? [y/N] "
+    read -r answer < /dev/tty
+
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped. Install later: brew install glow (macOS) or go install github.com/charmbracelet/glow@latest"
+        return
+    fi
+
+    if command -v brew &>/dev/null; then
+        info "Installing glow via Homebrew..."
+        brew install glow && ok "glow installed" || warn "glow installation failed — notes will use basic rendering"
+    elif command -v go &>/dev/null; then
+        info "Installing glow via Go..."
+        go install github.com/charmbracelet/glow@latest && ok "glow installed" || warn "glow installation failed"
+    else
+        warn "Could not auto-install glow. Install manually:"
+        echo "  macOS:  brew install glow"
+        echo "  Linux:  go install github.com/charmbracelet/glow@latest"
+    fi
+}
+
 # --- Main ---
 
 main() {
@@ -206,6 +236,7 @@ main() {
 
     install_binary "$target"
     configure_tmux
+    configure_glow
 
     echo ""
     ok "Done!"
