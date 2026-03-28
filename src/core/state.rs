@@ -242,6 +242,24 @@ impl AppState {
         recent
     }
 
+    /// Returns the tree widget selection path for a session by its tmux name.
+    /// Path: `[collection_id, thread_id, session_name]` or `[thread_id, session_name]` for root threads.
+    pub fn session_tree_path(&self, session_name: &str) -> Option<Vec<String>> {
+        let session = self.active_sessions.iter().find(|s| s.tmux_session_name == session_name)?;
+        for col in &self.collections {
+            for thread in &col.threads {
+                if thread.id == session.thread_id {
+                    return if col.is_root {
+                        Some(vec![thread.id.to_string(), session_name.to_string()])
+                    } else {
+                        Some(vec![col.id.to_string(), thread.id.to_string(), session_name.to_string()])
+                    };
+                }
+            }
+        }
+        None
+    }
+
     /// Find the index of the root collection (where `is_root == true`).
     pub fn find_root_collection_idx(&self) -> Option<usize> {
         self.collections.iter().position(|c| c.is_root)

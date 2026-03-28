@@ -527,6 +527,9 @@ impl App {
                 if let Some(session) = recent.get((c as usize) - ('1' as usize)) {
                     let name = session.tmux_session_name.clone();
                     self.attach_to_session(&name, terminal)?;
+                    if let Some(path) = self.state.session_tree_path(&name) {
+                        self.tree_state.select(path);
+                    }
                 }
             }
             KeyCode::Char('e') => self.toggle_expand_all(),
@@ -753,6 +756,9 @@ impl App {
                         if let Some(&idx) = state.filtered.get(state.cursor) {
                             let name = state.all_entries[idx].0.clone();
                             self.attach_to_session(&name, terminal)?;
+                            if let Some(path) = self.state.session_tree_path(&name) {
+                                self.tree_state.select(path);
+                            }
                         }
                     }
                 }
