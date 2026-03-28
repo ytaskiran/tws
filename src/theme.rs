@@ -16,6 +16,9 @@ pub const HIGHLIGHT_STYLE: Style = Style::new()
     .fg(Color::Black)
     .bg(ACCENT)
     .add_modifier(Modifier::BOLD);
+pub const HIGHLIGHT_UNFOCUSED_STYLE: Style = Style::new()
+    .fg(Color::White)
+    .bg(SUBTLE_BORDER);
 
 // Chrome
 pub const SEPARATOR_STYLE: Style = Style::new().fg(SUBTLE_BORDER);

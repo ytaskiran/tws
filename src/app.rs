@@ -310,10 +310,16 @@ impl App {
                     .alignment(Alignment::Center);
                 frame.render_widget(paragraph, tree_area);
             } else {
+                let tree_highlight = if matches!(self.focus, Focus::Notes) {
+                    theme::HIGHLIGHT_UNFOCUSED_STYLE
+                } else {
+                    theme::HIGHLIGHT_STYLE
+                };
+
                 let tree = Tree::new(&items)
                     .expect("collection IDs are unique")
                     .block(block)
-                    .highlight_style(theme::HIGHLIGHT_STYLE)
+                    .highlight_style(tree_highlight)
                     .highlight_symbol("  ")
                     .node_closed_symbol("\u{203A} ")
                     .node_open_symbol("\u{2304} ")
