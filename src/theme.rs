@@ -43,6 +43,9 @@ pub const MODAL_MUTED_STYLE: Style = Style::new().fg(MUTED_TEXT);
 pub const EMPTY_TITLE_STYLE: Style = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
 pub const EMPTY_HINT_STYLE: Style = Style::new().fg(MUTED_TEXT);
 
+// Agent sessions
+pub const AGENT_STYLE: Style = Style::new().fg(Color::Rgb(180, 180, 180));
+
 // Badges
 pub const BADGE_DOT_STYLE: Style = Style::new().fg(SAGE_GREEN);
 pub const BADGE_COUNT_STYLE: Style = Style::new().fg(MUTED_TEXT);

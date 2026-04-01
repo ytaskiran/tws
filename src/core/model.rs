@@ -27,6 +27,31 @@ pub struct Session {
     pub last_attached: i64,
 }
 
+/// Which AI coding agent is running in a tmux pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentType {
+    ClaudeCode,
+    Codex,
+}
+
+impl AgentType {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            AgentType::ClaudeCode => "Claude Code",
+            AgentType::Codex => "Codex",
+        }
+    }
+}
+
+/// Runtime-only. Represents an AI agent detected in a tmux pane.
+#[derive(Debug, Clone)]
+pub struct AgentSession {
+    pub agent_type: AgentType,
+    pub tmux_session_name: String,
+    pub window_index: u32,
+    pub pane_id: String,
+}
+
 impl Collection {
     pub fn new(name: impl Into<String>) -> Self {
         Self {

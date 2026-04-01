@@ -1,11 +1,13 @@
 use uuid::Uuid;
 
-use super::model::{Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
+use super::model::{AgentSession, Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
 
 pub struct AppState {
     pub collections: Vec<Collection>,
     /// Runtime-only: live tmux sessions managed by tws. Never persisted.
     pub active_sessions: Vec<Session>,
+    /// Runtime-only: AI agents detected in tmux panes. Never persisted.
+    pub agent_sessions: Vec<AgentSession>,
 }
 
 /// What the current tree selection points to.
@@ -18,6 +20,8 @@ pub enum SelectedItem {
     Thread(usize, usize),
     /// A session is selected (collection index, thread index, session index within active_sessions for that thread).
     Session(usize, usize, usize),
+    /// An agent is selected (collection index, thread index, session index, agent index within agents_for_session).
+    Agent(usize, usize, usize, usize),
 }
 
 impl AppState {
@@ -27,7 +31,9 @@ impl AppState {
     /// - 0 → None
     /// - 1 → collection UUID, or root thread UUID
     /// - 2 → (col_uuid, thread_uuid) for regular threads, or (thread_uuid, session_name) for root sessions
-    /// - 3 → (col_uuid, thread_uuid, session_name) for regular sessions
+    /// - 3 → (col_uuid, thread_uuid, session_name) for regular sessions,
+    ///        or (thread_uuid, session_name, pane_id) for root agents
+    /// - 4 → (col_uuid, thread_uuid, session_name, pane_id) for regular agents
     pub fn resolve_selection(&self, selected: &[String]) -> SelectedItem {
         match selected.len() {
             0 => SelectedItem::None,
@@ -61,27 +67,51 @@ impl AppState {
                 }
                 SelectedItem::None
             }
-            _ => {
-                // Depth 3: collection / thread / session
-                let col_id = &selected[0];
-                let thread_id = &selected[1];
-                let sess_name = &selected[2];
-                if let Some(col_idx) = self.find_collection_idx(col_id) {
-                    if let Some(thread_idx) = self.find_thread_idx(col_idx, thread_id) {
+            3 => {
+                // Try regular session: col / thread / session
+                if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
+                    if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
                         let thread = &self.collections[col_idx].threads[thread_idx];
                         let sessions = self.sessions_for_thread(thread.id);
-                        if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *sess_name) {
-                            SelectedItem::Session(col_idx, thread_idx, sess_idx)
+                        if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
+                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
                         } else {
-                            SelectedItem::Thread(col_idx, thread_idx)
+                            return SelectedItem::Thread(col_idx, thread_idx);
                         }
-                    } else {
-                        SelectedItem::None
                     }
-                } else {
-                    SelectedItem::None
                 }
+                // Try root agent: thread / session / pane_id
+                if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(&selected[0]) {
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[1]) {
+                        let agents = self.agents_for_session(&selected[1]);
+                        if let Some(agent_idx) = agents.iter().position(|a| a.pane_id == selected[2]) {
+                            return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
+                        }
+                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                    }
+                }
+                SelectedItem::None
             }
+            4 => {
+                // Regular agent: col / thread / session / pane_id
+                if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
+                    if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
+                        let thread = &self.collections[col_idx].threads[thread_idx];
+                        let sessions = self.sessions_for_thread(thread.id);
+                        if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
+                            let agents = self.agents_for_session(&selected[2]);
+                            if let Some(agent_idx) = agents.iter().position(|a| a.pane_id == selected[3]) {
+                                return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
+                            }
+                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                        }
+                    }
+                }
+                SelectedItem::None
+            }
+            _ => SelectedItem::None,
         }
     }
 
@@ -140,6 +170,13 @@ impl AppState {
                 .get(*col_idx)
                 .and_then(|c| c.threads.get(*thread_idx))
                 .map(|p| p.name.clone()),
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
+                let thread_id = self.collections.get(*col_idx)?.threads.get(*thread_idx)?.id;
+                let sessions = self.sessions_for_thread(thread_id);
+                let session = sessions.get(*sess_idx)?;
+                let agents = self.agents_for_session(&session.tmux_session_name);
+                agents.get(*agent_idx).map(|a| a.agent_type.display_name().to_string())
+            }
         }
     }
 
@@ -152,6 +189,14 @@ impl AppState {
         } else {
             Some(tmux_session_name_labeled(&col.name, &thread.name, label))
         }
+    }
+
+    /// Get all agents detected in a given tmux session.
+    pub fn agents_for_session(&self, tmux_session_name: &str) -> Vec<&AgentSession> {
+        self.agent_sessions
+            .iter()
+            .filter(|a| a.tmux_session_name == tmux_session_name)
+            .collect()
     }
 
     /// Get all active sessions belonging to a given thread.
@@ -324,6 +369,7 @@ impl AppState {
         Self {
             collections: Vec::new(),
             active_sessions: Vec::new(),
+            agent_sessions: Vec::new(),
         }
     }
 
@@ -347,6 +393,7 @@ impl AppState {
         Self {
             collections: vec![work, learning, podcast, personal],
             active_sessions: Vec::new(),
+            agent_sessions: Vec::new(),
         }
     }
 

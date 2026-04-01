@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout};
@@ -15,6 +15,7 @@ use crate::core::persistence;
 use crate::core::state::{AppState, SelectedItem};
 use crate::event;
 use crate::theme;
+use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
 
@@ -109,6 +110,7 @@ pub struct App {
     note_editor: NoteEditor,
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
+    last_agent_trigger_mtime: Option<SystemTime>,
     flash: Option<(String, Instant)>,
 }
 
@@ -127,6 +129,7 @@ impl App {
             note_editor: NoteEditor::new(),
             md_renderer: MarkdownRenderer::new(),
             last_refresh: Instant::now(),
+            last_agent_trigger_mtime: None,
             flash: None,
         }
     }
@@ -150,9 +153,14 @@ impl App {
         self.sync_note_editor();
 
         while self.running {
-            // Periodic session refresh
+            // Periodic session refresh (includes agent scan)
             if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
                 self.do_refresh_sessions();
+            }
+
+            // Hook-triggered agent scan (sub-250ms latency)
+            if self.check_agent_trigger() {
+                self.do_agent_scan();
             }
 
             self.draw(terminal)?;
@@ -227,6 +235,7 @@ impl App {
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
             }
+            SelectedItem::Agent(..) => None,
         };
         let show_sidebar = sidebar_info.is_some() && is_normal;
         let sidebar_title = sidebar_info.unwrap_or_default();
@@ -431,6 +440,7 @@ impl App {
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
                     SelectedItem::Thread(_, _) => StatusContext::NormalThread,
                     SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                    SelectedItem::Agent(..) => StatusContext::NormalAgent,
                 }
             }
         }
@@ -576,7 +586,7 @@ impl App {
     fn start_add(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match selected {
-            SelectedItem::Collection(idx) | SelectedItem::Thread(idx, _) | SelectedItem::Session(idx, _, _) => {
+            SelectedItem::Collection(idx) | SelectedItem::Thread(idx, _) | SelectedItem::Session(idx, _, _) | SelectedItem::Agent(idx, _, _, _) => {
                 InputPurpose::AddThread {
                     collection_idx: idx,
                 }
@@ -615,7 +625,7 @@ impl App {
                     None => return,
                 }
             }
-            SelectedItem::None => return,
+            SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Input {
             purpose,
@@ -641,7 +651,7 @@ impl App {
                 }
             }
             // Use 'x' to kill sessions, not 'd'
-            SelectedItem::Session(..) | SelectedItem::None => return,
+            SelectedItem::Session(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Confirm { purpose };
     }
@@ -697,6 +707,7 @@ impl App {
                     self.attach_to_session(&name, terminal)?;
                 }
             }
+            SelectedItem::Agent(..) => {}
             SelectedItem::None => {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
                 self.mode = Mode::Input {
@@ -815,6 +826,7 @@ impl App {
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(sess_idx).map(|s| s.tmux_session_name.clone())
             }
+            SelectedItem::Agent(..) => None,
         }
     }
 
@@ -1090,6 +1102,33 @@ impl App {
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
+        self.do_agent_scan();
+    }
+
+    fn check_agent_trigger(&self) -> bool {
+        let path = persistence::config_dir().join("agent.trigger");
+        let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        match self.last_agent_trigger_mtime {
+            Some(last) => mtime > last,
+            None => true,
+        }
+    }
+
+    fn do_agent_scan(&mut self) {
+        let session_names: Vec<String> = self
+            .state
+            .active_sessions
+            .iter()
+            .map(|s| s.tmux_session_name.clone())
+            .collect();
+        self.state.agent_sessions = agent_scan::scan_agents(&session_names);
+        let path = persistence::config_dir().join("agent.trigger");
+        self.last_agent_trigger_mtime = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok();
     }
 
     fn toggle_expand_all(&mut self) {
@@ -1100,6 +1139,14 @@ impl App {
                 for thread in &col.threads {
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![thread.id.to_string()]);
+                        // Also expand sessions that have agents
+                        for session in &self.state.active_sessions {
+                            if session.thread_id == thread.id
+                                && !self.state.agents_for_session(&session.tmux_session_name).is_empty()
+                            {
+                                all_paths.push(vec![thread.id.to_string(), session.tmux_session_name.clone()]);
+                            }
+                        }
                     }
                 }
             } else {
@@ -1107,6 +1154,18 @@ impl App {
                 for thread in &col.threads {
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
+                        // Also expand sessions that have agents
+                        for session in &self.state.active_sessions {
+                            if session.thread_id == thread.id
+                                && !self.state.agents_for_session(&session.tmux_session_name).is_empty()
+                            {
+                                all_paths.push(vec![
+                                    col.id.to_string(),
+                                    thread.id.to_string(),
+                                    session.tmux_session_name.clone(),
+                                ]);
+                            }
+                        }
                     }
                 }
             }

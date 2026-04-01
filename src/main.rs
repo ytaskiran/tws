@@ -40,6 +40,7 @@ fn run_tui() -> std::io::Result<()> {
     let state = AppState {
         collections,
         active_sessions: Vec::new(),
+        agent_sessions: Vec::new(),
     };
 
     let mut terminal = tui::init()?;

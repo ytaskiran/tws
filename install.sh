@@ -193,7 +193,94 @@ configure_tmux() {
     ok "Added keybinding to $tmux_conf"
 }
 
-# --- 5. Optional: glow (rich markdown rendering) ---
+# --- 5. Agent hooks (Claude Code + Codex) ---
+
+TRIGGER_CMD="touch \$HOME/.config/tws/agent.trigger"
+HOOK_ENTRY='[{"matcher": "", "hooks": [{"type": "command", "command": "'"$TRIGGER_CMD"'"}]}]'
+
+configure_claude_hooks() {
+    local settings="$HOME/.claude/settings.json"
+
+    if [ ! -f "$settings" ]; then
+        info "Claude Code settings not found — skipping agent hooks"
+        return
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — cannot auto-configure Claude Code hooks"
+        info "Install jq, then re-run install, or add hooks manually"
+        return
+    fi
+
+    # Already configured?
+    if grep -q 'agent\.trigger' "$settings" 2>/dev/null; then
+        ok "Claude Code agent hooks already configured"
+        return
+    fi
+
+    printf '%s' "Configure Claude Code agent hooks for tws? [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped Claude Code hooks"
+        return
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+    jq --argjson entry "$HOOK_ENTRY" '
+        .hooks //= {} |
+        .hooks.SessionStart //= [] |
+        .hooks.SessionEnd //= [] |
+        .hooks.SessionStart += $entry |
+        .hooks.SessionEnd += $entry
+    ' "$settings" > "$tmp" && mv "$tmp" "$settings"
+    ok "Configured Claude Code agent hooks"
+}
+
+configure_codex_hooks() {
+    local hooks_file="$HOME/.codex/hooks.json"
+
+    if [ ! -d "$HOME/.codex" ]; then
+        info "Codex config not found — skipping agent hooks"
+        return
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — cannot auto-configure Codex hooks"
+        return
+    fi
+
+    if grep -q 'agent\.trigger' "$hooks_file" 2>/dev/null; then
+        ok "Codex agent hooks already configured"
+        return
+    fi
+
+    printf '%s' "Configure Codex agent hooks for tws? [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped Codex hooks"
+        return
+    fi
+
+    [ -f "$hooks_file" ] || echo '{}' > "$hooks_file"
+
+    local tmp
+    tmp="$(mktemp)"
+    jq --argjson entry "$HOOK_ENTRY" '
+        .SessionStart //= [] |
+        .Stop //= [] |
+        .SessionStart += $entry |
+        .Stop += $entry
+    ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
+    ok "Configured Codex agent hooks"
+}
+
+configure_agent_hooks() {
+    configure_claude_hooks
+    configure_codex_hooks
+}
+
+# --- 6. Optional: glow (rich markdown rendering) ---
 
 configure_glow() {
     if command -v glow &>/dev/null; then
@@ -236,6 +323,7 @@ main() {
 
     install_binary "$target"
     configure_tmux
+    configure_agent_hooks
     configure_glow
 
     echo ""

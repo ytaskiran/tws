@@ -55,10 +55,34 @@ fn build_thread_item<'a>(
         .iter()
         .filter(|s| s.thread_id == thread.id)
         .map(|s| {
-            TreeItem::new_leaf(
-                s.tmux_session_name.clone(),
-                Text::styled(&s.display_name, theme::SESSION_STYLE),
-            )
+            let agents = state.agents_for_session(&s.tmux_session_name);
+            if agents.is_empty() {
+                TreeItem::new_leaf(
+                    s.tmux_session_name.clone(),
+                    Text::styled(&s.display_name, theme::SESSION_STYLE),
+                )
+            } else {
+                let agent_children: Vec<TreeItem<'a, String>> = agents
+                    .iter()
+                    .map(|a| {
+                        let label = format!(
+                            "{} (w:{})",
+                            a.agent_type.display_name(),
+                            a.window_index
+                        );
+                        TreeItem::new_leaf(
+                            a.pane_id.clone(),
+                            Text::styled(label, theme::AGENT_STYLE),
+                        )
+                    })
+                    .collect();
+                TreeItem::new(
+                    s.tmux_session_name.clone(),
+                    Text::styled(&s.display_name, theme::SESSION_STYLE),
+                    agent_children,
+                )
+                .expect("pane IDs are unique within a session")
+            }
         })
         .collect();
 
