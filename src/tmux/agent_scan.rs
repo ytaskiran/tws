@@ -9,6 +9,7 @@ struct PaneInfo {
     window_index: u32,
     pane_id: String,
     pane_pid: u32,
+    pane_title: String,
 }
 
 /// Scan all tmux panes for known AI agents (Claude Code, Codex).
@@ -48,7 +49,7 @@ fn list_all_panes() -> Option<String> {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}",
+            "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}\t#{pane_title}",
         ])
         .output()
         .ok()?;
@@ -76,16 +77,18 @@ fn list_all_processes() -> Option<String> {
 fn parse_panes(raw: &str) -> Vec<PaneInfo> {
     raw.lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(4, '\t');
+            let mut parts = line.splitn(5, '\t');
             let session_name = parts.next()?.to_string();
             let window_index = parts.next()?.parse::<u32>().ok()?;
             let pane_id = parts.next()?.to_string();
             let pane_pid = parts.next()?.parse::<u32>().ok()?;
+            let pane_title = parts.next().unwrap_or("").to_string();
             Some(PaneInfo {
                 session_name,
                 window_index,
                 pane_id,
                 pane_pid,
+                pane_title,
             })
         })
         .collect()
@@ -126,6 +129,29 @@ fn identify_agent(comm: &str) -> Option<AgentType> {
     }
 }
 
+/// Strip agent-specific prefixes from pane titles to get a clean display name.
+fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
+    let trimmed = title.trim();
+    match agent_type {
+        AgentType::ClaudeCode => {
+            // Claude Code uses braille dots (U+2800..U+28FF) as spinner indicators
+            trimmed
+                .trim_start_matches(|c: char| c.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&c))
+                .to_string()
+        }
+        AgentType::Codex => trimmed.to_string(),
+    }
+}
+
+fn make_display_name(pane: &PaneInfo, agent_type: AgentType) -> String {
+    let cleaned = clean_pane_title(&pane.pane_title, agent_type);
+    if cleaned.is_empty() {
+        format!("{} (w:{})", agent_type.display_name(), pane.window_index)
+    } else {
+        cleaned
+    }
+}
+
 fn match_agents(
     panes: &[PaneInfo],
     children: &HashMap<u32, Vec<(u32, String)>>,
@@ -135,11 +161,15 @@ fn match_agents(
         if let Some(kids) = children.get(&pane.pane_pid) {
             for (_pid, comm) in kids {
                 if let Some(agent_type) = identify_agent(comm) {
+                    let display_name = make_display_name(pane, agent_type);
                     agents.push(AgentSession {
                         agent_type,
                         tmux_session_name: pane.session_name.clone(),
                         window_index: pane.window_index,
                         pane_id: pane.pane_id.clone(),
+                        pane_title: pane.pane_title.clone(),
+                        display_name,
+                        renamed: false,
                     });
                 }
             }
@@ -154,14 +184,16 @@ mod tests {
 
     #[test]
     fn parse_panes_basic() {
-        let raw = "twsr_dev\t0\t%0\t12345\ntwsr_dev\t1\t%1\t12346\n";
+        let raw = "twsr_dev\t0\t%0\t12345\tsome title\ntwsr_dev\t1\t%1\t12346\t\n";
         let panes = parse_panes(raw);
         assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].session_name, "twsr_dev");
         assert_eq!(panes[0].window_index, 0);
         assert_eq!(panes[0].pane_id, "%0");
         assert_eq!(panes[0].pane_pid, 12345);
+        assert_eq!(panes[0].pane_title, "some title");
         assert_eq!(panes[1].window_index, 1);
+        assert_eq!(panes[1].pane_title, "");
     }
 
     #[test]
@@ -190,6 +222,7 @@ mod tests {
             window_index: 0,
             pane_id: "%0".into(),
             pane_pid: 100,
+            pane_title: "\u{2810} fix-bug".into(),
         }];
         let mut children = HashMap::new();
         children.insert(100, vec![(200, "claude".into())]);
@@ -198,8 +231,9 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_type, AgentType::ClaudeCode);
         assert_eq!(agents[0].tmux_session_name, "twsr_dev");
-        assert_eq!(agents[0].window_index, 0);
         assert_eq!(agents[0].pane_id, "%0");
+        assert_eq!(agents[0].display_name, "fix-bug");
+        assert!(!agents[0].renamed);
     }
 
     #[test]
@@ -209,6 +243,7 @@ mod tests {
             window_index: 0,
             pane_id: "%0".into(),
             pane_pid: 100,
+            pane_title: "".into(),
         }];
         let mut children = HashMap::new();
         children.insert(100, vec![(200, "vim".into()), (201, "node".into())]);
@@ -220,8 +255,8 @@ mod tests {
     #[test]
     fn match_agents_multiple_agents_one_session() {
         let panes = vec![
-            PaneInfo { session_name: "tws_work_proj".into(), window_index: 0, pane_id: "%0".into(), pane_pid: 100 },
-            PaneInfo { session_name: "tws_work_proj".into(), window_index: 1, pane_id: "%1".into(), pane_pid: 101 },
+            PaneInfo { session_name: "tws_work_proj".into(), window_index: 0, pane_id: "%0".into(), pane_pid: 100, pane_title: "\u{2810} task-a".into() },
+            PaneInfo { session_name: "tws_work_proj".into(), window_index: 1, pane_id: "%1".into(), pane_pid: 101, pane_title: "".into() },
         ];
         let mut children = HashMap::new();
         children.insert(100, vec![(200, "claude".into())]);
@@ -230,6 +265,21 @@ mod tests {
         let agents = match_agents(&panes, &children);
         assert_eq!(agents.len(), 2);
         assert_eq!(agents[0].agent_type, AgentType::ClaudeCode);
+        assert_eq!(agents[0].display_name, "task-a");
         assert_eq!(agents[1].agent_type, AgentType::Codex);
+        assert_eq!(agents[1].display_name, "Codex (w:1)"); // fallback: empty title
+    }
+
+    #[test]
+    fn clean_pane_title_strips_braille() {
+        assert_eq!(clean_pane_title("\u{2810} fix-bug", AgentType::ClaudeCode), "fix-bug");
+        assert_eq!(clean_pane_title("\u{2812}\u{2812} task", AgentType::ClaudeCode), "task");
+        assert_eq!(clean_pane_title("plain title", AgentType::ClaudeCode), "plain title");
+        assert_eq!(clean_pane_title("", AgentType::ClaudeCode), "");
+    }
+
+    #[test]
+    fn clean_pane_title_codex_passthrough() {
+        assert_eq!(clean_pane_title("codex-task", AgentType::Codex), "codex-task");
     }
 }

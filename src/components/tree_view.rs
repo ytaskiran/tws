@@ -66,9 +66,9 @@ fn build_thread_item<'a>(
                     .iter()
                     .map(|a| {
                         let label = format!(
-                            "{} (w:{})",
-                            a.agent_type.display_name(),
-                            a.window_index
+                            "{} {}",
+                            a.agent_type.icon(),
+                            a.display_name
                         );
                         TreeItem::new_leaf(
                             a.pane_id.clone(),

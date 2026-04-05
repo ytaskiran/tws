@@ -171,11 +171,8 @@ impl AppState {
                 .and_then(|c| c.threads.get(*thread_idx))
                 .map(|p| p.name.clone()),
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                let thread_id = self.collections.get(*col_idx)?.threads.get(*thread_idx)?.id;
-                let sessions = self.sessions_for_thread(thread_id);
-                let session = sessions.get(*sess_idx)?;
-                let agents = self.agents_for_session(&session.tmux_session_name);
-                agents.get(*agent_idx).map(|a| a.agent_type.display_name().to_string())
+                self.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+                    .map(|a| a.display_name.clone())
             }
         }
     }
@@ -197,6 +194,15 @@ impl AppState {
             .iter()
             .filter(|a| a.tmux_session_name == tmux_session_name)
             .collect()
+    }
+
+    /// Resolve a tree selection to the specific agent it points at.
+    pub fn resolve_agent(&self, col_idx: usize, thread_idx: usize, sess_idx: usize, agent_idx: usize) -> Option<&AgentSession> {
+        let thread_id = self.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+        let sessions = self.sessions_for_thread(thread_id);
+        let session = sessions.get(sess_idx)?;
+        let agents = self.agents_for_session(&session.tmux_session_name);
+        agents.get(agent_idx).copied()
     }
 
     /// Get all active sessions belonging to a given thread.

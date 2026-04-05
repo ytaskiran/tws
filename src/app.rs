@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -30,6 +31,9 @@ enum InputPurpose {
         col_idx: usize,
         thread_idx: usize,
         old_tmux_name: String,
+    },
+    RenameAgent {
+        pane_id: String,
     },
 }
 
@@ -390,6 +394,7 @@ impl App {
                         InputPurpose::RenameThread { .. } => "Rename Thread",
                         InputPurpose::NewSession { .. } => "Session Name",
                         InputPurpose::RenameSession { .. } => "Rename Session",
+                        InputPurpose::RenameAgent { .. } => "Rename Agent",
                     };
                     input_modal::render(frame, title, buffer, area);
                 }
@@ -625,7 +630,13 @@ impl App {
                     None => return,
                 }
             }
-            SelectedItem::Agent(..) | SelectedItem::None => return,
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
+                match self.state.resolve_agent(col_idx, thread_idx, sess_idx, agent_idx) {
+                    Some(agent) => InputPurpose::RenameAgent { pane_id: agent.pane_id.clone() },
+                    None => return,
+                }
+            }
+            SelectedItem::None => return,
         };
         self.mode = Mode::Input {
             purpose,
@@ -957,6 +968,15 @@ impl App {
                         self.set_flash("Session renamed");
                     }
                 }
+                InputPurpose::RenameAgent { pane_id } => {
+                    if let Some(agent) = self.state.agent_sessions.iter_mut()
+                        .find(|a| a.pane_id == pane_id)
+                    {
+                        agent.display_name = trimmed;
+                        agent.renamed = true;
+                        self.set_flash("Agent renamed");
+                    }
+                }
             }
         }
         Ok(())
@@ -1118,6 +1138,19 @@ impl App {
     }
 
     fn do_agent_scan(&mut self) {
+        if self.state.active_sessions.is_empty() {
+            self.state.agent_sessions.clear();
+            return;
+        }
+
+        let custom_names: HashMap<String, String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .filter(|a| a.renamed)
+            .map(|a| (a.pane_id.clone(), a.display_name.clone()))
+            .collect();
+
         let session_names: Vec<String> = self
             .state
             .active_sessions
@@ -1125,6 +1158,14 @@ impl App {
             .map(|s| s.tmux_session_name.clone())
             .collect();
         self.state.agent_sessions = agent_scan::scan_agents(&session_names);
+
+        for agent in &mut self.state.agent_sessions {
+            if let Some(name) = custom_names.get(&agent.pane_id) {
+                agent.display_name = name.clone();
+                agent.renamed = true;
+            }
+        }
+
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path)
             .and_then(|m| m.modified())

@@ -41,6 +41,13 @@ impl AgentType {
             AgentType::Codex => "Codex",
         }
     }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            AgentType::ClaudeCode => "\u{f06a9}",  // 󰚩 nf-md-robot
+            AgentType::Codex => "\u{f121}",         //  nf-fa-code
+        }
+    }
 }
 
 /// Runtime-only. Represents an AI agent detected in a tmux pane.
@@ -50,6 +57,9 @@ pub struct AgentSession {
     pub tmux_session_name: String,
     pub window_index: u32,
     pub pane_id: String,
+    pub pane_title: String,
+    pub display_name: String,
+    pub renamed: bool,
 }
 
 impl Collection {
