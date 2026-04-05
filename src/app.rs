@@ -718,7 +718,16 @@ impl App {
                     self.attach_to_session(&name, terminal)?;
                 }
             }
-            SelectedItem::Agent(..) => {}
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
+                if let Some(agent) = self.state.resolve_agent(col_idx, thread_idx, sess_idx, agent_idx) {
+                    let session_name = agent.tmux_session_name.clone();
+                    let window_index = agent.window_index;
+                    let pane_id = agent.pane_id.clone();
+                    let _ = tmux::select_window(&session_name, window_index);
+                    let _ = tmux::select_pane(&pane_id);
+                    self.attach_to_session(&session_name, terminal)?;
+                }
+            }
             SelectedItem::None => {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
                 self.mode = Mode::Input {

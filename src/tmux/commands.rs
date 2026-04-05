@@ -89,6 +89,25 @@ pub fn attach_session(name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
+/// Selects the given window in the target session.
+/// Works across sessions — doesn't require being attached to that session.
+pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
+    let target = format!("{}:{}", session_name, window_index);
+    let output = Command::new("tmux")
+        .args(["select-window", "-t", &target])
+        .output()?;
+    Ok(output.status.success())
+}
+
+/// Selects the given pane (by global pane ID like "%5").
+/// Works across sessions — doesn't require being attached to that session.
+pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
+    let output = Command::new("tmux")
+        .args(["select-pane", "-t", pane_id])
+        .output()?;
+    Ok(output.status.success())
+}
+
 /// Returns true if we're currently running inside a tmux session.
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
