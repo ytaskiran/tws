@@ -63,7 +63,7 @@ fn list_all_panes() -> Option<String> {
 
 fn list_all_processes() -> Option<String> {
     let output = Command::new("ps")
-        .args(["-e", "-o", "pid,ppid,comm"])
+        .args(["-e", "-o", "pid,ppid,command"])
         .output()
         .ok()?;
 
@@ -119,12 +119,31 @@ fn parse_processes(raw: &str) -> HashMap<u32, Vec<(u32, String)>> {
     map
 }
 
-/// Check if a command name matches a known agent binary.
-fn identify_agent(comm: &str) -> Option<AgentType> {
-    let basename = comm.rsplit('/').next().unwrap_or(comm);
-    match basename {
+/// Check if a command line matches a known agent.
+/// `command` is the full command string from `ps -o command` (exe + args).
+fn identify_agent(command: &str) -> Option<AgentType> {
+    let mut tokens = command.split_whitespace();
+    let exe = tokens.next()?;
+    let exe_basename = exe.rsplit('/').next().unwrap_or(exe);
+
+    match exe_basename {
         "claude" => Some(AgentType::ClaudeCode),
         "codex" => Some(AgentType::Codex),
+        // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
+        // Claude Code: @anthropic-ai/claude-code  →  path component "claude-code" or "claude"
+        // Codex:       @openai/codex              →  path component "codex"
+        "node" => tokens
+            .find(|t| !t.starts_with('-'))
+            .and_then(|script| {
+                let components: Vec<&str> = script.split('/').collect();
+                if components.iter().any(|&c| c == "codex") {
+                    Some(AgentType::Codex)
+                } else if components.iter().any(|&c| c == "claude" || c == "claude-code") {
+                    Some(AgentType::ClaudeCode)
+                } else {
+                    None
+                }
+            }),
         _ => None,
     }
 }
@@ -212,6 +231,32 @@ mod tests {
         assert_eq!(identify_agent("codex"), Some(AgentType::Codex));
         assert_eq!(identify_agent("/opt/homebrew/bin/codex"), Some(AgentType::Codex));
         assert_eq!(identify_agent("vim"), None);
+        assert_eq!(identify_agent("node"), None);
+    }
+
+    #[test]
+    fn identify_agent_node_npm() {
+        // npm-installed codex
+        assert_eq!(
+            identify_agent("node /opt/homebrew/lib/node_modules/@openai/codex/dist/cli.js"),
+            Some(AgentType::Codex)
+        );
+        assert_eq!(
+            identify_agent("node /home/user/.nvm/versions/node/v20/lib/node_modules/codex/cli.js"),
+            Some(AgentType::Codex)
+        );
+        // npm-installed Claude Code (@anthropic-ai/claude-code)
+        assert_eq!(
+            identify_agent("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"),
+            Some(AgentType::ClaudeCode)
+        );
+        assert_eq!(
+            identify_agent("node /usr/lib/node_modules/claude-code/dist/cli.js"),
+            Some(AgentType::ClaudeCode)
+        );
+        // node running something unrelated — should not match
+        assert_eq!(identify_agent("node /path/to/my-app/index.js"), None);
+        assert_eq!(identify_agent("node /path/to/codex-tutorial/index.js"), None);
         assert_eq!(identify_agent("node"), None);
     }
 
