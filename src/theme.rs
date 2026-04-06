@@ -68,6 +68,11 @@ pub const NOTES_TITLE_FOCUSED: Style = Style::new().fg(ACCENT).add_modifier(Modi
 pub const NOTES_TITLE_UNFOCUSED: Style = Style::new().fg(DIM_TEXT);
 pub const NOTES_PLACEHOLDER_STYLE: Style = Style::new().fg(MUTED_TEXT);
 
+// Agent preview sidebar (shares unfocused styles with notes sidebar)
+pub const PREVIEW_BORDER_STYLE: Style = NOTES_BORDER_UNFOCUSED;
+pub const PREVIEW_TITLE_STYLE: Style = NOTES_TITLE_UNFOCUSED;
+pub const PREVIEW_PLACEHOLDER_STYLE: Style = NOTES_PLACEHOLDER_STYLE;
+
 // Markdown rendering — custom stylesheet for tui-markdown
 #[derive(Clone)]
 pub struct NoteStyleSheet;

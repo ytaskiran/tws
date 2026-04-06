@@ -108,6 +108,20 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
     Ok(output.status.success())
 }
 
+/// Captures the visible content of a tmux pane, including ANSI escape sequences.
+/// Returns `None` if the pane doesn't exist or the command fails.
+pub fn capture_pane(pane_id: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", pane_id, "-e", "-p"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
 /// Returns true if we're currently running inside a tmux session.
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok_and(|v| !v.is_empty())

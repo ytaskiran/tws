@@ -4,12 +4,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout};
-use ratatui::text::{Line, Span};
+use ansi_to_tui::IntoText;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::components::{agent_preview, confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
@@ -116,10 +117,19 @@ pub struct App {
     last_refresh: Instant,
     last_agent_trigger_mtime: Option<SystemTime>,
     flash: Option<(String, Instant)>,
+    /// Cached pane content for agent preview, converted to ratatui Text.
+    preview_content: Option<Text<'static>>,
+    /// Which pane_id the cached preview is for (invalidate on selection change).
+    preview_pane_id: Option<String>,
+    /// When the preview was last refreshed.
+    last_preview_refresh: Instant,
 }
 
 /// How often to poll tmux for session changes (seconds).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How often to re-capture the agent pane preview (seconds).
+const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
     pub fn new(state: AppState) -> Self {
@@ -135,6 +145,9 @@ impl App {
             last_refresh: Instant::now(),
             last_agent_trigger_mtime: None,
             flash: None,
+            preview_content: None,
+            preview_pane_id: None,
+            last_preview_refresh: Instant::now(),
         }
     }
 
@@ -166,6 +179,10 @@ impl App {
             if self.check_agent_trigger() {
                 self.do_agent_scan();
             }
+
+            // Refresh agent preview if one is visible
+            let selected = self.state.resolve_selection(self.tree_state.selected());
+            self.refresh_preview(&selected);
 
             self.draw(terminal)?;
             if let Some(key) = event::poll_key(Duration::from_millis(250))? {
@@ -224,8 +241,9 @@ impl App {
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
 
-        // Pre-compute sidebar data: resolve which note to display.
+        // Pre-compute sidebar data: resolve which note or preview to display.
         let selected_item = self.state.resolve_selection(self.tree_state.selected());
+        let show_preview = self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
         let sidebar_info: Option<String> = match &selected_item {
             SelectedItem::None => None,
             SelectedItem::Collection(idx) => {
@@ -239,7 +257,10 @@ impl App {
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
             }
-            SelectedItem::Agent(..) => None,
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
+                self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+                    .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name))
+            }
         };
         let show_sidebar = sidebar_info.is_some() && is_normal;
         let sidebar_title = sidebar_info.unwrap_or_default();
@@ -341,20 +362,38 @@ impl App {
                 frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
             }
 
-            // Notes sidebar
+            // Sidebar: agent preview or notes
             if let Some(sb_area) = sidebar_area {
-                let title = format!("Notes: {}", sidebar_title);
-                notes_sidebar::render(
-                    frame,
-                    &notes_sidebar::SidebarState {
-                        rendered: rendered_note.as_ref(),
-                        scroll_offset: editor_scroll,
-                        is_empty: editor_is_empty,
-                        title: &title,
-                        focused: notes_focused && editor_has_target,
-                    },
-                    sb_area,
-                );
+                if show_preview {
+                    let title = format!("Preview: {}", sidebar_title);
+                    // Pin to bottom: scroll so the last screenful is visible.
+                    // Inner height = area minus 2 for top/bottom border.
+                    let visible = sb_area.height.saturating_sub(2) as usize;
+                    let scroll = self.preview_content.as_ref()
+                        .map_or(0, |t| t.lines.len().saturating_sub(visible));
+                    agent_preview::render(
+                        frame,
+                        &agent_preview::PreviewState {
+                            content: self.preview_content.as_ref(),
+                            scroll_offset: scroll,
+                            title: &title,
+                        },
+                        sb_area,
+                    );
+                } else {
+                    let title = format!("Notes: {}", sidebar_title);
+                    notes_sidebar::render(
+                        frame,
+                        &notes_sidebar::SidebarState {
+                            rendered: rendered_note.as_ref(),
+                            scroll_offset: editor_scroll,
+                            is_empty: editor_is_empty,
+                            title: &title,
+                            focused: notes_focused && editor_has_target,
+                        },
+                        sb_area,
+                    );
+                }
             }
 
             // Separator between tree and recent bar
@@ -828,6 +867,30 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Refresh the agent preview if an agent is selected and enough time has elapsed.
+    fn refresh_preview(&mut self, selected: &SelectedItem) {
+        if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
+            if let Some(agent) = self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx) {
+                let pane_id = agent.pane_id.clone();
+                let pane_changed = self.preview_pane_id.as_deref() != Some(&pane_id);
+                let needs_refresh = pane_changed
+                    || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
+                if needs_refresh {
+                    if let Some(raw) = tmux::capture_pane(&pane_id) {
+                        if let Ok(text) = raw.as_bytes().into_text() {
+                            self.preview_content = Some(text);
+                        }
+                    }
+                    self.preview_pane_id = Some(pane_id);
+                    self.last_preview_refresh = Instant::now();
+                }
+            }
+        } else {
+            self.preview_content = None;
+            self.preview_pane_id = None;
+        }
     }
 
     /// Derive the note key for the currently selected tree item.

@@ -1,3 +1,4 @@
+pub mod agent_preview;
 pub mod confirm_modal;
 pub mod finder_modal;
 pub mod input_modal;
