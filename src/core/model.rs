@@ -44,8 +44,8 @@ impl AgentType {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            AgentType::ClaudeCode => "\u{f06a9}",  // 󰚩 nf-md-robot
-            AgentType::Codex => "\u{f121}",         //  nf-fa-code
+            AgentType::ClaudeCode => "\u{2733}",  // ✳ eight spoked asterisk (matches Claude's pane title symbol)
+            AgentType::Codex => ">_",
         }
     }
 }

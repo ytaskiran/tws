@@ -153,10 +153,12 @@ fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
     let trimmed = title.trim();
     match agent_type {
         AgentType::ClaudeCode => {
-            // Claude Code uses braille dots (U+2800..U+28FF) as spinner indicators
-            trimmed
-                .trim_start_matches(|c: char| c.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&c))
-                .to_string()
+            // Claude Code uses braille dots (U+2800..U+28FF) as spinner indicators,
+            // and prefixes titles with ✳ (U+2733, eight spoked asterisk) as its logo.
+            let s = trimmed
+                .trim_start_matches(|c: char| c.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&c));
+            let s = s.strip_prefix('\u{2733}').unwrap_or(s).trim_start();
+            s.to_string()
         }
         AgentType::Codex => trimmed.to_string(),
     }
@@ -320,6 +322,8 @@ mod tests {
         assert_eq!(clean_pane_title("\u{2810} fix-bug", AgentType::ClaudeCode), "fix-bug");
         assert_eq!(clean_pane_title("\u{2812}\u{2812} task", AgentType::ClaudeCode), "task");
         assert_eq!(clean_pane_title("plain title", AgentType::ClaudeCode), "plain title");
+        assert_eq!(clean_pane_title("\u{2733} fix-bug", AgentType::ClaudeCode), "fix-bug");
+        assert_eq!(clean_pane_title("\u{2733} task with spaces", AgentType::ClaudeCode), "task with spaces");
         assert_eq!(clean_pane_title("", AgentType::ClaudeCode), "");
     }
 

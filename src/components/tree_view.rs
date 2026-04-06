@@ -1,3 +1,4 @@
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 use tui_tree_widget::TreeItem;
 
@@ -65,14 +66,13 @@ fn build_thread_item<'a>(
                 let agent_children: Vec<TreeItem<'a, String>> = agents
                     .iter()
                     .map(|a| {
-                        let label = format!(
-                            "{}  {}",
-                            a.agent_type.icon(),
-                            a.display_name
-                        );
+                        let label = Line::from(vec![
+                            Span::styled(a.agent_type.icon(), theme::AGENT_STYLE.add_modifier(Modifier::BOLD)),
+                            Span::styled(format!(" {}", a.display_name), theme::AGENT_STYLE),
+                        ]);
                         TreeItem::new_leaf(
                             a.pane_id.clone(),
-                            Text::styled(label, theme::AGENT_STYLE),
+                            label,
                         )
                     })
                     .collect();
