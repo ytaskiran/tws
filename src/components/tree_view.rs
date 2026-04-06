@@ -66,7 +66,7 @@ fn build_thread_item<'a>(
                     .iter()
                     .map(|a| {
                         let label = format!(
-                            "{} {}",
+                            "{}  {}",
                             a.agent_type.icon(),
                             a.display_name
                         );
