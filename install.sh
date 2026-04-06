@@ -237,6 +237,29 @@ configure_claude_hooks() {
     ok "Configured Claude Code agent hooks"
 }
 
+configure_codex_feature_flag() {
+    local config_file="$HOME/.codex/config.toml"
+
+    # Already enabled?
+    if grep -q 'codex_hooks\s*=\s*true' "$config_file" 2>/dev/null; then
+        return
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+
+    if [ ! -f "$config_file" ]; then
+        printf '[features]\ncodex_hooks = true\n' > "$config_file"
+    elif grep -q '^\[features\]' "$config_file"; then
+        # [features] section exists — insert codex_hooks = true after the header
+        awk '/^\[features\]/{print; print "codex_hooks = true"; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
+    else
+        # No [features] section — append it
+        printf '\n[features]\ncodex_hooks = true\n' >> "$config_file"
+    fi
+    ok "Enabled codex_hooks feature in ~/.codex/config.toml"
+}
+
 configure_codex_hooks() {
     local hooks_file="$HOME/.codex/hooks.json"
 
@@ -250,7 +273,12 @@ configure_codex_hooks() {
         return
     fi
 
-    if grep -q 'agent\.trigger' "$hooks_file" 2>/dev/null; then
+    local hooks_ok=false
+    local feature_ok=false
+    grep -q 'agent\.trigger' "$hooks_file" 2>/dev/null && hooks_ok=true
+    grep -q 'codex_hooks\s*=\s*true' "$HOME/.codex/config.toml" 2>/dev/null && feature_ok=true
+
+    if $hooks_ok && $feature_ok; then
         ok "Codex agent hooks already configured"
         return
     fi
@@ -262,17 +290,23 @@ configure_codex_hooks() {
         return
     fi
 
-    [ -f "$hooks_file" ] || echo '{}' > "$hooks_file"
+    if ! $hooks_ok; then
+        [ -f "$hooks_file" ] || echo '{}' > "$hooks_file"
 
-    local tmp
-    tmp="$(mktemp)"
-    jq --argjson entry "$HOOK_ENTRY" '
-        .SessionStart //= [] |
-        .Stop //= [] |
-        .SessionStart += $entry |
-        .Stop += $entry
-    ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
-    ok "Configured Codex agent hooks"
+        local tmp
+        tmp="$(mktemp)"
+        jq --argjson entry "$HOOK_ENTRY" '
+            .SessionStart //= [] |
+            .Stop //= [] |
+            .SessionStart += $entry |
+            .Stop += $entry
+        ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
+        ok "Configured Codex agent hooks"
+    fi
+
+    if ! $feature_ok; then
+        configure_codex_feature_flag
+    fi
 }
 
 configure_agent_hooks() {
