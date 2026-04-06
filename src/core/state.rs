@@ -10,6 +10,22 @@ pub struct AppState {
     pub agent_sessions: Vec<AgentSession>,
 }
 
+/// A single agent flattened out of the collection/thread/session hierarchy.
+/// Carries both display strings and the index tuple needed to produce `SelectedItem::Agent`.
+pub struct FlatAgent {
+    pub col_idx: usize,
+    pub thread_idx: usize,
+    pub thread_name: String,
+    pub sess_idx: usize,
+    pub session_display_name: String,
+    pub agent_idx: usize,
+    pub agent_type: super::model::AgentType,
+    pub agent_display_name: String,
+    pub tmux_session_name: String,
+    pub window_index: u32,
+    pub pane_id: String,
+}
+
 /// What the current tree selection points to.
 pub enum SelectedItem {
     /// Nothing is selected.
@@ -366,6 +382,36 @@ impl AppState {
             .threads
             .iter()
             .position(|p| p.id == id)
+    }
+
+    /// Flatten every active agent across all collections/threads/sessions into a single list.
+    /// Each entry carries the display strings and the index tuple needed to produce `SelectedItem::Agent`.
+    pub fn all_agents_flat(&self) -> Vec<FlatAgent> {
+        let mut result = Vec::new();
+        for (col_idx, col) in self.collections.iter().enumerate() {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                let sessions = self.sessions_for_thread(thread.id);
+                for (sess_idx, session) in sessions.iter().enumerate() {
+                    let agents = self.agents_for_session(&session.tmux_session_name);
+                    for (agent_idx, agent) in agents.iter().enumerate() {
+                        result.push(FlatAgent {
+                            col_idx,
+                            thread_idx,
+                            sess_idx,
+                            agent_idx,
+                            thread_name: thread.name.clone(),
+                            session_display_name: session.display_name.clone(),
+                            agent_type: agent.agent_type,
+                            agent_display_name: agent.display_name.clone(),
+                            tmux_session_name: agent.tmux_session_name.clone(),
+                            window_index: agent.window_index,
+                            pane_id: agent.pane_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        result
     }
 }
 

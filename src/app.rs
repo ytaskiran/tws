@@ -10,11 +10,11 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::components::{agent_preview, agents_view, confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
-use crate::core::state::{AppState, SelectedItem};
+use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
 use crate::theme;
 use crate::tmux::agent_scan;
@@ -91,6 +91,12 @@ enum Focus {
     Notes,
 }
 
+/// Which primary view is active.
+enum ViewMode {
+    Tree,
+    Agents,
+}
+
 enum Mode {
     Normal,
     Input {
@@ -123,6 +129,10 @@ pub struct App {
     preview_pane_id: Option<String>,
     /// When the preview was last refreshed.
     last_preview_refresh: Instant,
+    /// Whether to show the tree or agents flat-list view.
+    view_mode: ViewMode,
+    /// Cursor position within the agents flat list.
+    agent_list_cursor: usize,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -148,6 +158,8 @@ impl App {
             preview_content: None,
             preview_pane_id: None,
             last_preview_refresh: Instant::now(),
+            view_mode: ViewMode::Tree,
+            agent_list_cursor: 0,
         }
     }
 
@@ -167,6 +179,11 @@ impl App {
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
         }
+        // Restore view mode and agents cursor
+        if ui_state.agents_view_active {
+            self.view_mode = ViewMode::Agents;
+        }
+        self.agent_list_cursor = ui_state.agent_list_cursor;
         self.sync_note_editor();
 
         while self.running {
@@ -181,7 +198,7 @@ impl App {
             }
 
             // Refresh agent preview if one is visible
-            let selected = self.state.resolve_selection(self.tree_state.selected());
+            let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
 
             self.draw(terminal)?;
@@ -241,8 +258,21 @@ impl App {
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
 
+        // Pre-compute flat agents list for agents view mode.
+        let flat_agents: Vec<FlatAgent> = if matches!(self.view_mode, ViewMode::Agents) {
+            self.state.all_agents_flat()
+        } else {
+            Vec::new()
+        };
+
         // Pre-compute sidebar data: resolve which note or preview to display.
-        let selected_item = self.state.resolve_selection(self.tree_state.selected());
+        let selected_item = match self.view_mode {
+            ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
+            ViewMode::Agents => flat_agents
+                .get(self.agent_list_cursor)
+                .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
+                .unwrap_or(SelectedItem::None),
+        };
         let show_preview = self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
         let sidebar_info: Option<String> = match &selected_item {
             SelectedItem::None => None,
@@ -319,47 +349,51 @@ impl App {
                 (content_area, None)
             };
 
-            // Tree area or empty state
-            let block = Block::default();
-            let items = tree_view::build_tree_items(&self.state);
-            if items.is_empty() {
-                let available_height = tree_area.height.saturating_sub(2);
-                let content_height = 4u16;
-                let top_padding = (available_height.saturating_sub(content_height)) / 2;
-
-                let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::raw("Welcome to "),
-                    Span::styled("tws", theme::EMPTY_TITLE_STYLE),
-                ]));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Press Enter for a quick session, or a to add a thread.",
-                    theme::EMPTY_HINT_STYLE,
-                )));
-
-                let paragraph = Paragraph::new(lines)
-                    .block(block)
-                    .alignment(Alignment::Center);
-                frame.render_widget(paragraph, tree_area);
+            // Tree area or agents flat-list view
+            if matches!(self.view_mode, ViewMode::Agents) {
+                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area);
             } else {
-                let tree_highlight = if matches!(self.focus, Focus::Notes) {
-                    theme::HIGHLIGHT_UNFOCUSED_STYLE
+                let block = Block::default();
+                let items = tree_view::build_tree_items(&self.state);
+                if items.is_empty() {
+                    let available_height = tree_area.height.saturating_sub(2);
+                    let content_height = 4u16;
+                    let top_padding = (available_height.saturating_sub(content_height)) / 2;
+
+                    let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::raw("Welcome to "),
+                        Span::styled("tws", theme::EMPTY_TITLE_STYLE),
+                    ]));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "Press Enter for a quick session, or a to add a thread.",
+                        theme::EMPTY_HINT_STYLE,
+                    )));
+
+                    let paragraph = Paragraph::new(lines)
+                        .block(block)
+                        .alignment(Alignment::Center);
+                    frame.render_widget(paragraph, tree_area);
                 } else {
-                    theme::HIGHLIGHT_STYLE
-                };
+                    let tree_highlight = if matches!(self.focus, Focus::Notes) {
+                        theme::HIGHLIGHT_UNFOCUSED_STYLE
+                    } else {
+                        theme::HIGHLIGHT_STYLE
+                    };
 
-                let tree = Tree::new(&items)
-                    .expect("collection IDs are unique")
-                    .block(block)
-                    .highlight_style(tree_highlight)
-                    .highlight_symbol("  ")
-                    .node_closed_symbol("\u{203A} ")
-                    .node_open_symbol("\u{2304} ")
-                    .node_no_children_symbol("  ");
+                    let tree = Tree::new(&items)
+                        .expect("collection IDs are unique")
+                        .block(block)
+                        .highlight_style(tree_highlight)
+                        .highlight_symbol("  ")
+                        .node_closed_symbol("\u{203A} ")
+                        .node_open_symbol("\u{2304} ")
+                        .node_no_children_symbol("  ");
 
-                frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
+                    frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
+                }
             }
 
             // Sidebar: agent preview or notes
@@ -476,6 +510,9 @@ impl App {
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::Normal => {
+                if matches!(self.view_mode, ViewMode::Agents) {
+                    return StatusContext::AgentsView;
+                }
                 if matches!(self.focus, Focus::Notes) {
                     return StatusContext::Notes;
                 }
@@ -499,6 +536,24 @@ impl App {
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+
+        // Toggle between tree and agents view with 'v'
+        if code == KeyCode::Char('v') {
+            match self.view_mode {
+                ViewMode::Tree => {
+                    self.view_mode = ViewMode::Agents;
+                }
+                ViewMode::Agents => {
+                    self.view_mode = ViewMode::Tree;
+                }
+            }
+            return Ok(());
+        }
+
+        // In agents mode, route all keys there (bypasses tree/notes focus logic)
+        if matches!(self.view_mode, ViewMode::Agents) {
+            return self.handle_agents_view_key(code, terminal);
+        }
 
         // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
         let is_focus_switch = code == KeyCode::Tab
@@ -590,6 +645,50 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_agents_view_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
+        let agents = self.state.all_agents_flat();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !agents.is_empty() {
+                    self.agent_list_cursor = (self.agent_list_cursor + 1).min(agents.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.agent_list_cursor = self.agent_list_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(a) = agents.get(self.agent_list_cursor) {
+                    let session_name = a.tmux_session_name.clone();
+                    let _ = tmux::select_window(&session_name, a.window_index);
+                    let _ = tmux::select_pane(&a.pane_id);
+                    self.attach_to_session(&session_name, terminal)?;
+                }
+            }
+            KeyCode::Esc => {
+                self.view_mode = ViewMode::Tree;
+            }
+            KeyCode::Char('q') => {
+                self.running = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Resolve the currently selected item accounting for the active view mode.
+    fn resolve_current_selected(&self) -> SelectedItem {
+        match self.view_mode {
+            ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
+            ViewMode::Agents => {
+                let agents = self.state.all_agents_flat();
+                agents
+                    .get(self.agent_list_cursor)
+                    .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
+                    .unwrap_or(SelectedItem::None)
+            }
+        }
     }
 
     fn handle_input_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
@@ -1308,7 +1407,9 @@ impl App {
             let sel = self.tree_state.selected();
             if sel.is_empty() { None } else { Some(sel.to_vec()) }
         };
-        let ui = persistence::UiState { open_nodes, selected };
+        let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
+        let agent_list_cursor = self.agent_list_cursor;
+        let ui = persistence::UiState { open_nodes, selected, agents_view_active, agent_list_cursor };
         if let Err(e) = persistence::save_ui(&ui) {
             eprintln!("Failed to save UI state: {}", e);
         }

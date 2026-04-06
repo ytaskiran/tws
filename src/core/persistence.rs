@@ -8,6 +8,10 @@ use super::model::Collection;
 pub struct UiState {
     pub open_nodes: Vec<Vec<String>>,
     pub selected: Option<Vec<String>>,
+    #[serde(default)]
+    pub agents_view_active: bool,
+    #[serde(default)]
+    pub agent_list_cursor: usize,
 }
 
 fn ui_state_file() -> PathBuf {

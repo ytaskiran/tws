@@ -17,6 +17,7 @@ pub enum StatusContext {
     Input,
     Confirm,
     Finder,
+    AgentsView,
 }
 
 pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>) {
@@ -47,6 +48,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Input => &[("Enter", "confirm"), ("Esc", "cancel")],
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
+        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("v", "tree view"), ("q", "quit")],
     };
 
     // Left side: flash message (if active) or key hints
