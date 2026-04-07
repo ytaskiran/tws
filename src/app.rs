@@ -1337,6 +1337,25 @@ impl App {
             }
         }
 
+        // Auto-expand sessions that have agents so they're always visible
+        for session in &self.state.active_sessions {
+            if self.state.agents_for_session(&session.tmux_session_name).is_empty() {
+                continue;
+            }
+            // Build the tree path to this session node
+            for col in &self.state.collections {
+                if let Some(thread) = col.threads.iter().find(|t| t.id == session.thread_id) {
+                    let path = if col.is_root {
+                        vec![thread.id.to_string(), session.tmux_session_name.clone()]
+                    } else {
+                        vec![col.id.to_string(), thread.id.to_string(), session.tmux_session_name.clone()]
+                    };
+                    self.tree_state.open(path);
+                    break;
+                }
+            }
+        }
+
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path)
             .and_then(|m| m.modified())

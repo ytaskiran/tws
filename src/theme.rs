@@ -45,6 +45,7 @@ pub const EMPTY_HINT_STYLE: Style = Style::new().fg(MUTED_TEXT);
 
 // Agent sessions
 pub const AGENT_STYLE: Style = Style::new().fg(Color::Rgb(180, 180, 180));
+pub const AGENT_CONNECTOR_STYLE: Style = Style::new().fg(MUTED_TEXT);
 
 // Badges
 pub const BADGE_DOT_STYLE: Style = Style::new().fg(SAGE_GREEN);

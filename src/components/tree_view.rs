@@ -67,6 +67,7 @@ fn build_thread_item<'a>(
                     .iter()
                     .map(|a| {
                         let label = Line::from(vec![
+                            Span::styled("╰─ ", theme::AGENT_CONNECTOR_STYLE),
                             Span::styled(a.agent_type.icon(), theme::AGENT_STYLE.add_modifier(Modifier::BOLD)),
                             Span::styled(format!(" {}", a.display_name), theme::AGENT_STYLE),
                         ]);
