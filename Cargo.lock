@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "tws"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "ansi-to-tui",
  "clap",
