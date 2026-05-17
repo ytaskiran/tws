@@ -251,7 +251,7 @@ impl App {
         // (Only flash_msg *must* be outside — it mutates self.flash on expiry.)
         // Only show the bar in Normal mode when there are recent sessions.
         let is_normal = matches!(self.mode, Mode::Normal);
-        let recent_data: Vec<(String, String)> = if is_normal {
+        let recent_data: Vec<(String, String)> = if is_normal && matches!(self.view_mode, ViewMode::Tree) {
             self.state
                 .recent_sessions(5)
                 .iter()
