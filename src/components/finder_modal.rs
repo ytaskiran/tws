@@ -11,6 +11,7 @@ const MAX_VISIBLE: usize = 10;
 
 pub fn render(
     frame: &mut Frame,
+    title: &str,
     query: &str,
     entries: &[(String, String)],
     filtered: &[usize],
@@ -25,7 +26,7 @@ pub fn render(
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(" Find Session ")
+        .title(title)
         .title_style(theme::MODAL_TITLE_STYLE)
         .border_style(theme::MODAL_BORDER_STYLE)
         .padding(Padding::new(1, 1, 1, 0));

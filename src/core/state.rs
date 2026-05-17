@@ -282,6 +282,23 @@ impl AppState {
         })
     }
 
+    /// List all threads as `(col_idx, thread_idx, display_path)` for the thread picker.
+    /// Display path is `"Collection/Thread"` or just `"Thread"` for root threads.
+    pub fn all_threads_display(&self) -> Vec<(usize, usize, String)> {
+        let mut result = Vec::new();
+        for (col_idx, col) in self.collections.iter().enumerate() {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                let path = if col.is_root {
+                    thread.name.clone()
+                } else {
+                    format!("{}/{}", col.name, thread.name)
+                };
+                result.push((col_idx, thread_idx, path));
+            }
+        }
+        result
+    }
+
     /// Given a thread ID, find its collection and thread names.
     /// Returns `(Option<collection_name>, thread_name)`. Collection name is `None` for root threads.
     pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(Option<String>, String)> {

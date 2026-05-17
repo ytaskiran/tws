@@ -109,6 +109,11 @@ enum Mode {
     Finder {
         state: FinderState,
     },
+    ThreadPicker {
+        state: FinderState,
+        session_name: String,
+        session_label: String,
+    },
 }
 
 pub struct App {
@@ -219,6 +224,9 @@ impl App {
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code),
                     Mode::Finder { .. } => {
                         self.handle_finder_key(key.code, key.modifiers, terminal)?
+                    }
+                    Mode::ThreadPicker { .. } => {
+                        self.handle_thread_picker_key(key.code, key.modifiers)?
                     }
                 }
             }
@@ -491,6 +499,18 @@ impl App {
                 Mode::Finder { state } => {
                     finder_modal::render(
                         frame,
+                        " Find Session ",
+                        &state.query,
+                        &state.all_entries,
+                        &state.filtered,
+                        state.cursor,
+                        area,
+                    );
+                }
+                Mode::ThreadPicker { state, .. } => {
+                    finder_modal::render(
+                        frame,
+                        " Move to Thread ",
                         &state.query,
                         &state.all_entries,
                         &state.filtered,
@@ -509,6 +529,7 @@ impl App {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Finder { .. } => StatusContext::Finder,
+            Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents) {
                     return StatusContext::AgentsView;
@@ -624,6 +645,7 @@ impl App {
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.start_kill_session(),
+            KeyCode::Char('m') => self.start_move_session(),
             KeyCode::Char('/') => {
                 if self.state.active_sessions.is_empty() {
                     self.set_flash("No active sessions");
@@ -837,6 +859,40 @@ impl App {
         }
     }
 
+    fn start_move_session(&mut self) {
+        let selected = self.state.resolve_selection(self.tree_state.selected());
+        let (col_idx, thread_idx, sess_idx) = match selected {
+            SelectedItem::Session(c, t, s) => (c, t, s),
+            _ => return,
+        };
+
+        let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+        let sessions = self.state.sessions_for_thread(thread_id);
+        let session = match sessions.get(sess_idx) {
+            Some(s) => s,
+            None => return,
+        };
+        let session_name = session.tmux_session_name.clone();
+        let session_label = session.display_name.clone();
+
+        let entries: Vec<(String, String)> = self.state.all_threads_display()
+            .into_iter()
+            .filter(|(ci, ti, _)| !(*ci == col_idx && *ti == thread_idx))
+            .map(|(ci, ti, path)| (format!("{}:{}", ci, ti), path))
+            .collect();
+
+        if entries.is_empty() {
+            self.set_flash("No other threads to move to");
+            return;
+        }
+
+        self.mode = Mode::ThreadPicker {
+            state: FinderState::new(entries),
+            session_name,
+            session_label,
+        };
+    }
+
     fn start_enter(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
@@ -947,6 +1003,78 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn handle_thread_picker_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> std::io::Result<()> {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let nav_down = code == KeyCode::Down || (ctrl && code == KeyCode::Char('j'));
+        let nav_up = code == KeyCode::Up || (ctrl && code == KeyCode::Char('k'));
+
+        if nav_down {
+            if let Mode::ThreadPicker { state, .. } = &mut self.mode {
+                if !state.filtered.is_empty() {
+                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+                }
+            }
+        } else if nav_up {
+            if let Mode::ThreadPicker { state, .. } = &mut self.mode {
+                state.cursor = state.cursor.saturating_sub(1);
+            }
+        } else {
+            match code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Enter => {
+                    self.execute_move_session();
+                }
+                KeyCode::Backspace => {
+                    if let Mode::ThreadPicker { state, .. } = &mut self.mode {
+                        state.query.pop();
+                        state.update_filter();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Mode::ThreadPicker { state, .. } = &mut self.mode {
+                        state.query.push(c);
+                        state.update_filter();
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_move_session(&mut self) {
+        let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        if let Mode::ThreadPicker { state, session_name, session_label } = old_mode {
+            if let Some(&idx) = state.filtered.get(state.cursor) {
+                let key = &state.all_entries[idx].0;
+                let dest_display = state.all_entries[idx].1.clone();
+
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() != 2 { return; }
+                let dest_col: usize = match parts[0].parse() { Ok(v) => v, Err(_) => return };
+                let dest_thread: usize = match parts[1].parse() { Ok(v) => v, Err(_) => return };
+
+                if let Some(new_tmux_name) = self.state.make_session_name(dest_col, dest_thread, &session_label) {
+                    let _ = tmux::rename_session(&session_name, &new_tmux_name);
+                    self.notes.rename(&session_name, &new_tmux_name);
+                    self.do_refresh_sessions();
+
+                    if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
+                        self.tree_state.select(path);
+                    }
+                    self.sync_note_editor();
+                    self.set_flash(&format!("Session moved to {}", dest_display));
+                }
+            }
+        }
     }
 
     fn handle_notes_key(

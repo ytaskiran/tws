@@ -17,6 +17,7 @@ pub enum StatusContext {
     Input,
     Confirm,
     Finder,
+    ThreadPicker,
     AgentsView,
 }
 
@@ -42,12 +43,13 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             ("/", "find"),
             ("Tab", "notes"),
         ],
-        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("x", "kill"), ("/", "find"), ("Tab", "notes")],
+        StatusContext::NormalSession => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("m", "move"), ("x", "kill"), ("/", "find"), ("Tab", "notes")],
         StatusContext::NormalAgent => &[("q", "quit"), ("Enter", "attach"), ("r", "rename"), ("/", "find")],
         StatusContext::Notes => &[("Enter", "edit"), ("Esc", "back"), ("j/k", "scroll")],
         StatusContext::Input => &[("Enter", "confirm"), ("Esc", "cancel")],
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
+        StatusContext::ThreadPicker => &[("Enter", "move"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
         StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("v", "tree view"), ("q", "quit")],
     };
 

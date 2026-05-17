@@ -51,6 +51,11 @@ impl NoteStore {
         }
     }
 
+    /// Rename a note from one key to another (e.g. when moving a session).
+    pub fn rename(&self, old_key: &str, new_key: &str) {
+        let _ = fs::rename(self.note_path(old_key), self.note_path(new_key));
+    }
+
     pub fn note_path(&self, key: &str) -> PathBuf {
         self.dir.join(format!("{}.md", key))
     }
