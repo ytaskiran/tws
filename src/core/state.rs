@@ -238,6 +238,7 @@ impl AppState {
     ///     - If the moving agent was unpinned, X is re-auto-pinned to the lowest free slot.
     ///
     /// Slot values outside 0..=9 are clamped to 9.
+    /// If `pane_id` does not match any current agent, this is a no-op.
     pub fn pin_agent_to(&mut self, pane_id: &str, slot: u8) {
         let slot = slot.min(9);
 
@@ -269,6 +270,9 @@ impl AppState {
                     agent.pin_slot = Some(prev_slot);
                 }
             } else {
+                // Clear the occupant's slot *before* calling pin_agent_auto so that the
+                // freed slot is counted as available when it scans for the lowest free.
+                // pin_agent_auto cannot pick `slot` (the moving agent already owns it).
                 if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == occupant_id) {
                     agent.pin_slot = None;
                 }
