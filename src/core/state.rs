@@ -1110,4 +1110,44 @@ mod tests {
         let ids: Vec<&str> = flat.iter().map(|f| f.pane_id.as_str()).collect();
         assert_eq!(ids, vec!["%c", "%b", "%a", "%d"]);
     }
+
+    #[test]
+    fn pin_slot_survives_agent_list_rebuild() {
+        use crate::core::model::{AgentSession, AgentType};
+        let mut state = AppState::new();
+        state.agent_sessions.push(AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: "tws_x_y_a".into(),
+            window_index: 0,
+            pane_id: "%1".into(),
+            pane_title: String::new(),
+            display_name: "claude".into(),
+            renamed: false,
+            pin_slot: Some(2),
+        });
+
+        let saved_pin = state
+            .agent_sessions
+            .iter()
+            .find(|a| a.pane_id == "%1")
+            .and_then(|a| a.pin_slot);
+
+        state.agent_sessions.clear();
+        state.agent_sessions.push(AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: "tws_x_y_a".into(),
+            window_index: 0,
+            pane_id: "%1".into(),
+            pane_title: String::new(),
+            display_name: "claude".into(),
+            renamed: false,
+            pin_slot: None,
+        });
+
+        if let Some(agent) = state.agent_sessions.iter_mut().find(|a| a.pane_id == "%1") {
+            agent.pin_slot = saved_pin;
+        }
+
+        assert_eq!(state.agent_sessions[0].pin_slot, Some(2));
+    }
 }

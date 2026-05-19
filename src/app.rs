@@ -1442,12 +1442,23 @@ impl App {
             return;
         }
 
-        let custom_names: HashMap<String, String> = self
+        struct Preserved {
+            custom_name: Option<String>,
+            pin_slot: Option<u8>,
+        }
+        let snapshot: HashMap<String, Preserved> = self
             .state
             .agent_sessions
             .iter()
-            .filter(|a| a.renamed)
-            .map(|a| (a.pane_id.clone(), a.display_name.clone()))
+            .map(|a| {
+                (
+                    a.pane_id.clone(),
+                    Preserved {
+                        custom_name: if a.renamed { Some(a.display_name.clone()) } else { None },
+                        pin_slot: a.pin_slot,
+                    },
+                )
+            })
             .collect();
 
         let session_names: Vec<String> = self
@@ -1459,9 +1470,12 @@ impl App {
         self.state.agent_sessions = agent_scan::scan_agents(&session_names);
 
         for agent in &mut self.state.agent_sessions {
-            if let Some(name) = custom_names.get(&agent.pane_id) {
-                agent.display_name = name.clone();
-                agent.renamed = true;
+            if let Some(prev) = snapshot.get(&agent.pane_id) {
+                if let Some(name) = &prev.custom_name {
+                    agent.display_name = name.clone();
+                    agent.renamed = true;
+                }
+                agent.pin_slot = prev.pin_slot;
             }
         }
 
