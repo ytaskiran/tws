@@ -708,18 +708,15 @@ impl App {
             // Shift+digit → manual pin/repin to slot
             KeyCode::Char(c) if shift && c.is_ascii_digit() => {
                 let slot: u8 = c.to_digit(10).unwrap() as u8;
-                if let Some(pane_id) = current_pane_id.clone() {
+                if let Some(pane_id) = current_pane_id {
+                    let path = agents
+                        .get(self.agent_list_cursor)
+                        .map(|a| format!("{} / {}", a.tmux_session_name, a.agent_display_name));
                     self.state.pin_agent_to(&pane_id, slot);
-                    let path = self
-                        .state
-                        .agent_sessions
-                        .iter()
-                        .find(|a| a.pane_id == pane_id)
-                        .map(|a| format!("{} / {}", a.tmux_session_name, a.display_name));
                     if let Some(p) = path {
                         self.set_flash(&format!("Pin {}: {}", slot, p));
                     }
-                    self.reanchor_agent_cursor(current_pane_id);
+                    self.reanchor_agent_cursor(Some(pane_id));
                 }
             }
             // Plain digit → jump to slot
@@ -727,22 +724,18 @@ impl App {
                 let slot: u8 = c.to_digit(10).unwrap() as u8;
                 if let Some(agent) = self.state.agent_by_pin_slot(slot) {
                     let target_id = agent.pane_id.clone();
-                    let new_agents = self.state.all_agents_flat();
-                    if let Some(idx) = new_agents.iter().position(|a| a.pane_id == target_id) {
+                    if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
                         self.agent_list_cursor = idx;
                     }
                 }
             }
             // `p` → toggle pin
             KeyCode::Char('p') => {
-                if let Some(pane_id) = current_pane_id.clone() {
-                    let already_pinned = self
-                        .state
-                        .agent_sessions
-                        .iter()
-                        .find(|a| a.pane_id == pane_id)
-                        .and_then(|a| a.pin_slot)
-                        .is_some();
+                if let Some(pane_id) = current_pane_id {
+                    let already_pinned = agents
+                        .get(self.agent_list_cursor)
+                        .map(|a| a.pin_slot.is_some())
+                        .unwrap_or(false);
 
                     if already_pinned {
                         self.state.unpin_agent(&pane_id);
@@ -753,7 +746,7 @@ impl App {
                             None => self.set_flash("Max 10 pins reached"),
                         }
                     }
-                    self.reanchor_agent_cursor(current_pane_id);
+                    self.reanchor_agent_cursor(Some(pane_id));
                 }
             }
             _ => {}
