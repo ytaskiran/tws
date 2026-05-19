@@ -709,12 +709,19 @@ impl App {
             KeyCode::Char(c) if shift && c.is_ascii_digit() => {
                 let slot: u8 = c.to_digit(10).unwrap() as u8;
                 if let Some(pane_id) = current_pane_id {
-                    let path = agents
-                        .get(self.agent_list_cursor)
-                        .map(|a| format!("{} / {}", a.tmux_session_name, a.agent_display_name));
+                    let snapshot = agents.get(self.agent_list_cursor);
+                    let already_in_slot = snapshot
+                        .and_then(|a| a.pin_slot)
+                        .map(|s| s == slot)
+                        .unwrap_or(false);
+                    let path = snapshot.map(|a| {
+                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                    });
                     self.state.pin_agent_to(&pane_id, slot);
-                    if let Some(p) = path {
-                        self.set_flash(&format!("Pin {}: {}", slot, p));
+                    if !already_in_slot {
+                        if let Some(p) = path {
+                            self.set_flash(&format!("Pin {}: {}", slot, p));
+                        }
                     }
                     self.reanchor_agent_cursor(Some(pane_id));
                 }
@@ -732,17 +739,24 @@ impl App {
             // `p` → toggle pin
             KeyCode::Char('p') => {
                 if let Some(pane_id) = current_pane_id {
-                    let already_pinned = agents
-                        .get(self.agent_list_cursor)
-                        .map(|a| a.pin_slot.is_some())
-                        .unwrap_or(false);
+                    let snapshot = agents.get(self.agent_list_cursor);
+                    let already_pinned = snapshot.map(|a| a.pin_slot.is_some()).unwrap_or(false);
+                    let path = snapshot.map(|a| {
+                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                    });
 
                     if already_pinned {
                         self.state.unpin_agent(&pane_id);
-                        self.set_flash("Unpinned");
+                        if let Some(p) = &path {
+                            self.set_flash(&format!("Unpinned: {}", p));
+                        }
                     } else {
                         match self.state.pin_agent_auto(&pane_id) {
-                            Some(slot) => self.set_flash(&format!("Pinned to slot {}", slot)),
+                            Some(slot) => {
+                                if let Some(p) = &path {
+                                    self.set_flash(&format!("Pin {}: {}", slot, p));
+                                }
+                            }
                             None => self.set_flash("Max 10 pins reached"),
                         }
                     }
