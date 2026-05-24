@@ -12,6 +12,10 @@ pub struct UiState {
     pub agents_view_active: bool,
     #[serde(default)]
     pub agent_list_cursor: usize,
+    /// Persisted pin assignments: `(pane_id, slot)`. Reapplied on first scan after startup;
+    /// entries whose pane_id is no longer live are silently dropped.
+    #[serde(default)]
+    pub pins: Vec<(String, u8)>,
 }
 
 fn ui_state_file() -> PathBuf {
