@@ -19,9 +19,20 @@ pub enum StatusContext {
     Finder,
     ThreadPicker,
     AgentsView,
+    /// Slot-assign mode: agents view is waiting for a digit to assign a slot to an agent.
+    /// Carries the human-readable path of the target agent for display.
+    AgentsViewSlotAssign { target_path: String },
 }
 
 pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>) {
+    // Slot-assign mode renders a custom prompt; render it ahead of the standard hint table.
+    let slot_assign_prompt: Option<String> = match &ctx {
+        StatusContext::AgentsViewSlotAssign { target_path } => {
+            Some(format!("Set slot for {} — 0-9 assign · Esc cancel", target_path))
+        }
+        _ => None,
+    };
+
     let hints: &[(&str, &str)] = match ctx {
         StatusContext::NormalNone => &[("q", "quit"), ("Enter", "quick session"), ("a", "add thread"), ("A", "add collection"), ("/", "find"), ("e", "toggle all")],
         StatusContext::NormalCollection => &[
@@ -50,12 +61,16 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
         StatusContext::ThreadPicker => &[("Enter", "move"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
-        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("p", "pin"), ("0-9", "jump"), ("\u{21e7}0-9", "set slot"), ("v", "tree view"), ("q", "quit")],
+        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("p", "pin"), ("0-9", "jump"), ("P", "set slot"), ("v", "tree view"), ("q", "quit")],
+        // Hints empty when assign prompt is active — prompt itself replaces the hint row.
+        StatusContext::AgentsViewSlotAssign { .. } => &[],
     };
 
-    // Left side: flash message (if active) or key hints
+    // Left side: assign prompt > flash message > key hints
     let mut left_spans = Vec::new();
-    if let Some(msg) = flash {
+    if let Some(prompt) = &slot_assign_prompt {
+        left_spans.push(Span::styled(prompt.as_str(), theme::FLASH_STYLE));
+    } else if let Some(msg) = flash {
         left_spans.push(Span::styled(msg, theme::FLASH_STYLE));
     } else {
         for (i, (key, desc)) in hints.iter().enumerate() {
