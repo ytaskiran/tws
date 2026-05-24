@@ -16,7 +16,8 @@ use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
-use crate::theme;
+use crate::config::keys::{Action, KeyMode, Keymap};
+use crate::theme::{Theme, NoteStyleSheet};
 use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
@@ -138,6 +139,10 @@ pub struct App {
     view_mode: ViewMode,
     /// Cursor position within the agents flat list.
     agent_list_cursor: usize,
+    /// Runtime theme derived from the palette.
+    theme: Theme,
+    /// Key bindings (user-configurable).
+    keymap: Keymap,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
     /// Drained on first successful agent rebuild; entries whose pane_id
     /// is no longer live are silently dropped.
@@ -154,7 +159,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
-    pub fn new(state: AppState) -> Self {
+    pub fn new(state: AppState, theme: Theme, note_stylesheet: NoteStyleSheet, keymap: Keymap) -> Self {
         Self {
             state,
             tree_state: TreeState::default(),
@@ -163,7 +168,7 @@ impl App {
             focus: Focus::Tree,
             notes: NoteStore::new(),
             note_editor: NoteEditor::new(),
-            md_renderer: MarkdownRenderer::new(),
+            md_renderer: MarkdownRenderer::new(note_stylesheet),
             last_refresh: Instant::now(),
             last_agent_trigger_mtime: None,
             flash: None,
@@ -172,6 +177,8 @@ impl App {
             last_preview_refresh: Instant::now(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
+            theme,
+            keymap,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
         }
@@ -232,8 +239,8 @@ impl App {
                     Mode::Normal => {
                         self.handle_normal_mode(key.code, key.modifiers, terminal)?;
                     }
-                    Mode::Input { .. } => self.handle_input_key(key.code, terminal)?,
-                    Mode::Confirm { .. } => self.handle_confirm_key(key.code),
+                    Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
+                    Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
                     Mode::Finder { .. } => {
                         self.handle_finder_key(key.code, key.modifiers, terminal)?
                     }
@@ -331,6 +338,9 @@ impl App {
         terminal.draw(|frame| {
             let area = frame.area();
 
+            // Paint the theme background before any widgets
+            frame.render_widget(Block::default().style(self.theme.background), area);
+
             // Build layout: tree, [separator, recent bar], separator, status bar
             let constraints = if show_recent {
                 vec![
@@ -371,10 +381,10 @@ impl App {
 
             // Tree area or agents flat-list view
             if matches!(self.view_mode, ViewMode::Agents) {
-                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area);
+                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme);
             } else {
                 let block = Block::default();
-                let items = tree_view::build_tree_items(&self.state);
+                let items = tree_view::build_tree_items(&self.state, &self.theme);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
@@ -384,12 +394,12 @@ impl App {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
                         Span::raw("Welcome to "),
-                        Span::styled("tws", theme::EMPTY_TITLE_STYLE),
+                        Span::styled("tws", self.theme.empty_title),
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "Press Enter for a quick session, or a to add a thread.",
-                        theme::EMPTY_HINT_STYLE,
+                        self.theme.empty_hint,
                     )));
 
                     let paragraph = Paragraph::new(lines)
@@ -398,9 +408,9 @@ impl App {
                     frame.render_widget(paragraph, tree_area);
                 } else {
                     let tree_highlight = if matches!(self.focus, Focus::Notes) {
-                        theme::HIGHLIGHT_UNFOCUSED_STYLE
+                        self.theme.highlight_unfocused
                     } else {
-                        theme::HIGHLIGHT_STYLE
+                        self.theme.highlight
                     };
 
                     let tree = Tree::new(&items)
@@ -433,6 +443,7 @@ impl App {
                             title: &title,
                         },
                         sb_area,
+                        &self.theme,
                     );
                 } else {
                     let title = format!("Notes: {}", sidebar_title);
@@ -446,6 +457,7 @@ impl App {
                             focused: notes_focused && editor_has_target,
                         },
                         sb_area,
+                        &self.theme,
                     );
                 }
             }
@@ -454,27 +466,27 @@ impl App {
             if let Some(idx) = recent_sep_idx {
                 let sep = "\u{2500}".repeat(chunks[idx].width as usize);
                 frame.render_widget(
-                    Paragraph::new(Line::styled(sep, theme::SEPARATOR_STYLE)),
+                    Paragraph::new(Line::styled(sep, self.theme.separator)),
                     chunks[idx],
                 );
             }
 
             // Recent sessions bar (only in Normal mode with active sessions)
             if let Some(idx) = recent_idx {
-                recent_bar::render(frame, &recent_data, chunks[idx]);
+                recent_bar::render(frame, &recent_data, chunks[idx], &self.theme);
             }
 
             // Separator line
             let separator = "\u{2500}".repeat(chunks[sep_idx].width as usize);
             frame.render_widget(
-                Paragraph::new(Line::styled(separator, theme::SEPARATOR_STYLE)),
+                Paragraph::new(Line::styled(separator, self.theme.separator)),
                 chunks[sep_idx],
             );
 
             // Status bar
             let active_count = self.state.active_sessions.len();
             let status_ctx = self.status_context(&selected_item);
-            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref());
+            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref(), &self.theme, &self.keymap);
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
@@ -489,7 +501,7 @@ impl App {
                         InputPurpose::RenameSession { .. } => "Rename Session",
                         InputPurpose::RenameAgent { .. } => "Rename Agent",
                     };
-                    input_modal::render(frame, title, buffer, area);
+                    input_modal::render(frame, title, buffer, area, &self.theme);
                 }
                 Mode::Confirm { purpose } => {
                     let message = match purpose {
@@ -506,7 +518,7 @@ impl App {
                             format!("Kill all sessions for \"{}\"?", thread_name)
                         }
                     };
-                    confirm_modal::render(frame, &message, area);
+                    confirm_modal::render(frame, &message, area, &self.theme);
                 }
                 Mode::Finder { state } => {
                     finder_modal::render(
@@ -517,6 +529,7 @@ impl App {
                         &state.filtered,
                         state.cursor,
                         area,
+                        &self.theme,
                     );
                 }
                 Mode::ThreadPicker { state, .. } => {
@@ -528,6 +541,7 @@ impl App {
                         &state.filtered,
                         state.cursor,
                         area,
+                        &self.theme,
                     );
                 }
             }
@@ -580,8 +594,9 @@ impl App {
     ) -> std::io::Result<()> {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
 
-        // Toggle between tree and agents view with 'v'
-        if code == KeyCode::Char('v') {
+        // Toggle between tree and agents view
+        let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
+        if normal_action == Some(Action::ToggleView) {
             match self.view_mode {
                 ViewMode::Tree => {
                     self.view_mode = ViewMode::Agents;
@@ -626,7 +641,7 @@ impl App {
 
         match self.focus {
             Focus::Tree => {
-                self.handle_normal_key(code, terminal)?;
+                self.handle_normal_key(code, modifiers, terminal)?;
                 // After tree navigation, sync note editor if selection changed
                 self.sync_note_editor();
             }
@@ -635,68 +650,62 @@ impl App {
         Ok(())
     }
 
-    fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
-        match code {
-            KeyCode::Char('q') => self.running = false,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.tree_state.key_down();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.tree_state.key_up();
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.tree_state.key_left();
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.tree_state.key_right();
-            }
-            KeyCode::Char(' ') => {
-                self.tree_state.toggle_selected();
-            }
-            KeyCode::Enter => self.start_enter(terminal)?,
-            KeyCode::Esc => {
-                self.tree_state.select(Vec::new());
-            }
-            KeyCode::Char('a') => self.start_add(),
-            KeyCode::Char('A') => {
+    fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
+        let action = match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
+            Some(a) => a,
+            None => return Ok(()),
+        };
+        match action {
+            Action::Quit => self.running = false,
+            Action::MoveDown => { self.tree_state.key_down(); }
+            Action::MoveUp => { self.tree_state.key_up(); }
+            Action::MoveLeft => { self.tree_state.key_left(); }
+            Action::MoveRight => { self.tree_state.key_right(); }
+            Action::ToggleSelect => { self.tree_state.toggle_selected(); }
+            Action::Enter => self.start_enter(terminal)?,
+            Action::Deselect => { self.tree_state.select(Vec::new()); }
+            Action::Add => self.start_add(),
+            Action::AddCollection => {
                 self.mode = Mode::Input {
                     purpose: InputPurpose::AddCollection,
                     buffer: String::new(),
                 };
             }
-            KeyCode::Char('r') => self.start_rename(),
-            KeyCode::Char('d') => self.start_delete(),
-            KeyCode::Char('x') => self.start_kill_session(),
-            KeyCode::Char('m') => self.start_move_session(),
-            KeyCode::Char('/') => {
+            Action::Rename => self.start_rename(),
+            Action::Delete => self.start_delete(),
+            Action::KillSession => self.start_kill_session(),
+            Action::Move => self.start_move_session(),
+            Action::Finder => {
                 if self.state.active_sessions.is_empty() {
                     self.set_flash("No active sessions");
                     return Ok(());
                 }
                 self.start_finder();
             }
-            KeyCode::Char(c @ '1'..='5') => {
-                let recent = self.state.recent_sessions(5);
-                if let Some(session) = recent.get((c as usize) - ('1' as usize)) {
-                    let name = session.tmux_session_name.clone();
-                    self.attach_to_session(&name, terminal)?;
-                    if let Some(path) = self.state.session_tree_path(&name) {
-                        self.tree_state.select(path);
-                    }
-                }
-            }
-            KeyCode::Char('e') => self.toggle_expand_all(),
+            Action::RecentSession1 => self.attach_recent(0, terminal)?,
+            Action::RecentSession2 => self.attach_recent(1, terminal)?,
+            Action::RecentSession3 => self.attach_recent(2, terminal)?,
+            Action::RecentSession4 => self.attach_recent(3, terminal)?,
+            Action::RecentSession5 => self.attach_recent(4, terminal)?,
+            Action::ExpandAll => self.toggle_expand_all(),
             _ => {}
         }
         Ok(())
     }
 
-    fn handle_agents_view_key(
-        &mut self,
-        code: KeyCode,
-        _modifiers: KeyModifiers,
-        terminal: &mut Tui,
-    ) -> std::io::Result<()> {
+    fn attach_recent(&mut self, index: usize, terminal: &mut Tui) -> std::io::Result<()> {
+        let recent = self.state.recent_sessions(5);
+        if let Some(session) = recent.get(index) {
+            let name = session.tmux_session_name.clone();
+            self.attach_to_session(&name, terminal)?;
+            if let Some(path) = self.state.session_tree_path(&name) {
+                self.tree_state.select(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_agents_view_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
         let agents = self.state.all_agents_flat();
 
         let current_pane_id = agents
@@ -728,22 +737,22 @@ impl App {
                 }
             }
             if matches!(code, KeyCode::Esc) {
-                // silent cancel
                 return Ok(());
             }
-            // Any other key cancels assignment but still gets handled below.
+            // Any other key cancels assignment and falls through to normal dispatch.
         }
 
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        let action = self.keymap.resolve(KeyMode::Agents, code, modifiers);
+        match action {
+            Some(Action::MoveDown) => {
                 if !agents.is_empty() {
                     self.agent_list_cursor = (self.agent_list_cursor + 1).min(agents.len() - 1);
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Some(Action::MoveUp) => {
                 self.agent_list_cursor = self.agent_list_cursor.saturating_sub(1);
             }
-            KeyCode::Enter => {
+            Some(Action::Enter) => {
                 if let Some(a) = agents.get(self.agent_list_cursor) {
                     let session_name = a.tmux_session_name.clone();
                     let _ = tmux::select_window(&session_name, a.window_index);
@@ -751,36 +760,19 @@ impl App {
                     self.attach_to_session(&session_name, terminal)?;
                 }
             }
-            KeyCode::Esc => {
+            Some(Action::Cancel) => {
                 self.view_mode = ViewMode::Tree;
             }
-            KeyCode::Char('q') => {
+            Some(Action::Quit) => {
                 self.running = false;
             }
-            // Plain digit → jump to pinned slot AND attach (no Enter needed)
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                let slot: u8 = c.to_digit(10).unwrap() as u8;
-                let target = agents
-                    .iter()
-                    .enumerate()
-                    .find(|(_, a)| a.pin_slot == Some(slot))
-                    .map(|(idx, a)| (idx, a.tmux_session_name.clone(), a.window_index, a.pane_id.clone()));
-                if let Some((idx, session_name, window_index, pane_id)) = target {
-                    self.agent_list_cursor = idx;
-                    let _ = tmux::select_window(&session_name, window_index);
-                    let _ = tmux::select_pane(&pane_id);
-                    self.attach_to_session(&session_name, terminal)?;
-                }
-            }
-            // `p` → toggle pin (auto-assigns lowest free slot, or unpins)
-            KeyCode::Char('p') => {
+            Some(Action::PinAgent) => {
                 if let Some(pane_id) = current_pane_id {
                     let snapshot = agents.get(self.agent_list_cursor);
                     let already_pinned = snapshot.map(|a| a.pin_slot.is_some()).unwrap_or(false);
                     let path = snapshot.map(|a| {
                         format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
                     });
-
                     if already_pinned {
                         self.state.unpin_agent(&pane_id);
                         if let Some(p) = &path {
@@ -799,13 +791,25 @@ impl App {
                     self.reanchor_agent_cursor(Some(pane_id));
                 }
             }
-            // `P` (Shift+p) → enter slot-assign mode; next digit assigns
-            KeyCode::Char('P') => {
+            Some(Action::PinAgentSlot) => {
                 if current_pane_id.is_some() {
                     self.pin_assign_pending = current_pane_id;
                 }
             }
-            _ => {}
+            _ => {
+                // Plain digit → jump cursor to that pinned slot (Enter still attaches)
+                if let KeyCode::Char(c) = code {
+                    if c.is_ascii_digit() {
+                        let slot: u8 = c.to_digit(10).unwrap() as u8;
+                        if let Some(agent) = self.state.agent_by_pin_slot(slot) {
+                            let target_id = agent.pane_id.clone();
+                            if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
+                                self.agent_list_cursor = idx;
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -841,35 +845,38 @@ impl App {
         }
     }
 
-    fn handle_input_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
-        match code {
-            KeyCode::Esc => {
+    fn handle_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
+        let action = self.keymap.resolve(KeyMode::Input, code, modifiers);
+        match action {
+            Some(Action::Cancel) => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Enter => {
+            Some(Action::Confirm) => {
                 self.confirm_input(terminal)?;
             }
-            KeyCode::Backspace => {
+            Some(Action::Backspace) => {
                 if let Mode::Input { buffer, .. } = &mut self.mode {
                     buffer.pop();
                 }
             }
-            KeyCode::Char(c) => {
-                if let Mode::Input { buffer, .. } = &mut self.mode {
-                    buffer.push(c);
+            _ => {
+                if let KeyCode::Char(c) = code {
+                    if let Mode::Input { buffer, .. } = &mut self.mode {
+                        buffer.push(c);
+                    }
                 }
             }
-            _ => {}
         }
         Ok(())
     }
 
-    fn handle_confirm_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('y') | KeyCode::Enter => {
+    fn handle_confirm_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let action = self.keymap.resolve(KeyMode::ConfirmModal, code, modifiers);
+        match action {
+            Some(Action::Confirm) => {
                 self.execute_confirm();
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            Some(Action::Cancel) => {
                 self.mode = Mode::Normal;
             }
             _ => {}
@@ -1084,50 +1091,50 @@ impl App {
         modifiers: KeyModifiers,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
-        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let nav_down = code == KeyCode::Down || (ctrl && code == KeyCode::Char('j'));
-        let nav_up = code == KeyCode::Up || (ctrl && code == KeyCode::Char('k'));
+        let action = self.keymap.resolve(KeyMode::Finder, code, modifiers);
 
-        if nav_down {
-            if let Mode::Finder { state } = &mut self.mode {
-                if !state.filtered.is_empty() {
-                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+        match action {
+            Some(Action::MoveDown) => {
+                if let Mode::Finder { state } = &mut self.mode {
+                    if !state.filtered.is_empty() {
+                        state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+                    }
                 }
             }
-        } else if nav_up {
-            if let Mode::Finder { state } = &mut self.mode {
-                state.cursor = state.cursor.saturating_sub(1);
-            }
-        } else {
-            match code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
+            Some(Action::MoveUp) => {
+                if let Mode::Finder { state } = &mut self.mode {
+                    state.cursor = state.cursor.saturating_sub(1);
                 }
-                KeyCode::Enter => {
-                    let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-                    if let Mode::Finder { state } = old_mode {
-                        if let Some(&idx) = state.filtered.get(state.cursor) {
-                            let name = state.all_entries[idx].0.clone();
-                            self.attach_to_session(&name, terminal)?;
-                            if let Some(path) = self.state.session_tree_path(&name) {
-                                self.tree_state.select(path);
-                            }
+            }
+            Some(Action::Cancel) => {
+                self.mode = Mode::Normal;
+            }
+            Some(Action::Confirm) => {
+                let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+                if let Mode::Finder { state } = old_mode {
+                    if let Some(&idx) = state.filtered.get(state.cursor) {
+                        let name = state.all_entries[idx].0.clone();
+                        self.attach_to_session(&name, terminal)?;
+                        if let Some(path) = self.state.session_tree_path(&name) {
+                            self.tree_state.select(path);
                         }
                     }
                 }
-                KeyCode::Backspace => {
-                    if let Mode::Finder { state } = &mut self.mode {
-                        state.query.pop();
-                        state.update_filter();
-                    }
+            }
+            Some(Action::Backspace) => {
+                if let Mode::Finder { state } = &mut self.mode {
+                    state.query.pop();
+                    state.update_filter();
                 }
-                KeyCode::Char(c) => {
+            }
+            _ => {
+                // Character input for search query
+                if let KeyCode::Char(c) = code {
                     if let Mode::Finder { state } = &mut self.mode {
                         state.query.push(c);
                         state.update_filter();
                     }
                 }
-                _ => {}
             }
         }
         Ok(())
@@ -1208,14 +1215,15 @@ impl App {
     fn handle_notes_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
-        match code {
-            KeyCode::Enter => self.spawn_external_editor(terminal)?,
-            KeyCode::Esc => self.focus = Focus::Tree,
-            KeyCode::Char('k') | KeyCode::Up => self.note_editor.scroll_up(),
-            KeyCode::Char('j') | KeyCode::Down => {
+        let action = self.keymap.resolve(KeyMode::Notes, code, modifiers);
+        match action {
+            Some(Action::OpenEditor) => self.spawn_external_editor(terminal)?,
+            Some(Action::Cancel) => self.focus = Focus::Tree,
+            Some(Action::ScrollUp) => self.note_editor.scroll_up(),
+            Some(Action::ScrollDown) => {
                 let total = self.md_renderer.line_count().max(self.note_editor.line_count());
                 self.note_editor.scroll_down(total, 20);
             }

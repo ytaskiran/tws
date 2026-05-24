@@ -14,6 +14,11 @@ pub struct UiState {
     pub agent_list_cursor: usize,
     /// Persisted pin assignments: `(pane_id, slot)`. Reapplied on first scan after startup;
     /// entries whose pane_id is no longer live are silently dropped.
+    ///
+    /// Note: tmux recycles pane ids (%1, %2, …) after a server restart, so a restored pin
+    /// could theoretically attach to an unrelated agent that inherited the id. This is
+    /// inherently fuzzy for cross-restart persistence; within a single tmux server lifetime
+    /// the pane_id is stable and the mapping is exact.
     #[serde(default)]
     pub pins: Vec<(String, u8)>,
 }
@@ -43,8 +48,9 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
 }
 
 pub(crate) fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .expect("could not determine config directory")
+    dirs::home_dir()
+        .expect("could not determine home directory")
+        .join(".config")
         .join("tws")
 }
 

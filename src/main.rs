@@ -5,6 +5,7 @@ mod event;
 mod import;
 mod theme;
 mod tmux;
+mod config;
 mod tui;
 
 use app::App;
@@ -43,8 +44,14 @@ fn run_tui() -> std::io::Result<()> {
         agent_sessions: Vec::new(),
     };
 
+    let cfg = config::load_config();
+    let palette = config::resolve_palette(&cfg);
+    let theme = theme::Theme::build(&palette);
+    let note_stylesheet = theme::NoteStyleSheet::new(&palette);
+    let keymap = config::build_keymap(&cfg);
+
     let mut terminal = tui::init()?;
-    let mut app = App::new(state);
+    let mut app = App::new(state, theme, note_stylesheet, keymap);
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
     result
