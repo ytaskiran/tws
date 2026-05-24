@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
 
-use crate::theme;
+use crate::theme::Theme;
 
 /// Maximum number of result rows visible at once.
 const MAX_VISIBLE: usize = 10;
@@ -17,6 +17,7 @@ pub fn render(
     filtered: &[usize],
     cursor: usize,
     area: Rect,
+    theme: &Theme,
 ) {
     let visible_count = filtered.len().min(MAX_VISIBLE);
     // borders (2) + query line (1) + separator (1) + padding top (1) + at least 1 result row
@@ -27,8 +28,8 @@ pub fn render(
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(title)
-        .title_style(theme::MODAL_TITLE_STYLE)
-        .border_style(theme::MODAL_BORDER_STYLE)
+        .title_style(theme.modal_title)
+        .border_style(theme.modal_border)
         .padding(Padding::new(1, 1, 1, 0));
 
     let inner = block.inner(popup);
@@ -44,22 +45,22 @@ pub fn render(
 
     // Query line with blinking cursor
     let query_line = Line::from(vec![
-        Span::styled("/", theme::MODAL_MUTED_STYLE),
+        Span::styled("/", theme.modal_muted),
         Span::raw(query),
-        Span::styled("\u{2588}", theme::CURSOR_STYLE),
+        Span::styled("\u{2588}", theme.cursor),
     ]);
     frame.render_widget(Paragraph::new(query_line), chunks[0]);
 
     // Separator
     let sep = "\u{2500}".repeat(chunks[1].width as usize);
     frame.render_widget(
-        Paragraph::new(Line::styled(sep, theme::SEPARATOR_STYLE)),
+        Paragraph::new(Line::styled(sep, theme.separator)),
         chunks[1],
     );
 
     // Results
     if filtered.is_empty() {
-        let empty = Line::from(Span::styled("No matches", theme::MODAL_MUTED_STYLE));
+        let empty = Line::from(Span::styled("No matches", theme.modal_muted));
         frame.render_widget(Paragraph::new(empty), chunks[2]);
         return;
     }
@@ -76,9 +77,9 @@ pub fn render(
         let (_, path) = &entries[entry_idx];
         let is_selected = scroll_offset + vi == cursor;
         let style = if is_selected {
-            theme::HIGHLIGHT_STYLE
+            theme.highlight
         } else {
-            Style::new().fg(theme::DIM_TEXT)
+            Style::new().fg(theme.dim_text)
         };
 
         let prefix = if is_selected { " \u{203A} " } else { "   " };

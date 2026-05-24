@@ -289,6 +289,11 @@ impl AppState {
         }
     }
 
+    /// Return the agent occupying the given pin slot, if any.
+    pub fn agent_by_pin_slot(&self, slot: u8) -> Option<&AgentSession> {
+        self.agent_sessions.iter().find(|a| a.pin_slot == Some(slot))
+    }
+
     /// Get all agents detected in a given tmux session.
     pub fn agents_for_session(&self, tmux_session_name: &str) -> Vec<&AgentSession> {
         self.agent_sessions

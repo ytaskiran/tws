@@ -3,9 +3,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
 
-use crate::theme;
+use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, message: &str, area: Rect) {
+pub fn render(frame: &mut Frame, message: &str, area: Rect, theme: &Theme) {
     let popup = centered_rect(50, 7, area);
     frame.render_widget(Clear, popup);
 
@@ -13,18 +13,18 @@ pub fn render(frame: &mut Frame, message: &str, area: Rect) {
         Line::from(message),
         Line::from(""),
         Line::from(vec![
-            Span::styled("y", theme::MODAL_TITLE_STYLE),
-            Span::styled(" to confirm  ", theme::MODAL_MUTED_STYLE),
-            Span::styled("esc", theme::MODAL_TITLE_STYLE),
-            Span::styled(" to cancel", theme::MODAL_MUTED_STYLE),
+            Span::styled("y", theme.modal_title),
+            Span::styled(" to confirm  ", theme.modal_muted),
+            Span::styled("esc", theme.modal_title),
+            Span::styled(" to cancel", theme.modal_muted),
         ]),
     ];
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(" Confirm ")
-        .title_style(theme::MODAL_TITLE_STYLE)
-        .border_style(theme::MODAL_BORDER_STYLE)
+        .title_style(theme.modal_title)
+        .border_style(theme.modal_border)
         .padding(Padding::new(1, 1, 1, 0));
 
     let paragraph = Paragraph::new(text).block(block);

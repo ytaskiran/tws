@@ -3,14 +3,14 @@ use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::core::state::FlatAgent;
-use crate::theme;
+use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect) {
+pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme) {
     if agents.is_empty() {
         let available_height = area.height.saturating_sub(2);
         let top_padding = available_height.saturating_sub(1) / 2;
         let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
-        lines.push(Line::from(Span::styled("No active agents", theme::THREAD_DIM_STYLE)));
+        lines.push(Line::from(Span::styled("No active agents", theme.thread_dim)));
         frame.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center),
             area,
@@ -26,17 +26,17 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
 
     let agent_to_item = |a: &FlatAgent| -> ListItem<'static> {
         let badge: Span = match a.pin_slot {
-            Some(slot) => Span::styled(format!("[{}] ", slot), theme::PIN_BADGE_STYLE),
+            Some(slot) => Span::styled(format!("[{}] ", slot), theme.pin_badge),
             None => Span::raw("    "),
         };
         let line = Line::from(vec![
             badge,
-            Span::styled(a.thread_name.clone(), theme::THREAD_STYLE),
-            Span::styled(" : ", theme::BADGE_DOT_STYLE),
-            Span::styled(a.session_display_name.clone(), theme::SESSION_STYLE),
-            Span::styled(" : ", theme::BADGE_DOT_STYLE),
-            Span::styled(a.agent_type.icon().to_string(), theme::AGENT_STYLE.add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", a.agent_display_name), theme::AGENT_STYLE),
+            Span::styled(a.thread_name.clone(), theme.thread),
+            Span::styled(" : ", theme.badge_dot),
+            Span::styled(a.session_display_name.clone(), theme.session),
+            Span::styled(" : ", theme.badge_dot),
+            Span::styled(a.agent_type.icon().to_string(), theme.agent.add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", a.agent_display_name), theme.agent),
         ]);
         ListItem::new(line)
     };
@@ -49,7 +49,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             // Insert separator row between pinned and unpinned blocks
             let sep_width = area.width.saturating_sub(2) as usize;
             let sep = "─".repeat(sep_width);
-            items.push(ListItem::new(Line::from(Span::styled(sep, theme::SEPARATOR_STYLE))));
+            items.push(ListItem::new(Line::from(Span::styled(sep, theme.separator))));
             if cursor >= split {
                 adjusted_cursor = cursor + 1;
             }
@@ -60,6 +60,6 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
     let mut list_state = ListState::default();
     list_state.select(Some(adjusted_cursor));
 
-    let list = List::new(items).highlight_style(theme::HIGHLIGHT_STYLE);
+    let list = List::new(items).highlight_style(theme.highlight);
     frame.render_stateful_widget(list, area, &mut list_state);
 }
