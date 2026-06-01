@@ -5,7 +5,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::theme;
+use crate::theme::Theme;
 
 /// Data needed to render the agent preview sidebar.
 pub struct PreviewState<'a> {
@@ -15,12 +15,12 @@ pub struct PreviewState<'a> {
 }
 
 /// Render the agent pane preview as a read-only panel pinned to the bottom.
-pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect) {
+pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect, theme: &Theme) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(format!(" {} ", state.title))
-        .title_style(theme::PREVIEW_TITLE_STYLE)
-        .border_style(theme::PREVIEW_BORDER_STYLE);
+        .title_style(theme.preview_title)
+        .border_style(theme.preview_border);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -42,15 +42,15 @@ pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect) {
                     ScrollbarState::new(total_lines.saturating_sub(visible_height))
                         .position(state.scroll_offset);
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .thumb_style(theme::SCROLLBAR_THUMB_STYLE)
-                    .track_style(theme::SCROLLBAR_TRACK_STYLE);
+                    .thumb_style(theme.scrollbar_thumb)
+                    .track_style(theme.scrollbar_track);
                 frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
             }
         }
         None => {
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 "No preview available",
-                theme::PREVIEW_PLACEHOLDER_STYLE,
+                theme.preview_placeholder,
             )));
             frame.render_widget(placeholder, inner);
         }

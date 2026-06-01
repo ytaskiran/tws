@@ -6,7 +6,7 @@ use ansi_to_tui::IntoText;
 use ratatui::text::{Line, Span, Text};
 
 use super::persistence;
-use crate::theme;
+use crate::theme::NoteStyleSheet;
 
 /// Cached markdown renderer that delegates to `glow` when available,
 /// falling back to `tui-markdown` otherwise.
@@ -14,6 +14,7 @@ pub struct MarkdownRenderer {
     glow_available: bool,
     theme_path: PathBuf,
     cache: Option<RenderCache>,
+    stylesheet: NoteStyleSheet,
 }
 
 struct RenderCache {
@@ -24,7 +25,7 @@ struct RenderCache {
 
 impl MarkdownRenderer {
     /// Create a new renderer, probing for `glow` on `$PATH`.
-    pub fn new() -> Self {
+    pub fn new(stylesheet: NoteStyleSheet) -> Self {
         let glow_available = Command::new("glow")
             .arg("--version")
             .stdout(Stdio::null())
@@ -43,6 +44,7 @@ impl MarkdownRenderer {
             glow_available,
             theme_path,
             cache: None,
+            stylesheet,
         }
     }
 
@@ -58,9 +60,9 @@ impl MarkdownRenderer {
         if !cache_valid {
             let text = if self.glow_available {
                 render_with_glow(markdown, width, &self.theme_path)
-                    .unwrap_or_else(|| render_fallback(markdown))
+                    .unwrap_or_else(|| self.render_fallback(markdown))
             } else {
-                render_fallback(markdown)
+                self.render_fallback(markdown)
             };
 
             self.cache = Some(RenderCache {
@@ -81,6 +83,15 @@ impl MarkdownRenderer {
     /// Clear the cache, forcing a re-render on the next `render()` call.
     pub fn invalidate(&mut self) {
         self.cache = None;
+    }
+
+    /// Fallback renderer using `tui-markdown` with the tws theme.
+    ///
+    /// Converts the borrowed `Text<'a>` to owned `Text<'static>` so it can be cached.
+    fn render_fallback(&self, markdown: &str) -> Text<'static> {
+        let options = tui_markdown::Options::new(self.stylesheet.clone());
+        let text = tui_markdown::from_str_with_options(markdown, &options);
+        to_owned_text(text)
     }
 }
 
@@ -106,15 +117,6 @@ fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Tex
     }
 
     output.stdout.into_text().ok()
-}
-
-/// Fallback renderer using `tui-markdown` with the tws theme.
-///
-/// Converts the borrowed `Text<'a>` to owned `Text<'static>` so it can be cached.
-fn render_fallback(markdown: &str) -> Text<'static> {
-    let options = tui_markdown::Options::new(theme::NoteStyleSheet);
-    let text = tui_markdown::from_str_with_options(markdown, &options);
-    to_owned_text(text)
 }
 
 /// Convert `Text<'a>` (with borrowed `Cow::Borrowed` spans) to `Text<'static>`.
