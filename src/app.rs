@@ -658,20 +658,71 @@ impl App {
             .collect()
     }
 
+    /// j/k: move to the next/previous visible node of the same category.
+    /// If nothing is selected, select the first visible node.
+    fn nav_same_category(&mut self, forward: bool) {
+        let nodes = self.nav_nodes();
+        let current = self.tree_state.selected().to_vec();
+
+        if current.is_empty() {
+            if let Some(first) = nodes.first() {
+                self.tree_state.select(first.path.clone());
+            }
+            return;
+        }
+
+        if let Some(target) = tree_nav::same_category_target(&nodes, &current, forward) {
+            self.tree_state.select(target);
+        }
+    }
+
+    /// l / →: descend into the current node's first child, auto-expanding it.
+    fn nav_descend(&mut self) {
+        let current = self.tree_state.selected().to_vec();
+        if current.is_empty() {
+            return;
+        }
+
+        let has_children = self
+            .nav_nodes()
+            .iter()
+            .find(|n| n.path == current)
+            .map(|n| n.has_children)
+            .unwrap_or(false);
+        if !has_children {
+            return;
+        }
+
+        self.tree_state.open(current.clone());
+
+        let nodes = self.nav_nodes();
+        if let Some(child) = tree_nav::first_child(&nodes, &current) {
+            self.tree_state.select(child);
+        }
+    }
+
+    /// h / ←: ascend to the parent node.
+    fn nav_ascend(&mut self) {
+        let current = self.tree_state.selected().to_vec();
+        if let Some(parent) = tree_nav::parent(&current) {
+            self.tree_state.select(parent);
+        }
+    }
+
     fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
         match code {
             KeyCode::Char('q') => self.running = false,
             KeyCode::Char('j') | KeyCode::Down => {
-                self.tree_state.key_down();
+                self.nav_same_category(true);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.tree_state.key_up();
+                self.nav_same_category(false);
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.tree_state.key_left();
+                self.nav_ascend();
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.tree_state.key_right();
+                self.nav_descend();
             }
             KeyCode::Char(' ') => {
                 self.tree_state.toggle_selected();
