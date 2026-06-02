@@ -96,8 +96,7 @@
   "code": {
     "prefix": " ",
     "suffix": " ",
-    "color": "10",
-    "background_color": "0"
+    "color": "10"
   },
   "code_block": {
     "color": "7",
