@@ -15,7 +15,6 @@ use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
-use crate::core::tree_nav::{self, NavNode};
 use crate::event;
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::theme::{Theme, NoteStyleSheet};
@@ -651,79 +650,6 @@ impl App {
         Ok(())
     }
 
-    /// Build the list of currently-visible tree nodes reduced to navigation data.
-    /// Reads `state` + `tree_state` immutably; returns owned data so callers can
-    /// then mutate `tree_state` without a borrow conflict.
-    fn nav_nodes(&self) -> Vec<NavNode> {
-        let items = tree_view::build_tree_items(&self.state, &self.theme);
-        self.tree_state
-            .flatten(&items)
-            .iter()
-            .map(|flat| {
-                let path = flat.identifier.clone();
-                let category =
-                    tree_nav::category_discriminant(&self.state.resolve_selection(&path))
-                        .unwrap_or(u8::MAX);
-                NavNode {
-                    path,
-                    category,
-                    has_children: !flat.item.children().is_empty(),
-                }
-            })
-            .collect()
-    }
-
-    /// j/k: move to the next/previous visible node of the same category.
-    /// If nothing is selected, select the first visible node.
-    fn nav_same_category(&mut self, forward: bool) {
-        let nodes = self.nav_nodes();
-        let current = self.tree_state.selected().to_vec();
-
-        if current.is_empty() {
-            if let Some(first) = nodes.first() {
-                self.tree_state.select(first.path.clone());
-            }
-            return;
-        }
-
-        if let Some(target) = tree_nav::same_category_target(&nodes, &current, forward) {
-            self.tree_state.select(target);
-        }
-    }
-
-    /// l / →: descend into the current node's first child, auto-expanding it.
-    fn nav_descend(&mut self) {
-        let current = self.tree_state.selected().to_vec();
-        if current.is_empty() {
-            return;
-        }
-
-        let has_children = self
-            .nav_nodes()
-            .iter()
-            .find(|n| n.path == current)
-            .map(|n| n.has_children)
-            .unwrap_or(false);
-        if !has_children {
-            return;
-        }
-
-        self.tree_state.open(current.clone());
-
-        let nodes = self.nav_nodes();
-        if let Some(child) = tree_nav::first_child(&nodes, &current) {
-            self.tree_state.select(child);
-        }
-    }
-
-    /// h / ←: ascend to the parent node.
-    fn nav_ascend(&mut self) {
-        let current = self.tree_state.selected().to_vec();
-        if let Some(parent) = tree_nav::parent(&current) {
-            self.tree_state.select(parent);
-        }
-    }
-
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
         let action = match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
             Some(a) => a,
@@ -731,10 +657,10 @@ impl App {
         };
         match action {
             Action::Quit => self.running = false,
-            Action::MoveDown => self.nav_same_category(true),
-            Action::MoveUp => self.nav_same_category(false),
-            Action::MoveLeft => self.nav_ascend(),
-            Action::MoveRight => self.nav_descend(),
+            Action::MoveDown => { self.tree_state.key_down(); }
+            Action::MoveUp => { self.tree_state.key_up(); }
+            Action::MoveLeft => { self.tree_state.key_left(); }
+            Action::MoveRight => { self.tree_state.key_right(); }
             Action::ToggleSelect => { self.tree_state.toggle_selected(); }
             Action::Enter => self.start_enter(terminal)?,
             Action::Deselect => { self.tree_state.select(Vec::new()); }
