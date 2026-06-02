@@ -13,6 +13,18 @@ cargo test resolve_selection   # run tests matching a name pattern
 
 No linter or formatter is configured. There's no CI beyond `cargo build && cargo test`.
 
+## Workflow
+
+Every change — even a tiny one — happens in a **fresh git worktree on a new branch**, then goes out as a PR. Never edit and commit directly on `main` in the primary checkout.
+
+```bash
+git worktree add ../tws-<slug> -b <branch> origin/main
+cd ../tws-<slug>
+# ...edit, commit, push, gh pr create
+```
+
+This keeps in-flight work isolated from `main`, and ensures every change is reviewable on GitHub before it lands.
+
 ## Release
 
 Patch/minor/major bumps follow semver.
