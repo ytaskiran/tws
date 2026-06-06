@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use ansi_to_tui::IntoText;
+use ratatui::style::Color;
 use ratatui::text::{Line, Span, Text};
 
 use super::persistence;
@@ -116,7 +117,30 @@ fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Tex
         return None;
     }
 
-    output.stdout.into_text().ok()
+    let mut text = output.stdout.into_text().ok()?;
+    clear_reset_backgrounds(&mut text);
+    Some(text)
+}
+
+/// `glow` emits ANSI resets (`ESC[0m`) on every span, which `ansi_to_tui` maps
+/// to `bg: Some(Color::Reset)`. At render time `Color::Reset` repaints the cell
+/// with the *terminal's* default background — punching through the app's themed
+/// background and making the text area look darker than the rest of the UI.
+///
+/// Remap those to `bg: None` so the cell keeps whatever background was painted
+/// underneath (the app theme), matching how the tree renders. Backgrounds the
+/// theme sets explicitly (any non-`Reset` color) are left untouched.
+fn clear_reset_backgrounds(text: &mut Text<'static>) {
+    for line in &mut text.lines {
+        if line.style.bg == Some(Color::Reset) {
+            line.style.bg = None;
+        }
+        for span in &mut line.spans {
+            if span.style.bg == Some(Color::Reset) {
+                span.style.bg = None;
+            }
+        }
+    }
 }
 
 /// Convert `Text<'a>` (with borrowed `Cow::Borrowed` spans) to `Text<'static>`.
@@ -134,4 +158,42 @@ fn to_owned_text(text: Text<'_>) -> Text<'static> {
         })
         .collect();
     Text::from(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    #[test]
+    fn clear_reset_backgrounds_remaps_reset_to_none() {
+        let mut text = Text::from(vec![
+            Line::from(vec![
+                Span::styled("hello", Style::new().fg(Color::Gray).bg(Color::Reset)),
+                Span::styled(" world", Style::new().bg(Color::Reset)),
+            ])
+            .style(Style::new().bg(Color::Reset)),
+        ]);
+
+        clear_reset_backgrounds(&mut text);
+
+        assert_eq!(text.lines[0].style.bg, None);
+        assert_eq!(text.lines[0].spans[0].style.bg, None);
+        assert_eq!(text.lines[0].spans[1].style.bg, None);
+        // Foreground is untouched.
+        assert_eq!(text.lines[0].spans[0].style.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn clear_reset_backgrounds_preserves_explicit_bg() {
+        let explicit = Color::Rgb(42, 42, 42);
+        let mut text = Text::from(vec![Line::from(vec![Span::styled(
+            "code",
+            Style::new().bg(explicit),
+        )])]);
+
+        clear_reset_backgrounds(&mut text);
+
+        assert_eq!(text.lines[0].spans[0].style.bg, Some(explicit));
+    }
 }
