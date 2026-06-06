@@ -9,7 +9,7 @@ tws is a terminal UI that adds a persistent organizational layer on top of tmux.
 - **Threads** — units of work (e.g. `auth-refactor`, `bug-1234`, `scratch`), each holding one or more sessions
 - **Sessions** — live tmux sessions, launched and attached from tws
 
-Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime.
+Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime. Detach from a tmux session to go back to tws.
 
 <!-- TODO: add a screenshot or demo GIF of the tree view here -->
 
