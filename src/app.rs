@@ -1242,7 +1242,10 @@ impl App {
                     || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
                 if needs_refresh {
                     if let Some(raw) = tmux::capture_pane(&pane_id) {
-                        if let Ok(text) = raw.as_bytes().into_text() {
+                        if let Ok(mut text) = raw.as_bytes().into_text() {
+                            // Same Reset punch-through as notes: remap so the app
+                            // background shows through, keeping the agent's real colors.
+                            crate::core::markdown::clear_reset_backgrounds(&mut text);
                             self.preview_content = Some(text);
                         }
                     }
