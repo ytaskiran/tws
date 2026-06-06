@@ -130,7 +130,10 @@ fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Tex
 /// Remap those to `bg: None` so the cell keeps whatever background was painted
 /// underneath (the app theme), matching how the tree renders. Backgrounds the
 /// theme sets explicitly (any non-`Reset` color) are left untouched.
-fn clear_reset_backgrounds(text: &mut Text<'static>) {
+///
+/// Also used for captured tmux pane content in the agent preview, which goes
+/// through the same `into_text()` path and has the same `Reset` punch-through.
+pub(crate) fn clear_reset_backgrounds(text: &mut Text<'static>) {
     for line in &mut text.lines {
         if line.style.bg == Some(Color::Reset) {
             line.style.bg = None;
