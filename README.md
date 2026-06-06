@@ -1,8 +1,9 @@
+
 # tws
 
 **tmux workspace manager** — organize your tmux sessions into threads.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 34 36" src="https://github.com/user-attachments/assets/18da8c05-6973-4838-ad81-8b96c8010101" />
+<img width="960" height="625" alt="tws-launch" src="https://github.com/user-attachments/assets/365ec572-542f-4478-bb3c-6d25ef0131d8" />
 
 tws is a terminal UI that adds a persistent organizational layer on top of tmux. tmux sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and attaches them for you.
 
@@ -11,7 +12,7 @@ tws is a terminal UI that adds a persistent organizational layer on top of tmux.
 
 Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime. Detach from a tmux session to go back to tws.
 
-<!-- TODO: add a screenshot or demo GIF of the tree view here -->
+<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 34 36" src="https://github.com/user-attachments/assets/18da8c05-6973-4838-ad81-8b96c8010101" />
 
 ## Features
 
