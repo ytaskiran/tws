@@ -797,7 +797,7 @@ impl App {
                 }
             }
             _ => {
-                // Plain digit → jump cursor to that pinned slot (Enter still attaches)
+                // Plain digit → jump to that pinned slot and attach immediately.
                 if let KeyCode::Char(c) = code {
                     if c.is_ascii_digit() {
                         let slot: u8 = c.to_digit(10).unwrap() as u8;
@@ -805,6 +805,11 @@ impl App {
                             let target_id = agent.pane_id.clone();
                             if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
                                 self.agent_list_cursor = idx;
+                                let a = &agents[idx];
+                                let session_name = a.tmux_session_name.clone();
+                                let _ = tmux::select_window(&session_name, a.window_index);
+                                let _ = tmux::select_pane(&a.pane_id);
+                                self.attach_to_session(&session_name, terminal)?;
                             }
                         }
                     }
