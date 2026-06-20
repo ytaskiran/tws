@@ -25,7 +25,7 @@ The main view. The thread/session tree on the left, a notes panel on the right. 
 
 ### Agents view
 
-Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
+Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 24 23" src="https://github.com/user-attachments/assets/d4f09aca-03d9-49df-b391-bcdc6c06fd7e" />
 
