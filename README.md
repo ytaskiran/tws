@@ -1,17 +1,18 @@
+
 # tws
 
 **tmux workspace manager** — organize your tmux sessions into threads.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 34 36" src="https://github.com/user-attachments/assets/18da8c05-6973-4838-ad81-8b96c8010101" />
+<img width="960" height="625" alt="tws-launch" src="https://github.com/user-attachments/assets/365ec572-542f-4478-bb3c-6d25ef0131d8" />
 
 tws is a terminal UI that adds a persistent organizational layer on top of tmux. tmux sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and attaches them for you.
 
 - **Threads** — units of work (e.g. `auth-refactor`, `bug-1234`, `scratch`), each holding one or more sessions
 - **Sessions** — live tmux sessions, launched and attached from tws
 
-Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime.
+Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime. Detach from a tmux session to go back to tws.
 
-<!-- TODO: add a screenshot or demo GIF of the tree view here -->
+<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 34 36" src="https://github.com/user-attachments/assets/18da8c05-6973-4838-ad81-8b96c8010101" />
 
 ## Features
 
@@ -19,14 +20,14 @@ Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovere
 
 The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 59 47" src="https://github.com/user-attachments/assets/383644d8-3ba6-4180-a4ae-622eaf49366d" />
+<img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
 
 
 ### Agents view
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-02 at 23 07 09" src="https://github.com/user-attachments/assets/242989dc-5df3-41c6-90e6-eb421ab9ee9e" />
+<img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 24 23" src="https://github.com/user-attachments/assets/d4f09aca-03d9-49df-b391-bcdc6c06fd7e" />
 
 
 ### Notes
