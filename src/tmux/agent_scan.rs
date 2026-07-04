@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
-use crate::core::model::{AgentSession, AgentType};
+use crate::core::model::{AgentSession, AgentStatus, AgentType};
 
 /// Pane info parsed from tmux list-panes output.
 struct PaneInfo {
@@ -208,6 +208,8 @@ fn match_agents(
                         display_name,
                         renamed: false,
                         pin_slot: None,
+                        status: AgentStatus::Unknown,
+                        status_since: 0,
                     });
                 }
             }
@@ -335,6 +337,8 @@ mod tests {
         assert_eq!(agents[0].pane_id, "%0");
         assert_eq!(agents[0].display_name, "fix-bug");
         assert!(!agents[0].renamed);
+        assert_eq!(agents[0].status, crate::core::model::AgentStatus::Unknown);
+        assert_eq!(agents[0].status_since, 0);
     }
 
     #[test]
