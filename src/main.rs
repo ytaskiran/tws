@@ -1,11 +1,11 @@
 mod app;
 mod components;
+mod config;
 mod core;
 mod event;
 mod import;
 mod theme;
 mod tmux;
-mod config;
 mod tui;
 
 use app::App;

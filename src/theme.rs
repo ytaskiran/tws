@@ -22,9 +22,8 @@ fn brighten(color: Color, amount: u8) -> Color {
 /// Darken a color by blending it toward `target` by `fraction` (0.0 = unchanged, 1.0 = target).
 fn darken_toward(color: Color, target: Color, fraction: f32) -> Color {
     if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, target) {
-        let blend = |a: u8, b: u8| -> u8 {
-            (a as f32 + (b as f32 - a as f32) * fraction).round() as u8
-        };
+        let blend =
+            |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * fraction).round() as u8 };
         Color::Rgb(blend(r1, r2), blend(g1, g2), blend(b1, b2))
     } else {
         color
@@ -151,9 +150,7 @@ impl Theme {
             statusbar_desc: Style::new().fg(statusbar_desc_color),
 
             // Cursor
-            cursor: Style::new()
-                .fg(p.accent)
-                .add_modifier(Modifier::SLOW_BLINK),
+            cursor: Style::new().fg(p.accent).add_modifier(Modifier::SLOW_BLINK),
 
             // Modals
             modal_border: Style::new().fg(p.accent),
@@ -241,9 +238,7 @@ impl tui_markdown::StyleSheet for NoteStyleSheet {
     }
 
     fn blockquote(&self) -> Style {
-        Style::new()
-            .fg(self.muted)
-            .add_modifier(Modifier::ITALIC)
+        Style::new().fg(self.muted).add_modifier(Modifier::ITALIC)
     }
 
     fn heading_meta(&self) -> Style {
@@ -294,8 +289,10 @@ mod tests {
 
     #[test]
     fn custom_palette_changes_derived_styles() {
-        let mut p = Palette::default();
-        p.accent = Color::Rgb(255, 0, 0);
+        let p = Palette {
+            accent: Color::Rgb(255, 0, 0),
+            ..Default::default()
+        };
         let t = Theme::build(&p);
 
         // Thread should use the new accent
@@ -319,7 +316,10 @@ mod tests {
 
     #[test]
     fn brighten_caps_at_255() {
-        assert_eq!(brighten(Color::Rgb(250, 250, 250), 16), Color::Rgb(255, 255, 255));
+        assert_eq!(
+            brighten(Color::Rgb(250, 250, 250), 16),
+            Color::Rgb(255, 255, 255)
+        );
     }
 
     #[test]
@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn note_stylesheet_uses_palette() {
-        let mut p = Palette::default();
-        p.accent = Color::Rgb(255, 0, 0);
+        let p = Palette {
+            accent: Color::Rgb(255, 0, 0),
+            ..Default::default()
+        };
         let ss = NoteStyleSheet::new(&p);
         assert_eq!(
             ss.heading(1),

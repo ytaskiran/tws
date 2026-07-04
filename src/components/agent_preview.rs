@@ -1,9 +1,9 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ratatui::Frame;
 
 use crate::theme::Theme;
 
@@ -31,8 +31,7 @@ pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect, theme: &T
 
     match state.content {
         Some(text) => {
-            let paragraph = Paragraph::new(text.clone())
-                .scroll((state.scroll_offset as u16, 0));
+            let paragraph = Paragraph::new(text.clone()).scroll((state.scroll_offset as u16, 0));
             frame.render_widget(paragraph, inner);
 
             let total_lines = text.lines.len();

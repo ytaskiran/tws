@@ -25,7 +25,11 @@ pub fn list_sessions() -> Vec<String> {
 /// Each entry is `(session_name, last_attached_timestamp)`.
 pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}\t#{session_last_attached}"])
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_last_attached}",
+        ])
         .output();
 
     match output {

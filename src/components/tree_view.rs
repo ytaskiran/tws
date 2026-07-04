@@ -69,13 +69,13 @@ fn build_thread_item<'a>(
                     .map(|a| {
                         let label = Line::from(vec![
                             Span::styled("╰─ ", theme.agent_connector),
-                            Span::styled(a.agent_type.icon(), theme.agent.add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                a.agent_type.icon(),
+                                theme.agent.add_modifier(Modifier::BOLD),
+                            ),
                             Span::styled(format!(" {}", a.display_name), theme.agent),
                         ]);
-                        TreeItem::new_leaf(
-                            a.pane_id.clone(),
-                            label,
-                        )
+                        TreeItem::new_leaf(a.pane_id.clone(), label)
                     })
                     .collect();
                 TreeItem::new(
