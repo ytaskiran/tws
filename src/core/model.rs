@@ -32,6 +32,7 @@ pub struct Session {
 pub enum AgentType {
     ClaudeCode,
     Codex,
+    Pi,
 }
 
 impl AgentType {
@@ -39,6 +40,7 @@ impl AgentType {
         match self {
             AgentType::ClaudeCode => "Claude Code",
             AgentType::Codex => "Codex",
+            AgentType::Pi => "Pi",
         }
     }
 
@@ -46,6 +48,7 @@ impl AgentType {
         match self {
             AgentType::ClaudeCode => "\u{2733}",  // ✳ eight spoked asterisk (matches Claude's pane title symbol)
             AgentType::Codex => ">_",
+            AgentType::Pi => "π",
         }
     }
 }

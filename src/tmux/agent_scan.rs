@@ -12,7 +12,7 @@ struct PaneInfo {
     pane_title: String,
 }
 
-/// Scan all tmux panes for known AI agents (Claude Code, Codex).
+/// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi).
 /// Only scans panes belonging to the given tws-managed session names.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
     if tws_sessions.is_empty() {
@@ -63,7 +63,7 @@ fn list_all_panes() -> Option<String> {
 
 fn list_all_processes() -> Option<String> {
     let output = Command::new("ps")
-        .args(["-e", "-o", "pid,ppid,command"])
+        .args(["-e", "-ww", "-o", "pid,ppid,command"])
         .output()
         .ok()?;
 
@@ -109,7 +109,9 @@ fn parse_processes(raw: &str) -> HashMap<u32, Vec<(u32, String)>> {
             Some(p) => p,
             None => continue,
         };
-        // Remaining tokens are the command (may contain spaces on macOS)
+        // Remaining tokens are the command (may contain spaces on macOS).
+        // `ps -ww` keeps long Nix/Deno wrapper command lines from being truncated
+        // before the actual agent script path appears.
         let comm: String = parts.collect::<Vec<&str>>().join(" ");
         if comm.is_empty() {
             continue;
@@ -129,23 +131,31 @@ fn identify_agent(command: &str) -> Option<AgentType> {
     match exe_basename {
         "claude" => Some(AgentType::ClaudeCode),
         "codex" => Some(AgentType::Codex),
+        "pi" | "pi-coding-agent" => Some(AgentType::Pi),
         // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
+        // Nix-installed Pi runs as: deno run ... /nix/store/...-pi-coding-agent-.../dist/cli.js
         // Claude Code: @anthropic-ai/claude-code  →  path component "claude-code" or "claude"
         // Codex:       @openai/codex              →  path component "codex"
-        "node" => tokens
-            .find(|t| !t.starts_with('-'))
-            .and_then(|script| {
-                let components: Vec<&str> = script.split('/').collect();
-                if components.iter().any(|&c| c == "codex") {
-                    Some(AgentType::Codex)
-                } else if components.iter().any(|&c| c == "claude" || c == "claude-code") {
-                    Some(AgentType::ClaudeCode)
-                } else {
-                    None
-                }
-            }),
+        // Pi:          @earendil-works/pi-coding-agent → path component containing "pi-coding-agent"
+        "node" | "deno" => identify_agent_script(tokens),
         _ => None,
     }
+}
+
+fn identify_agent_script<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
+    for token in tokens {
+        let components: Vec<&str> = token.split('/').collect();
+        if components.iter().any(|&c| c == "codex") {
+            return Some(AgentType::Codex);
+        }
+        if components.iter().any(|&c| c == "claude" || c == "claude-code") {
+            return Some(AgentType::ClaudeCode);
+        }
+        if components.iter().any(|&c| c == "pi" || c == "pi-coding-agent") {
+            return Some(AgentType::Pi);
+        }
+    }
+    None
 }
 
 /// Strip agent-specific prefixes from pane titles to get a clean display name.
@@ -160,7 +170,7 @@ fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
             let s = s.strip_prefix('\u{2733}').unwrap_or(s).trim_start();
             s.to_string()
         }
-        AgentType::Codex => trimmed.to_string(),
+        AgentType::Codex | AgentType::Pi => trimmed.to_string(),
     }
 }
 
@@ -233,6 +243,9 @@ mod tests {
         assert_eq!(identify_agent("/usr/local/bin/claude"), Some(AgentType::ClaudeCode));
         assert_eq!(identify_agent("codex"), Some(AgentType::Codex));
         assert_eq!(identify_agent("/opt/homebrew/bin/codex"), Some(AgentType::Codex));
+        assert_eq!(identify_agent("pi"), Some(AgentType::Pi));
+        assert_eq!(identify_agent("pi-coding-agent"), Some(AgentType::Pi));
+        assert_eq!(identify_agent("/nix/store/hash-pi-coding-agent-0.78.0/bin/pi"), Some(AgentType::Pi));
         assert_eq!(identify_agent("vim"), None);
         assert_eq!(identify_agent("node"), None);
     }
@@ -256,6 +269,19 @@ mod tests {
         assert_eq!(
             identify_agent("node /usr/lib/node_modules/claude-code/dist/cli.js"),
             Some(AgentType::ClaudeCode)
+        );
+        // npm-installed Pi coding agent
+        assert_eq!(
+            identify_agent("node /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
+            Some(AgentType::Pi)
+        );
+        assert_eq!(
+            identify_agent("node /home/user/.nvm/versions/node/v20/lib/node_modules/pi-coding-agent/dist/index.js"),
+            Some(AgentType::Pi)
+        );
+        assert_eq!(
+            identify_agent("deno run --allow-all /nix/store/hash-pi-coding-agent-0.78.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
+            Some(AgentType::Pi)
         );
         // node running something unrelated — should not match
         assert_eq!(identify_agent("node /path/to/my-app/index.js"), None);
@@ -331,5 +357,6 @@ mod tests {
     #[test]
     fn clean_pane_title_codex_passthrough() {
         assert_eq!(clean_pane_title("codex-task", AgentType::Codex), "codex-task");
+        assert_eq!(clean_pane_title("pi-task", AgentType::Pi), "pi-task");
     }
 }
