@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use crate::config::keys::{Action, KeyMode, Keymap};
+use crate::core::status::StatusCounts;
 use crate::theme::Theme;
 
 /// Simplified view of the app state for the status bar.
@@ -27,11 +28,13 @@ pub enum StatusContext {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     ctx: StatusContext,
     area: Rect,
     active_session_count: usize,
+    counts: StatusCounts,
     flash: Option<&str>,
     theme: &Theme,
     keymap: &Keymap,
@@ -185,14 +188,32 @@ pub fn render(
         }
     }
 
-    // Right side: session count or app name
-    let right_text = if active_session_count > 0 {
+    // Right side: status counts + session count (or app name)
+    let mut right_spans: Vec<Span> = Vec::new();
+    if counts.waiting > 0 {
+        right_spans.push(Span::styled(
+            format!("◐ {} ", counts.waiting),
+            theme.status_waiting,
+        ));
+    }
+    if counts.working > 0 {
+        right_spans.push(Span::styled(
+            format!("● {} ", counts.working),
+            theme.status_working,
+        ));
+    }
+    let tail = if active_session_count > 0 {
         format!("{} active ", active_session_count)
     } else {
         "tws ".to_string()
     };
-    let right_line = Line::from(Span::styled(&*right_text, theme.statusbar_desc));
-    let right_width = right_text.len() as u16;
+    right_spans.push(Span::styled(tail.clone(), theme.statusbar_desc));
+
+    let right_width: u16 = right_spans
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum();
+    let right_line = Line::from(right_spans);
 
     let chunks =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);

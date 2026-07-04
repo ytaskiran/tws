@@ -79,7 +79,6 @@ pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentS
 }
 
 /// Aggregate counts for the status-bar summary.
-#[allow(dead_code)]
 pub struct StatusCounts {
     pub working: usize,
     pub waiting: usize,
@@ -87,8 +86,6 @@ pub struct StatusCounts {
 }
 
 /// Count agent sessions by their status.
-/// Used in a later task for rendering status tallies.
-#[allow(dead_code)]
 pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     let mut c = StatusCounts {
         working: 0,

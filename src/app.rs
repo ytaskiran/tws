@@ -532,12 +532,14 @@ impl App {
 
             // Status bar
             let active_count = self.state.active_sessions.len();
+            let status_counts = crate::core::status::status_counts(&self.state.agent_sessions);
             let status_ctx = self.status_context(&selected_item);
             status_bar::render(
                 frame,
                 status_ctx,
                 chunks[status_idx],
                 active_count,
+                status_counts,
                 flash_msg.as_deref(),
                 &self.theme,
                 &self.keymap,
