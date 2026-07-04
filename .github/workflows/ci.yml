@@ -1,0 +1,84 @@
+# Continuous integration: run the test suite and static checks on every
+# push to main and every pull request targeting main.
+#
+# Jobs run in parallel and are all required to pass:
+#   test   - cargo test (the full suite)
+#   fmt    - cargo fmt --check (formatting)
+#   clippy - cargo clippy -D warnings (lints as errors)
+#   audit  - cargo audit (RustSec advisory / dependency vulnerability scan)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned toolchain so fmt and clippy are reproducible. rustfmt reflows and
+  # clippy adds new lints between releases, so a floating `stable` can turn CI
+  # red on an unrelated PR. Bump this deliberately (and fix any new findings in
+  # that same PR). Must stay >= 1.88, required by the `time` dependency.
+  RUST_VERSION: "1.96.1"
+
+# Cancel superseded runs on the same ref (e.g. quick successive pushes to a PR).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-targets --locked
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --no-self-update
+          rustup default "$RUST_VERSION"
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Prebuilt cargo-audit binary (avoids a ~3 min compile each run).
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Fails the job on vulnerabilities; `unsound`/`unmaintained` advisories are
+      # reported as warnings but do not fail (they are often unfixable transitive
+      # deps). Run with `--deny warnings` here if you want them to block.
+      - name: Audit dependencies
+        run: cargo audit
