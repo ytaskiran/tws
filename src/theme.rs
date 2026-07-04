@@ -80,6 +80,14 @@ pub struct Theme {
     pub agent: Style,
     pub agent_connector: Style,
 
+    // Agent status dots
+    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
+    pub status_working: Style,
+    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
+    pub status_waiting: Style,
+    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
+    pub status_idle: Style,
+
     // Badges
     pub badge_dot: Style,
     pub badge_count: Style,
@@ -164,6 +172,11 @@ impl Theme {
             // Agents
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
+
+            // Agent status dots (derived from palette: green / accent / muted)
+            status_working: Style::new().fg(p.green),
+            status_waiting: Style::new().fg(p.accent),
+            status_idle: Style::new().fg(muted_text),
 
             // Badges
             badge_dot: Style::new().fg(p.green),
@@ -348,5 +361,14 @@ mod tests {
                 .fg(Color::Rgb(255, 0, 0))
                 .add_modifier(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn status_colors_are_derived_from_palette() {
+        let p = Palette::default();
+        let t = Theme::build(&p);
+        assert_eq!(t.status_working.fg, Some(p.green));
+        assert_eq!(t.status_waiting.fg, Some(p.accent));
+        assert_eq!(t.status_idle.fg, Some(p.muted));
     }
 }
