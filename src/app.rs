@@ -1803,6 +1803,10 @@ impl App {
             }
         }
 
+        // Join live status from ~/.config/tws/agents/<pane_id>.
+        let status_map = crate::core::status::load_statuses();
+        crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
+
         // Reapply pins persisted from the previous session, one-shot. Drained on first match attempt.
         // Pins whose pane_id is no longer live get silently dropped (pin dies with the pane).
         if !self.pending_pin_restore.is_empty() {
@@ -1818,6 +1822,15 @@ impl App {
                 }
             }
         }
+
+        // Delete status files for panes that are no longer live.
+        let live_panes: std::collections::HashSet<String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| a.pane_id.clone())
+            .collect();
+        crate::core::status::prune_stale_files(&crate::core::status::agents_dir(), &live_panes);
 
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();

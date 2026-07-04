@@ -6,13 +6,11 @@ use crate::core::model::{AgentSession, AgentStatus};
 use crate::core::persistence::config_dir;
 
 /// Directory where per-pane status files live: `~/.config/tws/agents/`.
-#[allow(dead_code)]
 pub fn agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
 
 /// Map a status word written by a hook to an `AgentStatus`.
-#[allow(dead_code)]
 pub fn parse_status(word: &str) -> AgentStatus {
     match word.trim() {
         "working" => AgentStatus::Working,
@@ -24,7 +22,6 @@ pub fn parse_status(word: &str) -> AgentStatus {
 
 /// Read every status file in `dir` into `pane_id -> (status, mtime_epoch_secs)`.
 /// Missing/unreadable dir yields an empty map. Unreadable individual files are skipped.
-#[allow(dead_code)]
 pub fn load_statuses_from(dir: &Path) -> HashMap<String, (AgentStatus, i64)> {
     let mut map = HashMap::new();
     let entries = match std::fs::read_dir(dir) {
@@ -54,7 +51,6 @@ pub fn load_statuses_from(dir: &Path) -> HashMap<String, (AgentStatus, i64)> {
 }
 
 /// Production entry point: read the real agents dir.
-#[allow(dead_code)]
 pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
     load_statuses_from(&agents_dir())
 }
@@ -62,7 +58,6 @@ pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
 /// Join loaded statuses onto agents by `pane_id`. Agents with no matching file
 /// are set to `Unknown` / `0` (so a removed file resets state on the next scan).
 /// Used in a later task for joining status-file data onto live agent sessions.
-#[allow(dead_code)]
 pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentStatus, i64)>) {
     for agent in agents.iter_mut() {
         match map.get(&agent.pane_id) {
@@ -106,7 +101,6 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
 /// Delete status files whose `pane_id` is not in the live set (pane died).
 /// Missing or unreadable dir is a no-op (not an error).
 /// Used in a later task for garbage collecting stale status files.
-#[allow(dead_code)]
 pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
