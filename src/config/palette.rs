@@ -8,7 +8,10 @@ pub fn parse_hex_color(hex: &str) -> Result<Color, String> {
     }
     let digits = &hex[1..];
     if digits.len() != 6 {
-        return Err(format!("color must be 6 hex digits after '#', got {} digits", digits.len()));
+        return Err(format!(
+            "color must be 6 hex digits after '#', got {} digits",
+            digits.len()
+        ));
     }
     let r = u8::from_str_radix(&digits[0..2], 16)
         .map_err(|_| format!("invalid hex digits in red component: {}", &digits[0..2]))?;
@@ -32,7 +35,9 @@ where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    parse_hex_color(&s).map(Some).map_err(serde::de::Error::custom)
+    parse_hex_color(&s)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -94,12 +99,12 @@ impl Palette {
     pub fn with_overrides(&self, overrides: &PaletteOverride) -> Palette {
         Palette {
             accent: overrides.accent.unwrap_or(self.accent),
-            green:  overrides.green.unwrap_or(self.green),
-            fg:     overrides.fg.unwrap_or(self.fg),
-            dim:    overrides.dim.unwrap_or(self.dim),
-            muted:  overrides.muted.unwrap_or(self.muted),
+            green: overrides.green.unwrap_or(self.green),
+            fg: overrides.fg.unwrap_or(self.fg),
+            dim: overrides.dim.unwrap_or(self.dim),
+            muted: overrides.muted.unwrap_or(self.muted),
             border: overrides.border.unwrap_or(self.border),
-            bg:     overrides.bg.unwrap_or(self.bg),
+            bg: overrides.bg.unwrap_or(self.bg),
         }
     }
 }

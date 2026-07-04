@@ -46,7 +46,7 @@ impl AgentType {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            AgentType::ClaudeCode => "\u{2733}",  // ✳ eight spoked asterisk (matches Claude's pane title symbol)
+            AgentType::ClaudeCode => "\u{2733}", // ✳ eight spoked asterisk (matches Claude's pane title symbol)
             AgentType::Codex => ">_",
             AgentType::Pi => "π",
         }
@@ -60,7 +60,6 @@ pub struct AgentSession {
     pub tmux_session_name: String,
     pub window_index: u32,
     pub pane_id: String,
-    pub pane_title: String,
     pub display_name: String,
     pub renamed: bool,
     /// Pin slot 0..=9 if this agent is pinned, None otherwise.
@@ -135,7 +134,11 @@ pub fn tmux_root_session_prefix(thread_name: &str) -> String {
 /// Generates a labeled tmux session name for a root thread.
 /// Format: `twsr_{thread_slug}_{label_slug}`
 pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_root_session_prefix(thread_name), slugify(label))
+    format!(
+        "{}_{}",
+        tmux_root_session_prefix(thread_name),
+        slugify(label)
+    )
 }
 
 /// Generates the base prefix for tmux session names for a given collection/thread.
@@ -149,7 +152,11 @@ pub fn tmux_session_prefix(collection_name: &str, thread_name: &str) -> String {
 /// Generates a labeled tmux session name.
 /// Format: `tws_{collection_slug}_{thread_slug}_{label_slug}`
 pub fn tmux_session_name_labeled(collection_name: &str, thread_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_session_prefix(collection_name, thread_name), slugify(label))
+    format!(
+        "{}_{}",
+        tmux_session_prefix(collection_name, thread_name),
+        slugify(label)
+    )
 }
 
 #[cfg(test)]
@@ -229,10 +236,7 @@ mod tests {
 
     #[test]
     fn tmux_root_session_prefix_format() {
-        assert_eq!(
-            tmux_root_session_prefix("general"),
-            "twsr_general"
-        );
+        assert_eq!(tmux_root_session_prefix("general"), "twsr_general");
         assert_eq!(
             tmux_root_session_prefix("My Quick Thread"),
             "twsr_my-quick-thread"

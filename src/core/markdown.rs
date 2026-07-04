@@ -98,7 +98,13 @@ impl MarkdownRenderer {
 
 fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Text<'static>> {
     let mut child = Command::new("glow")
-        .args(["-w", &width.to_string(), "-s", &theme_path.to_string_lossy(), "-"])
+        .args([
+            "-w",
+            &width.to_string(),
+            "-s",
+            &theme_path.to_string_lossy(),
+            "-",
+        ])
         .env("CLICOLOR_FORCE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -106,11 +112,7 @@ fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Tex
         .spawn()
         .ok()?;
 
-    child
-        .stdin
-        .take()?
-        .write_all(markdown.as_bytes())
-        .ok()?;
+    child.stdin.take()?.write_all(markdown.as_bytes()).ok()?;
 
     let output = child.wait_with_output().ok()?;
     if !output.status.success() {

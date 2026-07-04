@@ -67,7 +67,10 @@ pub fn resolve_palette(config: &Config) -> Palette {
         .or_else(|| palette::load_preset(theme_name))
         .unwrap_or_else(|| {
             if theme_name != "default" {
-                eprintln!("tws: unknown theme '{}', falling back to default", theme_name);
+                eprintln!(
+                    "tws: unknown theme '{}', falling back to default",
+                    theme_name
+                );
             }
             Palette::default()
         });
@@ -85,7 +88,9 @@ struct ThemeFile {
 }
 
 fn try_load_user_theme(name: &str) -> Option<Palette> {
-    let path = persistence::config_dir().join("themes").join(format!("{}.toml", name));
+    let path = persistence::config_dir()
+        .join("themes")
+        .join(format!("{}.toml", name));
     let text = fs::read_to_string(&path).ok()?;
     match toml::from_str::<ThemeFile>(&text) {
         Ok(tf) => Some(tf.palette),
@@ -208,8 +213,22 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         let km = build_keymap(&config);
         use crossterm::event::{KeyCode, KeyModifiers};
-        assert_eq!(km.resolve(keys::KeyMode::Normal, KeyCode::Char('Q'), KeyModifiers::SHIFT), Some(keys::Action::Quit));
-        assert_eq!(km.resolve(keys::KeyMode::Normal, KeyCode::Char('q'), KeyModifiers::NONE), None);
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::Normal,
+                KeyCode::Char('Q'),
+                KeyModifiers::SHIFT
+            ),
+            Some(keys::Action::Quit)
+        );
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::Normal,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE
+            ),
+            None
+        );
     }
 
     #[test]
@@ -236,15 +255,46 @@ mod tests {
 
         // Theme builds without panic
         let theme = crate::theme::Theme::build(&p);
-        assert_eq!(theme.thread, ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(255, 0, 0)));
+        assert_eq!(
+            theme.thread,
+            ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(255, 0, 0))
+        );
 
         // Keymap: 'Q' should be quit, 'q' unbound, 'n' is add
         let km = build_keymap(&config);
         use crossterm::event::{KeyCode, KeyModifiers};
-        assert_eq!(km.resolve(keys::KeyMode::Normal, KeyCode::Char('Q'), KeyModifiers::SHIFT), Some(keys::Action::Quit));
-        assert_eq!(km.resolve(keys::KeyMode::Normal, KeyCode::Char('q'), KeyModifiers::NONE), None);
-        assert_eq!(km.resolve(keys::KeyMode::Normal, KeyCode::Char('n'), KeyModifiers::NONE), Some(keys::Action::Add));
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::Normal,
+                KeyCode::Char('Q'),
+                KeyModifiers::SHIFT
+            ),
+            Some(keys::Action::Quit)
+        );
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::Normal,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE
+            ),
+            None
+        );
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::Normal,
+                KeyCode::Char('n'),
+                KeyModifiers::NONE
+            ),
+            Some(keys::Action::Add)
+        );
         // Confirm mode still works
-        assert_eq!(km.resolve(keys::KeyMode::ConfirmModal, KeyCode::Enter, KeyModifiers::NONE), Some(keys::Action::Confirm));
+        assert_eq!(
+            km.resolve(
+                keys::KeyMode::ConfirmModal,
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ),
+            Some(keys::Action::Confirm)
+        );
     }
 }

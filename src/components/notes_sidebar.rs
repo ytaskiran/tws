@@ -1,9 +1,9 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ratatui::Frame;
 
 use crate::theme::Theme;
 
@@ -38,15 +38,18 @@ pub fn render(frame: &mut Frame, state: &SidebarState<'_>, area: Rect, theme: &T
     }
 
     if state.is_empty {
-        let msg = if state.focused { "Enter to edit" } else { "Tab to add notes" };
+        let msg = if state.focused {
+            "Enter to edit"
+        } else {
+            "Tab to add notes"
+        };
         let placeholder = Paragraph::new(Line::from(Span::styled(msg, theme.notes_placeholder)));
         frame.render_widget(placeholder, inner);
         return;
     }
 
     if let Some(text) = state.rendered {
-        let paragraph = Paragraph::new(text.clone())
-            .scroll((state.scroll_offset as u16, 0));
+        let paragraph = Paragraph::new(text.clone()).scroll((state.scroll_offset as u16, 0));
         frame.render_widget(paragraph, inner);
 
         let total_lines = text.lines.len();

@@ -10,17 +10,20 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         let available_height = area.height.saturating_sub(2);
         let top_padding = available_height.saturating_sub(1) / 2;
         let mut lines: Vec<Line> = vec![Line::from(""); top_padding as usize];
-        lines.push(Line::from(Span::styled("No active agents", theme.thread_dim)));
-        frame.render_widget(
-            Paragraph::new(lines).alignment(Alignment::Center),
-            area,
-        );
+        lines.push(Line::from(Span::styled(
+            "No active agents",
+            theme.thread_dim,
+        )));
+        frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
         return;
     }
 
     // The flat list is already sorted: pinned first, then unpinned.
     // Find the split point: index of the first unpinned agent.
-    let split = agents.iter().position(|a| a.pin_slot.is_none()).unwrap_or(agents.len());
+    let split = agents
+        .iter()
+        .position(|a| a.pin_slot.is_none())
+        .unwrap_or(agents.len());
     let has_pinned = split > 0;
     let has_unpinned = split < agents.len();
 
@@ -35,7 +38,10 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             Span::styled(" : ", theme.badge_dot),
             Span::styled(a.session_display_name.clone(), theme.session),
             Span::styled(" : ", theme.badge_dot),
-            Span::styled(a.agent_type.icon().to_string(), theme.agent.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                a.agent_type.icon().to_string(),
+                theme.agent.add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!(" {}", a.agent_display_name), theme.agent),
         ]);
         ListItem::new(line)
@@ -49,7 +55,10 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             // Insert separator row between pinned and unpinned blocks
             let sep_width = area.width.saturating_sub(2) as usize;
             let sep = "─".repeat(sep_width);
-            items.push(ListItem::new(Line::from(Span::styled(sep, theme.separator))));
+            items.push(ListItem::new(Line::from(Span::styled(
+                sep,
+                theme.separator,
+            ))));
             if cursor >= split {
                 adjusted_cursor = cursor + 1;
             }

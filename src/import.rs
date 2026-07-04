@@ -79,10 +79,7 @@ pub fn run() -> io::Result<()> {
         let thread_name = &collections[col_idx].threads[thread_idx].name;
         let new_name = tmux_session_name_labeled(col_name, thread_name, &label);
 
-        println!(
-            "\n  Rename: \"{}\" → \"{}\"\n",
-            session_name, new_name
-        );
+        println!("\n  Rename: \"{}\" → \"{}\"\n", session_name, new_name);
 
         if confirm("  Proceed?")? {
             match tmux::rename_session(session_name, &new_name) {

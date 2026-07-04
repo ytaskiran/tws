@@ -146,16 +146,16 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
 fn fmt_key(code: KeyCode, mods: KeyModifiers) -> String {
     let base = match code {
         KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c)   => c.to_string(),
-        KeyCode::Enter     => "Enter".to_string(),
-        KeyCode::Esc       => "Esc".to_string(),
-        KeyCode::Tab       => "Tab".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
         KeyCode::Backspace => "BS".to_string(),
-        KeyCode::Up        => "\u{2191}".to_string(),
-        KeyCode::Down      => "\u{2193}".to_string(),
-        KeyCode::Left      => "\u{2190}".to_string(),
-        KeyCode::Right     => "\u{2192}".to_string(),
-        _                  => format!("{:?}", code),
+        KeyCode::Up => "\u{2191}".to_string(),
+        KeyCode::Down => "\u{2193}".to_string(),
+        KeyCode::Left => "\u{2190}".to_string(),
+        KeyCode::Right => "\u{2192}".to_string(),
+        _ => format!("{:?}", code),
     };
     if mods.contains(KeyModifiers::CONTROL) {
         format!("ctrl+{}", base)
@@ -192,77 +192,204 @@ impl Keymap {
         use KeyMode as M;
 
         // ── Normal mode ─────────────────────────────────────────────────────
-        bind!(M::Normal, KeyCode::Char('q'), KeyModifiers::NONE,  A::Quit);
-        bind!(M::Normal, KeyCode::Char('j'), KeyModifiers::NONE,  A::MoveDown);
-        bind!(M::Normal, KeyCode::Down,      KeyModifiers::NONE,  A::MoveDown);
-        bind!(M::Normal, KeyCode::Char('k'), KeyModifiers::NONE,  A::MoveUp);
-        bind!(M::Normal, KeyCode::Up,        KeyModifiers::NONE,  A::MoveUp);
-        bind!(M::Normal, KeyCode::Char('h'), KeyModifiers::NONE,  A::MoveLeft);
-        bind!(M::Normal, KeyCode::Left,      KeyModifiers::NONE,  A::MoveLeft);
-        bind!(M::Normal, KeyCode::Char('l'), KeyModifiers::NONE,  A::MoveRight);
-        bind!(M::Normal, KeyCode::Right,     KeyModifiers::NONE,  A::MoveRight);
-        bind!(M::Normal, KeyCode::Char(' '), KeyModifiers::NONE,  A::ToggleSelect);
-        bind!(M::Normal, KeyCode::Enter,     KeyModifiers::NONE,  A::Enter);
-        bind!(M::Normal, KeyCode::Esc,       KeyModifiers::NONE,  A::Deselect);
-        bind!(M::Normal, KeyCode::Char('a'), KeyModifiers::NONE,  A::Add);
-        bind!(M::Normal, KeyCode::Char('A'), KeyModifiers::SHIFT, A::AddCollection);
-        bind!(M::Normal, KeyCode::Char('r'), KeyModifiers::NONE,  A::Rename);
-        bind!(M::Normal, KeyCode::Char('d'), KeyModifiers::NONE,  A::Delete);
-        bind!(M::Normal, KeyCode::Char('x'), KeyModifiers::NONE,  A::KillSession);
-        bind!(M::Normal, KeyCode::Char('m'), KeyModifiers::NONE,  A::Move);
-        bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE,  A::Finder);
-        bind!(M::Normal, KeyCode::Char('e'), KeyModifiers::NONE,  A::ExpandAll);
-        bind!(M::Normal, KeyCode::Char('1'), KeyModifiers::NONE,  A::RecentSession1);
-        bind!(M::Normal, KeyCode::Char('2'), KeyModifiers::NONE,  A::RecentSession2);
-        bind!(M::Normal, KeyCode::Char('3'), KeyModifiers::NONE,  A::RecentSession3);
-        bind!(M::Normal, KeyCode::Char('4'), KeyModifiers::NONE,  A::RecentSession4);
-        bind!(M::Normal, KeyCode::Char('5'), KeyModifiers::NONE,  A::RecentSession5);
-        bind!(M::Normal, KeyCode::Char('v'), KeyModifiers::NONE,  A::ToggleView);
+        bind!(M::Normal, KeyCode::Char('q'), KeyModifiers::NONE, A::Quit);
+        bind!(
+            M::Normal,
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            A::MoveDown
+        );
+        bind!(M::Normal, KeyCode::Down, KeyModifiers::NONE, A::MoveDown);
+        bind!(M::Normal, KeyCode::Char('k'), KeyModifiers::NONE, A::MoveUp);
+        bind!(M::Normal, KeyCode::Up, KeyModifiers::NONE, A::MoveUp);
+        bind!(
+            M::Normal,
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+            A::MoveLeft
+        );
+        bind!(M::Normal, KeyCode::Left, KeyModifiers::NONE, A::MoveLeft);
+        bind!(
+            M::Normal,
+            KeyCode::Char('l'),
+            KeyModifiers::NONE,
+            A::MoveRight
+        );
+        bind!(M::Normal, KeyCode::Right, KeyModifiers::NONE, A::MoveRight);
+        bind!(
+            M::Normal,
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+            A::ToggleSelect
+        );
+        bind!(M::Normal, KeyCode::Enter, KeyModifiers::NONE, A::Enter);
+        bind!(M::Normal, KeyCode::Esc, KeyModifiers::NONE, A::Deselect);
+        bind!(M::Normal, KeyCode::Char('a'), KeyModifiers::NONE, A::Add);
+        bind!(
+            M::Normal,
+            KeyCode::Char('A'),
+            KeyModifiers::SHIFT,
+            A::AddCollection
+        );
+        bind!(M::Normal, KeyCode::Char('r'), KeyModifiers::NONE, A::Rename);
+        bind!(M::Normal, KeyCode::Char('d'), KeyModifiers::NONE, A::Delete);
+        bind!(
+            M::Normal,
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            A::KillSession
+        );
+        bind!(M::Normal, KeyCode::Char('m'), KeyModifiers::NONE, A::Move);
+        bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE, A::Finder);
+        bind!(
+            M::Normal,
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+            A::ExpandAll
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('1'),
+            KeyModifiers::NONE,
+            A::RecentSession1
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('2'),
+            KeyModifiers::NONE,
+            A::RecentSession2
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('3'),
+            KeyModifiers::NONE,
+            A::RecentSession3
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('4'),
+            KeyModifiers::NONE,
+            A::RecentSession4
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('5'),
+            KeyModifiers::NONE,
+            A::RecentSession5
+        );
+        bind!(
+            M::Normal,
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+            A::ToggleView
+        );
 
         // ── Agents mode ──────────────────────────────────────────────────────
-        bind!(M::Agents, KeyCode::Char('j'), KeyModifiers::NONE, A::MoveDown);
-        bind!(M::Agents, KeyCode::Down,      KeyModifiers::NONE, A::MoveDown);
+        bind!(
+            M::Agents,
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            A::MoveDown
+        );
+        bind!(M::Agents, KeyCode::Down, KeyModifiers::NONE, A::MoveDown);
         bind!(M::Agents, KeyCode::Char('k'), KeyModifiers::NONE, A::MoveUp);
-        bind!(M::Agents, KeyCode::Up,        KeyModifiers::NONE, A::MoveUp);
-        bind!(M::Agents, KeyCode::Enter,     KeyModifiers::NONE,  A::Enter);
-        bind!(M::Agents, KeyCode::Esc,       KeyModifiers::NONE,  A::Cancel);
-        bind!(M::Agents, KeyCode::Char('q'), KeyModifiers::NONE,  A::Quit);
-        bind!(M::Agents, KeyCode::Char('p'), KeyModifiers::NONE,  A::PinAgent);
-        bind!(M::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT, A::PinAgentSlot);
+        bind!(M::Agents, KeyCode::Up, KeyModifiers::NONE, A::MoveUp);
+        bind!(M::Agents, KeyCode::Enter, KeyModifiers::NONE, A::Enter);
+        bind!(M::Agents, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
+        bind!(M::Agents, KeyCode::Char('q'), KeyModifiers::NONE, A::Quit);
+        bind!(
+            M::Agents,
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+            A::PinAgent
+        );
+        bind!(
+            M::Agents,
+            KeyCode::Char('P'),
+            KeyModifiers::SHIFT,
+            A::PinAgentSlot
+        );
 
         // ── Notes mode ───────────────────────────────────────────────────────
-        bind!(M::Notes, KeyCode::Enter,     KeyModifiers::NONE, A::OpenEditor);
-        bind!(M::Notes, KeyCode::Esc,       KeyModifiers::NONE, A::Cancel);
-        bind!(M::Notes, KeyCode::Char('k'), KeyModifiers::NONE, A::ScrollUp);
-        bind!(M::Notes, KeyCode::Up,        KeyModifiers::NONE, A::ScrollUp);
-        bind!(M::Notes, KeyCode::Char('j'), KeyModifiers::NONE, A::ScrollDown);
-        bind!(M::Notes, KeyCode::Down,      KeyModifiers::NONE, A::ScrollDown);
+        bind!(M::Notes, KeyCode::Enter, KeyModifiers::NONE, A::OpenEditor);
+        bind!(M::Notes, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
+        bind!(
+            M::Notes,
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            A::ScrollUp
+        );
+        bind!(M::Notes, KeyCode::Up, KeyModifiers::NONE, A::ScrollUp);
+        bind!(
+            M::Notes,
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            A::ScrollDown
+        );
+        bind!(M::Notes, KeyCode::Down, KeyModifiers::NONE, A::ScrollDown);
 
         // ── Input modal ──────────────────────────────────────────────────────
-        bind!(M::Input, KeyCode::Esc,       KeyModifiers::NONE, A::Cancel);
-        bind!(M::Input, KeyCode::Enter,     KeyModifiers::NONE, A::Confirm);
-        bind!(M::Input, KeyCode::Backspace, KeyModifiers::NONE, A::Backspace);
+        bind!(M::Input, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
+        bind!(M::Input, KeyCode::Enter, KeyModifiers::NONE, A::Confirm);
+        bind!(
+            M::Input,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+            A::Backspace
+        );
 
         // ── Confirm modal ────────────────────────────────────────────────────
-        bind!(M::ConfirmModal, KeyCode::Char('y'), KeyModifiers::NONE, A::Confirm);
-        bind!(M::ConfirmModal, KeyCode::Enter,     KeyModifiers::NONE, A::Confirm);
-        bind!(M::ConfirmModal, KeyCode::Char('n'), KeyModifiers::NONE, A::Cancel);
-        bind!(M::ConfirmModal, KeyCode::Esc,       KeyModifiers::NONE, A::Cancel);
+        bind!(
+            M::ConfirmModal,
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+            A::Confirm
+        );
+        bind!(
+            M::ConfirmModal,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            A::Confirm
+        );
+        bind!(
+            M::ConfirmModal,
+            KeyCode::Char('n'),
+            KeyModifiers::NONE,
+            A::Cancel
+        );
+        bind!(M::ConfirmModal, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
 
         // ── Finder ───────────────────────────────────────────────────────────
-        bind!(M::Finder, KeyCode::Esc,       KeyModifiers::NONE,    A::Cancel);
-        bind!(M::Finder, KeyCode::Enter,     KeyModifiers::NONE,    A::Confirm);
-        bind!(M::Finder, KeyCode::Down,      KeyModifiers::NONE,    A::MoveDown);
-        bind!(M::Finder, KeyCode::Char('j'), KeyModifiers::CONTROL, A::MoveDown);
-        bind!(M::Finder, KeyCode::Up,        KeyModifiers::NONE,    A::MoveUp);
-        bind!(M::Finder, KeyCode::Char('k'), KeyModifiers::CONTROL, A::MoveUp);
-        bind!(M::Finder, KeyCode::Backspace, KeyModifiers::NONE,    A::Backspace);
+        bind!(M::Finder, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
+        bind!(M::Finder, KeyCode::Enter, KeyModifiers::NONE, A::Confirm);
+        bind!(M::Finder, KeyCode::Down, KeyModifiers::NONE, A::MoveDown);
+        bind!(
+            M::Finder,
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL,
+            A::MoveDown
+        );
+        bind!(M::Finder, KeyCode::Up, KeyModifiers::NONE, A::MoveUp);
+        bind!(
+            M::Finder,
+            KeyCode::Char('k'),
+            KeyModifiers::CONTROL,
+            A::MoveUp
+        );
+        bind!(
+            M::Finder,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+            A::Backspace
+        );
 
         Self { map }
     }
 
     pub fn resolve(&self, mode: KeyMode, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
-        self.map.get(&(mode, code, normalized_mods(code, modifiers))).copied()
+        self.map
+            .get(&(mode, code, normalized_mods(code, modifiers)))
+            .copied()
     }
 
     /// Returns a human-readable label for the primary key bound to `action` in
@@ -274,7 +401,10 @@ impl Keymap {
         for (&(m, code, mods), &a) in &self.map {
             if m == mode && a == action {
                 let s = fmt_key(code, mods);
-                if matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right) {
+                if matches!(
+                    code,
+                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+                ) {
                     fallback.get_or_insert(s);
                 } else {
                     char_binding.get_or_insert(s);
@@ -307,7 +437,8 @@ impl Keymap {
                 }
             };
             // Remove old binding(s) for this action in this mode
-            self.map.retain(|&(m, _, _), &mut a| !(m == mode && a == action));
+            self.map
+                .retain(|&(m, _, _), &mut a| !(m == mode && a == action));
             // Normalize and insert; warn if the key slot is already taken
             let norm_mods = normalized_mods(key.code, key.modifiers);
             if let Some(&existing) = self.map.get(&(mode, key.code, norm_mods)) {
@@ -370,11 +501,17 @@ mod tests {
     fn parse_action_names() {
         assert_eq!(parse_action("quit").unwrap(), Action::Quit);
         assert_eq!(parse_action("move_down").unwrap(), Action::MoveDown);
-        assert_eq!(parse_action("add_collection").unwrap(), Action::AddCollection);
+        assert_eq!(
+            parse_action("add_collection").unwrap(),
+            Action::AddCollection
+        );
         assert_eq!(parse_action("kill_session").unwrap(), Action::KillSession);
         assert_eq!(parse_action("toggle_view").unwrap(), Action::ToggleView);
         assert_eq!(parse_action("open_editor").unwrap(), Action::OpenEditor);
-        assert_eq!(parse_action("recent_session_1").unwrap(), Action::RecentSession1);
+        assert_eq!(
+            parse_action("recent_session_1").unwrap(),
+            Action::RecentSession1
+        );
     }
 
     #[test]
@@ -391,37 +528,74 @@ mod tests {
     #[test]
     fn default_keymap_normal_quit() {
         let km = Keymap::default_bindings();
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('q'), KeyModifiers::NONE), Some(Action::Quit));
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('q'), KeyModifiers::NONE),
+            Some(Action::Quit)
+        );
     }
 
     #[test]
     fn default_keymap_normal_movement() {
         let km = Keymap::default_bindings();
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('j'), KeyModifiers::NONE), Some(Action::MoveDown));
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Down, KeyModifiers::NONE), Some(Action::MoveDown));
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('k'), KeyModifiers::NONE), Some(Action::MoveUp));
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('j'), KeyModifiers::NONE),
+            Some(Action::MoveDown)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Down, KeyModifiers::NONE),
+            Some(Action::MoveDown)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('k'), KeyModifiers::NONE),
+            Some(Action::MoveUp)
+        );
     }
 
     #[test]
     fn default_keymap_confirm_mode() {
         let km = Keymap::default_bindings();
-        assert_eq!(km.resolve(KeyMode::ConfirmModal, KeyCode::Char('y'), KeyModifiers::NONE), Some(Action::Confirm));
-        assert_eq!(km.resolve(KeyMode::ConfirmModal, KeyCode::Enter, KeyModifiers::NONE), Some(Action::Confirm));
-        assert_eq!(km.resolve(KeyMode::ConfirmModal, KeyCode::Esc, KeyModifiers::NONE), Some(Action::Cancel));
+        assert_eq!(
+            km.resolve(
+                KeyMode::ConfirmModal,
+                KeyCode::Char('y'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::ConfirmModal, KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::ConfirmModal, KeyCode::Esc, KeyModifiers::NONE),
+            Some(Action::Cancel)
+        );
     }
 
     #[test]
     fn default_keymap_agents_mode() {
         let km = Keymap::default_bindings();
-        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('j'), KeyModifiers::NONE), Some(Action::MoveDown));
-        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Enter, KeyModifiers::NONE), Some(Action::Enter));
-        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('q'), KeyModifiers::NONE), Some(Action::Quit));
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Char('j'), KeyModifiers::NONE),
+            Some(Action::MoveDown)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Enter)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Char('q'), KeyModifiers::NONE),
+            Some(Action::Quit)
+        );
     }
 
     #[test]
     fn keymap_unbound_returns_none() {
         let km = Keymap::default_bindings();
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('z'), KeyModifiers::NONE), None);
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('z'), KeyModifiers::NONE),
+            None
+        );
     }
 
     #[test]
@@ -429,11 +603,23 @@ mod tests {
         // Terminals that omit SHIFT for uppercase chars must still match.
         let km = Keymap::default_bindings();
         // 'A' is bound as AddCollection — should resolve with or without SHIFT
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::SHIFT), Some(Action::AddCollection));
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::NONE), Some(Action::AddCollection));
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::SHIFT),
+            Some(Action::AddCollection)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::NONE),
+            Some(Action::AddCollection)
+        );
         // 'P' (agents) bound as PinAgentSlot
-        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT), Some(Action::PinAgentSlot));
-        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('P'), KeyModifiers::NONE), Some(Action::PinAgentSlot));
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT),
+            Some(Action::PinAgentSlot)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Char('P'), KeyModifiers::NONE),
+            Some(Action::PinAgentSlot)
+        );
     }
 
     #[test]
@@ -444,7 +630,13 @@ mod tests {
         let mut overrides = HashMap::new();
         overrides.insert("finder".to_string(), "?".to_string());
         km.apply_overrides(KeyMode::Normal, &overrides);
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::NONE), Some(Action::Finder));
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::SHIFT), Some(Action::Finder));
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::NONE),
+            Some(Action::Finder)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::SHIFT),
+            Some(Action::Finder)
+        );
     }
 }

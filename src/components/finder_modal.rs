@@ -1,14 +1,15 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
-use ratatui::Frame;
 
 use crate::theme::Theme;
 
 /// Maximum number of result rows visible at once.
 const MAX_VISIBLE: usize = 10;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     title: &str,
@@ -40,7 +41,7 @@ pub fn render(
     let chunks = Layout::vertical([
         Constraint::Length(1), // query
         Constraint::Length(1), // separator
-        Constraint::Min(0),   // results
+        Constraint::Min(0),    // results
     ])
     .split(inner);
 
@@ -74,7 +75,12 @@ pub fn render(
     };
 
     let mut lines: Vec<Line> = Vec::with_capacity(max_rows);
-    for (vi, &entry_idx) in filtered.iter().skip(scroll_offset).take(max_rows).enumerate() {
+    for (vi, &entry_idx) in filtered
+        .iter()
+        .skip(scroll_offset)
+        .take(max_rows)
+        .enumerate()
+    {
         let (_, path) = &entries[entry_idx];
         let is_selected = scroll_offset + vi == cursor;
         let style = if is_selected {
