@@ -797,29 +797,27 @@ impl App {
         // If a P-triggered slot-assign is pending, the next keystroke either assigns
         // (digit), cancels silently (Esc), or cancels and falls through (any other key).
         if let Some(pending) = self.pin_assign_pending.take() {
-            if let KeyCode::Char(c) = code {
-                if c.is_ascii_digit() {
-                    let slot: u8 = c.to_digit(10).unwrap() as u8;
-                    let snapshot = agents.iter().find(|a| a.pane_id == pending);
-                    let already_in_slot = snapshot
-                        .and_then(|a| a.pin_slot)
-                        .map(|s| s == slot)
-                        .unwrap_or(false);
-                    let path = snapshot.map(|a| {
-                        format!(
-                            "{} / {} / {}",
-                            a.thread_name, a.session_display_name, a.agent_display_name
-                        )
-                    });
-                    self.state.pin_agent_to(&pending, slot);
-                    if !already_in_slot {
-                        if let Some(p) = path {
-                            self.set_flash(&format!("Pin {}: {}", slot, p));
-                        }
-                    }
-                    self.reanchor_agent_cursor(Some(pending));
-                    return Ok(());
+            if let KeyCode::Char(c) = code
+                && c.is_ascii_digit()
+            {
+                let slot: u8 = c.to_digit(10).unwrap() as u8;
+                let snapshot = agents.iter().find(|a| a.pane_id == pending);
+                let already_in_slot = snapshot
+                    .and_then(|a| a.pin_slot)
+                    .map(|s| s == slot)
+                    .unwrap_or(false);
+                let path = snapshot.map(|a| {
+                    format!(
+                        "{} / {} / {}",
+                        a.thread_name, a.session_display_name, a.agent_display_name
+                    )
+                });
+                self.state.pin_agent_to(&pending, slot);
+                if !already_in_slot && let Some(p) = path {
+                    self.set_flash(&format!("Pin {}: {}", slot, p));
                 }
+                self.reanchor_agent_cursor(Some(pending));
+                return Ok(());
             }
             if matches!(code, KeyCode::Esc) {
                 return Ok(());
@@ -886,19 +884,19 @@ impl App {
             }
             _ => {
                 // Plain digit → jump to that pinned slot and attach immediately.
-                if let KeyCode::Char(c) = code {
-                    if c.is_ascii_digit() {
-                        let slot: u8 = c.to_digit(10).unwrap() as u8;
-                        if let Some(agent) = self.state.agent_by_pin_slot(slot) {
-                            let target_id = agent.pane_id.clone();
-                            if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
-                                self.agent_list_cursor = idx;
-                                let a = &agents[idx];
-                                let session_name = a.tmux_session_name.clone();
-                                let _ = tmux::select_window(&session_name, a.window_index);
-                                let _ = tmux::select_pane(&a.pane_id);
-                                self.attach_to_session(&session_name, terminal)?;
-                            }
+                if let KeyCode::Char(c) = code
+                    && c.is_ascii_digit()
+                {
+                    let slot: u8 = c.to_digit(10).unwrap() as u8;
+                    if let Some(agent) = self.state.agent_by_pin_slot(slot) {
+                        let target_id = agent.pane_id.clone();
+                        if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
+                            self.agent_list_cursor = idx;
+                            let a = &agents[idx];
+                            let session_name = a.tmux_session_name.clone();
+                            let _ = tmux::select_window(&session_name, a.window_index);
+                            let _ = tmux::select_pane(&a.pane_id);
+                            self.attach_to_session(&session_name, terminal)?;
                         }
                     }
                 }
@@ -915,11 +913,11 @@ impl App {
             self.agent_list_cursor = 0;
             return;
         }
-        if let Some(id) = anchor_pane_id {
-            if let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
-                self.agent_list_cursor = idx;
-                return;
-            }
+        if let Some(id) = anchor_pane_id
+            && let Some(idx) = agents.iter().position(|a| a.pane_id == id)
+        {
+            self.agent_list_cursor = idx;
+            return;
         }
         self.agent_list_cursor = self.agent_list_cursor.min(agents.len() - 1);
     }
@@ -958,10 +956,10 @@ impl App {
                 }
             }
             _ => {
-                if let KeyCode::Char(c) = code {
-                    if let Mode::Input { buffer, .. } = &mut self.mode {
-                        buffer.push(c);
-                    }
+                if let KeyCode::Char(c) = code
+                    && let Mode::Input { buffer, .. } = &mut self.mode
+                {
+                    buffer.push(c);
                 }
             }
         }
@@ -1082,9 +1080,9 @@ impl App {
                     };
                 }
             }
-            SelectedItem::Thread(col_idx, thread_idx) => {
+            SelectedItem::Thread(col_idx, thread_idx)
                 // If the thread has active sessions, offer to kill all of them
-                if self.state.has_active_session(col_idx, thread_idx) {
+                if self.state.has_active_session(col_idx, thread_idx) => {
                     let thread_name = self.state.collections[col_idx].threads[thread_idx]
                         .name
                         .clone();
@@ -1096,7 +1094,6 @@ impl App {
                         },
                     };
                 }
-            }
             _ => {}
         }
     }
@@ -1188,7 +1185,7 @@ impl App {
 
     fn start_finder(&mut self) {
         let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
-        sessions.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_attached));
 
         let entries: Vec<(String, String)> = sessions
             .iter()
@@ -1213,10 +1210,10 @@ impl App {
 
         match action {
             Some(Action::MoveDown) => {
-                if let Mode::Finder { state } = &mut self.mode {
-                    if !state.filtered.is_empty() {
-                        state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
-                    }
+                if let Mode::Finder { state } = &mut self.mode
+                    && !state.filtered.is_empty()
+                {
+                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
                 }
             }
             Some(Action::MoveUp) => {
@@ -1229,13 +1226,13 @@ impl App {
             }
             Some(Action::Confirm) => {
                 let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-                if let Mode::Finder { state } = old_mode {
-                    if let Some(&idx) = state.filtered.get(state.cursor) {
-                        let name = state.all_entries[idx].0.clone();
-                        self.attach_to_session(&name, terminal)?;
-                        if let Some(path) = self.state.session_tree_path(&name) {
-                            self.tree_state.select(path);
-                        }
+                if let Mode::Finder { state } = old_mode
+                    && let Some(&idx) = state.filtered.get(state.cursor)
+                {
+                    let name = state.all_entries[idx].0.clone();
+                    self.attach_to_session(&name, terminal)?;
+                    if let Some(path) = self.state.session_tree_path(&name) {
+                        self.tree_state.select(path);
                     }
                 }
             }
@@ -1247,11 +1244,11 @@ impl App {
             }
             _ => {
                 // Character input for search query
-                if let KeyCode::Char(c) = code {
-                    if let Mode::Finder { state } = &mut self.mode {
-                        state.query.push(c);
-                        state.update_filter();
-                    }
+                if let KeyCode::Char(c) = code
+                    && let Mode::Finder { state } = &mut self.mode
+                {
+                    state.query.push(c);
+                    state.update_filter();
                 }
             }
         }
@@ -1268,10 +1265,10 @@ impl App {
         let nav_up = code == KeyCode::Up || (ctrl && code == KeyCode::Char('k'));
 
         if nav_down {
-            if let Mode::ThreadPicker { state, .. } = &mut self.mode {
-                if !state.filtered.is_empty() {
-                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
-                }
+            if let Mode::ThreadPicker { state, .. } = &mut self.mode
+                && !state.filtered.is_empty()
+            {
+                state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
             }
         } else if nav_up {
             if let Mode::ThreadPicker { state, .. } = &mut self.mode {
@@ -1310,38 +1307,37 @@ impl App {
             session_name,
             session_label,
         } = old_mode
+            && let Some(&idx) = state.filtered.get(state.cursor)
         {
-            if let Some(&idx) = state.filtered.get(state.cursor) {
-                let key = &state.all_entries[idx].0;
-                let dest_display = state.all_entries[idx].1.clone();
+            let key = &state.all_entries[idx].0;
+            let dest_display = state.all_entries[idx].1.clone();
 
-                let parts: Vec<&str> = key.split(':').collect();
-                if parts.len() != 2 {
-                    return;
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() != 2 {
+                return;
+            }
+            let dest_col: usize = match parts[0].parse() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let dest_thread: usize = match parts[1].parse() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+
+            if let Some(new_tmux_name) =
+                self.state
+                    .make_session_name(dest_col, dest_thread, &session_label)
+            {
+                let _ = tmux::rename_session(&session_name, &new_tmux_name);
+                self.notes.rename(&session_name, &new_tmux_name);
+                self.do_refresh_sessions();
+
+                if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
+                    self.tree_state.select(path);
                 }
-                let dest_col: usize = match parts[0].parse() {
-                    Ok(v) => v,
-                    Err(_) => return,
-                };
-                let dest_thread: usize = match parts[1].parse() {
-                    Ok(v) => v,
-                    Err(_) => return,
-                };
-
-                if let Some(new_tmux_name) =
-                    self.state
-                        .make_session_name(dest_col, dest_thread, &session_label)
-                {
-                    let _ = tmux::rename_session(&session_name, &new_tmux_name);
-                    self.notes.rename(&session_name, &new_tmux_name);
-                    self.do_refresh_sessions();
-
-                    if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
-                        self.tree_state.select(path);
-                    }
-                    self.sync_note_editor();
-                    self.set_flash(&format!("Session moved to {}", dest_display));
-                }
+                self.sync_note_editor();
+                self.set_flash(&format!("Session moved to {}", dest_display));
             }
         }
     }
@@ -1381,13 +1377,13 @@ impl App {
                 let needs_refresh =
                     pane_changed || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
                 if needs_refresh {
-                    if let Some(raw) = tmux::capture_pane(&pane_id) {
-                        if let Ok(mut text) = raw.as_bytes().into_text() {
-                            // Same Reset punch-through as notes: remap so the app
-                            // background shows through, keeping the agent's real colors.
-                            crate::core::markdown::clear_reset_backgrounds(&mut text);
-                            self.preview_content = Some(text);
-                        }
+                    if let Some(raw) = tmux::capture_pane(&pane_id)
+                        && let Ok(mut text) = raw.as_bytes().into_text()
+                    {
+                        // Same Reset punch-through as notes: remap so the app
+                        // background shows through, keeping the agent's real colors.
+                        crate::core::markdown::clear_reset_backgrounds(&mut text);
+                        self.preview_content = Some(text);
                     }
                     self.preview_pane_id = Some(pane_id);
                     self.last_preview_refresh = Instant::now();

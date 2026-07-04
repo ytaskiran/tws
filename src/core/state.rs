@@ -72,10 +72,10 @@ impl AppState {
                 let first = &selected[0];
                 let second = &selected[1];
                 // Try regular thread first (col_uuid + thread_uuid)
-                if let Some(col_idx) = self.find_collection_idx(first) {
-                    if let Some(thread_idx) = self.find_thread_idx(col_idx, second) {
-                        return SelectedItem::Thread(col_idx, thread_idx);
-                    }
+                if let Some(col_idx) = self.find_collection_idx(first)
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, second)
+                {
+                    return SelectedItem::Thread(col_idx, thread_idx);
                 }
                 // Try root session (thread_uuid + session_name)
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(first) {
@@ -91,18 +91,18 @@ impl AppState {
             }
             3 => {
                 // Try regular session: col / thread / session
-                if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
-                    if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
-                        let thread = &self.collections[col_idx].threads[thread_idx];
-                        let sessions = self.sessions_for_thread(thread.id);
-                        if let Some(sess_idx) = sessions
-                            .iter()
-                            .position(|s| s.tmux_session_name == selected[2])
-                        {
-                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
-                        } else {
-                            return SelectedItem::Thread(col_idx, thread_idx);
-                        }
+                if let Some(col_idx) = self.find_collection_idx(&selected[0])
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
+                {
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions
+                        .iter()
+                        .position(|s| s.tmux_session_name == selected[2])
+                    {
+                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                    } else {
+                        return SelectedItem::Thread(col_idx, thread_idx);
                     }
                 }
                 // Try root agent: thread / session / pane_id
@@ -126,24 +126,22 @@ impl AppState {
             }
             4 => {
                 // Regular agent: col / thread / session / pane_id
-                if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
-                    if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
-                        let thread = &self.collections[col_idx].threads[thread_idx];
-                        let sessions = self.sessions_for_thread(thread.id);
-                        if let Some(sess_idx) = sessions
-                            .iter()
-                            .position(|s| s.tmux_session_name == selected[2])
+                if let Some(col_idx) = self.find_collection_idx(&selected[0])
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
+                {
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions
+                        .iter()
+                        .position(|s| s.tmux_session_name == selected[2])
+                    {
+                        let agents = self.agents_for_session(&selected[2]);
+                        if let Some(agent_idx) =
+                            agents.iter().position(|a| a.pane_id == selected[3])
                         {
-                            let agents = self.agents_for_session(&selected[2]);
-                            if let Some(agent_idx) =
-                                agents.iter().position(|a| a.pane_id == selected[3])
-                            {
-                                return SelectedItem::Agent(
-                                    col_idx, thread_idx, sess_idx, agent_idx,
-                                );
-                            }
-                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                            return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
                         }
+                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
                     }
                 }
                 SelectedItem::None
@@ -169,10 +167,10 @@ impl AppState {
     }
 
     pub fn rename_thread(&mut self, col_idx: usize, thread_idx: usize, new_name: String) {
-        if let Some(col) = self.collections.get_mut(col_idx) {
-            if let Some(thread) = col.threads.get_mut(thread_idx) {
-                thread.name = new_name;
-            }
+        if let Some(col) = self.collections.get_mut(col_idx)
+            && let Some(thread) = col.threads.get_mut(thread_idx)
+        {
+            thread.name = new_name;
         }
     }
 
@@ -183,10 +181,10 @@ impl AppState {
     }
 
     pub fn delete_thread(&mut self, col_idx: usize, thread_idx: usize) {
-        if let Some(col) = self.collections.get_mut(col_idx) {
-            if thread_idx < col.threads.len() {
-                col.threads.remove(thread_idx);
-            }
+        if let Some(col) = self.collections.get_mut(col_idx)
+            && thread_idx < col.threads.len()
+        {
+            col.threads.remove(thread_idx);
         }
     }
 
@@ -371,13 +369,13 @@ impl AppState {
 
     /// Check whether a thread has any active sessions.
     pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
-        if let Some(col) = self.collections.get(col_idx) {
-            if let Some(thread) = col.threads.get(thread_idx) {
-                return self
-                    .active_sessions
-                    .iter()
-                    .any(|s| s.thread_id == thread.id);
-            }
+        if let Some(col) = self.collections.get(col_idx)
+            && let Some(thread) = col.threads.get(thread_idx)
+        {
+            return self
+                .active_sessions
+                .iter()
+                .any(|s| s.thread_id == thread.id);
         }
         false
     }
@@ -399,17 +397,16 @@ impl AppState {
                 };
                 for (session_name, last_attached) in live_tmux_sessions {
                     // Match "prefix_label" where label is any non-empty suffix
-                    if let Some(rest) = session_name.strip_prefix(&prefix) {
-                        if let Some(label) = rest.strip_prefix('_') {
-                            if !label.is_empty() {
-                                self.active_sessions.push(Session {
-                                    tmux_session_name: session_name.clone(),
-                                    display_name: label.to_string(),
-                                    thread_id: thread.id,
-                                    last_attached: *last_attached,
-                                });
-                            }
-                        }
+                    if let Some(rest) = session_name.strip_prefix(&prefix)
+                        && let Some(label) = rest.strip_prefix('_')
+                        && !label.is_empty()
+                    {
+                        self.active_sessions.push(Session {
+                            tmux_session_name: session_name.clone(),
+                            display_name: label.to_string(),
+                            thread_id: thread.id,
+                            last_attached: *last_attached,
+                        });
                     }
                 }
             }
@@ -468,7 +465,7 @@ impl AppState {
             .iter()
             .filter(|s| s.last_attached > 0)
             .collect();
-        recent.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
+        recent.sort_by_key(|s| std::cmp::Reverse(s.last_attached));
         recent.truncate(n);
         recent
     }
