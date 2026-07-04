@@ -28,8 +28,6 @@ pub struct FlatAgent {
     pub window_index: u32,
     pub pane_id: String,
     pub pin_slot: Option<u8>,
-    // Not read until the task that renders status in the agents view.
-    #[allow(dead_code)]
     pub status: super::model::AgentStatus,
 }
 

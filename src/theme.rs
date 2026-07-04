@@ -81,11 +81,8 @@ pub struct Theme {
     pub agent_connector: Style,
 
     // Agent status dots
-    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
     pub status_working: Style,
-    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
     pub status_waiting: Style,
-    #[allow(dead_code)] // TODO: remove when consumed by agents-view task
     pub status_idle: Style,
 
     // Badges

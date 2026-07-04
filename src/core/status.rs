@@ -126,6 +126,16 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     }
 }
 
+/// The single-character dot used to render a status in the agents view.
+pub fn status_glyph(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Working => "●",
+        AgentStatus::Waiting => "◐",
+        AgentStatus::Idle => "○",
+        AgentStatus::Unknown => " ",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +214,14 @@ mod tests {
         assert_eq!(c.working, 2);
         assert_eq!(c.waiting, 1);
         assert_eq!(c.idle, 0);
+    }
+
+    #[test]
+    fn glyphs_are_distinct_per_state() {
+        assert_eq!(status_glyph(AgentStatus::Working), "●");
+        assert_eq!(status_glyph(AgentStatus::Waiting), "◐");
+        assert_eq!(status_glyph(AgentStatus::Idle), "○");
+        assert_eq!(status_glyph(AgentStatus::Unknown), " ");
     }
 
     #[test]
