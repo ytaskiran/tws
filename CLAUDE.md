@@ -86,7 +86,7 @@ Immediate-mode: all widgets are rebuilt from `AppState` each frame. Components a
 - Sessions are launched detached (`tmux new-session -d`), then attached via `switch-client` (inside tmux) or `attach-session` (outside tmux)
 - Agent detection: `tmux list-panes -a` gets pane PIDs → `ps -e` finds child processes → match against known agent binaries (`claude`, `codex`)
 - Agent renames are in-memory only (not persisted), preserved across 30s scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
-- Agent status (running/waiting/idle) is inferred from pane content via `agent_scan::detect_status()` (matching spinner / permission-prompt text captured with `tmux capture-pane`), refreshed every 3s in `refresh_agent_statuses()`. Rendered as a muted dot in the tree and a pill in the agents view; colors come from the `status_*` palette fields.
+- Agent status (running/waiting/idle) is inferred from pane content via `agent_scan::detect_status()` (matching spinner / permission-prompt text captured with `tmux capture-pane`), refreshed every 3s in `refresh_agent_statuses()`. Rendered as a colored dot plus a text label in both the tree and the agents view; colors come from the `status_*` palette fields (vivid green/amber, dim gray for idle) and are overridable per-theme.
 
 ## Tests
 

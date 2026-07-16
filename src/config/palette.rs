@@ -57,8 +57,9 @@ pub struct Palette {
     pub border: Color,
     #[serde(deserialize_with = "deserialize_color")]
     pub bg: Color,
-    /// Agent status indicators — deliberately muted so they read as ambient
-    /// hints, not alarms.
+    /// Agent status indicators. Running and waiting are saturated enough to
+    /// separate at a glance across the tree; idle stays dim so quiet agents
+    /// recede.
     #[serde(deserialize_with = "deserialize_color")]
     pub status_running: Color,
     #[serde(deserialize_with = "deserialize_color")]
@@ -77,9 +78,9 @@ impl Default for Palette {
             muted: Color::Rgb(100, 100, 100),
             border: Color::Rgb(60, 60, 60),
             bg: Color::Rgb(30, 30, 30),
-            status_running: Color::Rgb(122, 154, 138), // soft sage
-            status_waiting: Color::Rgb(197, 160, 90),  // soft amber
-            status_idle: Color::Rgb(100, 100, 100),    // dim gray (== muted)
+            status_running: Color::Rgb(74, 222, 128), // vivid green
+            status_waiting: Color::Rgb(251, 191, 36), // vivid amber
+            status_idle: Color::Rgb(100, 100, 100),   // dim gray (== muted)
         }
     }
 }
@@ -186,8 +187,8 @@ mod tests {
         assert_eq!(p.muted, Color::Rgb(100, 100, 100));
         assert_eq!(p.border, Color::Rgb(60, 60, 60));
         assert_eq!(p.bg, Color::Rgb(30, 30, 30));
-        assert_eq!(p.status_running, Color::Rgb(122, 154, 138));
-        assert_eq!(p.status_waiting, Color::Rgb(197, 160, 90));
+        assert_eq!(p.status_running, Color::Rgb(74, 222, 128));
+        assert_eq!(p.status_waiting, Color::Rgb(251, 191, 36));
         assert_eq!(p.status_idle, Color::Rgb(100, 100, 100));
     }
 

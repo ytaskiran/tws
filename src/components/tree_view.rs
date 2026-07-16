@@ -74,6 +74,11 @@ fn build_thread_item<'a>(
                                 theme.agent.add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(" \u{25CF} ", theme.agent_status_style(a.status)),
+                            // Padded to the longest label so names stay column-aligned.
+                            Span::styled(
+                                format!("{:<7}  ", a.status.label()),
+                                theme.agent_status_style(a.status),
+                            ),
                             Span::styled(a.display_name.as_str(), theme.agent),
                         ]);
                         TreeItem::new_leaf(a.pane_id.clone(), label)

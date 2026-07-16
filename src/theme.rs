@@ -361,15 +361,15 @@ mod tests {
         let t = Theme::build(&p);
         assert_eq!(
             t.agent_status_style(AgentStatus::Running),
-            Style::new().fg(Color::Rgb(122, 154, 138))
+            Style::new().fg(p.status_running)
         );
         assert_eq!(
             t.agent_status_style(AgentStatus::Waiting),
-            Style::new().fg(Color::Rgb(197, 160, 90))
+            Style::new().fg(p.status_waiting)
         );
         assert_eq!(
             t.agent_status_style(AgentStatus::Idle),
-            Style::new().fg(Color::Rgb(100, 100, 100))
+            Style::new().fg(p.status_idle)
         );
     }
 
