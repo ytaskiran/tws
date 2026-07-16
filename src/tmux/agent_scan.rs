@@ -127,6 +127,47 @@ fn parse_processes(raw: &str) -> HashMap<u32, Vec<(u32, String)>> {
 /// the very phrases we look for — e.g. an agent discussing "Do you want" or "tokens").
 const LIVE_REGION_LINES: usize = 20;
 
+/// Remove ANSI escape sequences, leaving only printable text.
+///
+/// Every structural anchor below reads the *first* glyph of a line, and a styled line
+/// from `capture-pane -e` opens with an SGR sequence — `\x1b[38;5;153m❯ 1. Yes` — so
+/// without this the glyph is never in first position and nothing ever matches.
+///
+/// Handles the two forms tmux emits: CSI (`\x1b[` … final byte in `@`–`~`) and OSC
+/// (`\x1b]` … `BEL` or `ESC \`). Any other escape is a two-character sequence.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        chars.next_if(|&n| n == '\\');
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Infer what an agent is doing from a snapshot of its tmux pane content.
 ///
 /// Pure and side-effect-free (the caller supplies captured pane text), so it can be
@@ -142,8 +183,13 @@ const LIVE_REGION_LINES: usize = 20;
 /// Claude Code is matched precisely. Codex/Pi are best-effort on the shared "interrupt"
 /// running hint and otherwise fall back to `Idle` — we default to the least-alarming
 /// state rather than guess wrong.
+///
+/// `content` may carry ANSI escapes: the caller shares `capture_pane`, which passes
+/// `-e` because the preview needs the agent's real colors. Escapes are stripped here
+/// rather than at the call site so that both capture flavours resolve identically.
 pub fn detect_status(content: &str, _agent_type: AgentType) -> AgentStatus {
-    let mut lines: Vec<&str> = content.lines().collect();
+    let plain = strip_ansi(content);
+    let mut lines: Vec<&str> = plain.lines().collect();
     // Drop trailing blank lines first: a pane isn't always full (e.g. a fresh Claude
     // sitting on the trust prompt renders near the top with the rest of the pane blank),
     // so a fixed tail of the raw capture can land entirely in empty space and miss the
@@ -509,6 +555,53 @@ mod tests {
             "task with spaces"
         );
         assert_eq!(clean_pane_title("", AgentType::ClaudeCode), "");
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_and_osc() {
+        assert_eq!(strip_ansi("\u{1b}[38;5;153m❯\u{1b}[39m 1."), "❯ 1.");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}text"), "text");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{1b}\\text"), "text");
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    // The two tests below are the regression gate for the escape-sequence bug: every
+    // other detect_status test feeds hand-written plain text, but the live caller shares
+    // `capture_pane`, which passes `-e`. Detection silently reported Idle for every
+    // agent until strip_ansi landed.
+    //
+    // The SGR sequences are copied verbatim from real `capture-pane -e` output — that
+    // wrapping is the thing under test, so keep it byte-exact if these are ever edited.
+    // The prose inside is placeholder text; only the escapes matter.
+
+    #[test]
+    fn detect_status_waiting_from_real_ansi_capture() {
+        let content = "\
+\u{1b}[1m\u{1b}[38;5;231mRun the test suite before pushing?\u{1b}[0m
+
+\u{1b}[38;5;153m❯\u{1b}[39m \u{1b}[38;5;246m1.\u{1b}[39m \u{1b}[38;5;153mYes, run it now\u{1b}[39m
+  \u{1b}[38;5;246m2.\u{1b}[39m No, skip the tests
+  \u{1b}[38;5;246m3.\u{1b}[39m Explain what changed first
+
+\u{1b}[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel\u{1b}[39m";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn detect_status_running_from_real_ansi_capture() {
+        let content = "\
+\u{1b}[38;5;246m⏺ Running \u{1b}[1m1\u{1b}[22m shell command…\u{1b}[39m
+
+\u{1b}[38;5;215m✳ Bloviating…\u{1b}[39m \u{1b}[38;5;246m(20s · ↓ 776 tokens · thought for 5s)\u{1b}[39m
+
+\u{1b}[38;5;246m  Opus 4.8 | tws ⎇main | ctx: 5%\u{1b}[39m";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Running
+        );
     }
 
     #[test]
