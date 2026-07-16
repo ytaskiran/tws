@@ -161,6 +161,8 @@ pub struct App {
     preview_pane_id: Option<String>,
     /// When the preview was last refreshed.
     last_preview_refresh: Instant,
+    /// When agent statuses were last re-derived from pane content.
+    last_status_refresh: Instant,
     /// Whether to show the tree or agents flat-list view.
     view_mode: ViewMode,
     /// Cursor position within the agents flat list.
@@ -184,6 +186,11 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
+/// How often to re-derive agent status from pane content (seconds).
+/// Cheaper than a full scan, so it can run more often — this bounds how long a
+/// "waiting on input" state takes to surface between full 30s scans.
+const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+
 impl App {
     pub fn new(
         state: AppState,
@@ -206,6 +213,7 @@ impl App {
             preview_content: None,
             preview_pane_id: None,
             last_preview_refresh: Instant::now(),
+            last_status_refresh: Instant::now(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
             theme,
@@ -254,6 +262,11 @@ impl App {
             // Hook-triggered agent scan (sub-250ms latency)
             if self.check_agent_trigger() {
                 self.do_agent_scan();
+            }
+
+            // Periodically re-derive agent status from pane content
+            if self.last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
+                self.refresh_agent_statuses();
             }
 
             // Refresh agent preview if one is visible
@@ -1754,6 +1767,18 @@ impl App {
         }
     }
 
+    /// Re-derive every agent's status by capturing its pane content. Bounded by the
+    /// number of live agents (typically a handful) — same cost model as the preview
+    /// refresh. On capture failure the agent keeps its prior status.
+    fn refresh_agent_statuses(&mut self) {
+        for agent in &mut self.state.agent_sessions {
+            if let Some(content) = tmux::capture_pane(&agent.pane_id) {
+                agent.status = agent_scan::detect_status(&content, agent.agent_type);
+            }
+        }
+        self.last_status_refresh = Instant::now();
+    }
+
     fn do_agent_scan(&mut self) {
         if self.state.active_sessions.is_empty() {
             self.state.agent_sessions.clear();
@@ -1819,6 +1844,10 @@ impl App {
 
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        // Newly rebuilt agents start at Idle; derive their real status immediately
+        // rather than waiting for the next status-refresh tick.
+        self.refresh_agent_statuses();
     }
 
     fn toggle_expand_all(&mut self) {

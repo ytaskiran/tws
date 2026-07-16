@@ -53,6 +53,30 @@ impl AgentType {
     }
 }
 
+/// What an agent is currently doing, inferred from its tmux pane content.
+/// Runtime-only, recomputed on every status refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Actively working (spinner / "esc to interrupt" visible).
+    Running,
+    /// Blocked on the user (a permission or selection prompt is up).
+    Waiting,
+    /// At the prompt with nothing pending. Also the fallback when the
+    /// pane can't be captured or the state can't be determined.
+    Idle,
+}
+
+impl AgentStatus {
+    /// Short lowercase label used for the pill in the agents view.
+    pub fn label(&self) -> &'static str {
+        match self {
+            AgentStatus::Running => "running",
+            AgentStatus::Waiting => "waiting",
+            AgentStatus::Idle => "idle",
+        }
+    }
+}
+
 /// Runtime-only. Represents an AI agent detected in a tmux pane.
 #[derive(Debug, Clone)]
 pub struct AgentSession {
@@ -65,6 +89,9 @@ pub struct AgentSession {
     /// Pin slot 0..=9 if this agent is pinned, None otherwise.
     /// Runtime-only, dies with the pane.
     pub pin_slot: Option<u8>,
+    /// What the agent is currently doing, inferred from pane content.
+    /// Runtime-only, recomputed on every status refresh.
+    pub status: AgentStatus,
 }
 
 impl Collection {

@@ -57,6 +57,14 @@ pub struct Palette {
     pub border: Color,
     #[serde(deserialize_with = "deserialize_color")]
     pub bg: Color,
+    /// Agent status indicators — deliberately muted so they read as ambient
+    /// hints, not alarms.
+    #[serde(deserialize_with = "deserialize_color")]
+    pub status_running: Color,
+    #[serde(deserialize_with = "deserialize_color")]
+    pub status_waiting: Color,
+    #[serde(deserialize_with = "deserialize_color")]
+    pub status_idle: Color,
 }
 
 impl Default for Palette {
@@ -69,6 +77,9 @@ impl Default for Palette {
             muted: Color::Rgb(100, 100, 100),
             border: Color::Rgb(60, 60, 60),
             bg: Color::Rgb(30, 30, 30),
+            status_running: Color::Rgb(122, 154, 138), // soft sage
+            status_waiting: Color::Rgb(197, 160, 90),  // soft amber
+            status_idle: Color::Rgb(100, 100, 100),    // dim gray (== muted)
         }
     }
 }
@@ -91,6 +102,12 @@ pub struct PaletteOverride {
     pub border: Option<Color>,
     #[serde(default, deserialize_with = "deserialize_option_color")]
     pub bg: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub status_running: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub status_waiting: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub status_idle: Option<Color>,
 }
 
 impl Palette {
@@ -105,6 +122,9 @@ impl Palette {
             muted: overrides.muted.unwrap_or(self.muted),
             border: overrides.border.unwrap_or(self.border),
             bg: overrides.bg.unwrap_or(self.bg),
+            status_running: overrides.status_running.unwrap_or(self.status_running),
+            status_waiting: overrides.status_waiting.unwrap_or(self.status_waiting),
+            status_idle: overrides.status_idle.unwrap_or(self.status_idle),
         }
     }
 }
@@ -166,6 +186,9 @@ mod tests {
         assert_eq!(p.muted, Color::Rgb(100, 100, 100));
         assert_eq!(p.border, Color::Rgb(60, 60, 60));
         assert_eq!(p.bg, Color::Rgb(30, 30, 30));
+        assert_eq!(p.status_running, Color::Rgb(122, 154, 138));
+        assert_eq!(p.status_waiting, Color::Rgb(197, 160, 90));
+        assert_eq!(p.status_idle, Color::Rgb(100, 100, 100));
     }
 
     #[test]

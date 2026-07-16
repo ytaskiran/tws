@@ -73,7 +73,8 @@ fn build_thread_item<'a>(
                                 a.agent_type.icon(),
                                 theme.agent.add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(format!(" {}", a.display_name), theme.agent),
+                            Span::styled(" \u{25CF} ", theme.agent_status_style(a.status)),
+                            Span::styled(a.display_name.as_str(), theme.agent),
                         ]);
                         TreeItem::new_leaf(a.pane_id.clone(), label)
                     })

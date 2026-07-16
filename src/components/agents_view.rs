@@ -32,6 +32,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             Some(slot) => Span::styled(format!("[{}] ", slot), theme.pin_badge),
             None => Span::raw("    "),
         };
+        let status_style = theme.agent_status_style(a.status);
         let line = Line::from(vec![
             badge,
             Span::styled(a.thread_name.clone(), theme.thread),
@@ -43,6 +44,8 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                 theme.agent.add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {}", a.agent_display_name), theme.agent),
+            Span::styled("  \u{25CF} ", status_style),
+            Span::styled(a.status.label(), status_style),
         ]);
         ListItem::new(line)
     };

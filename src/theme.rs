@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::palette::Palette;
+use crate::core::model::AgentStatus;
 
 // ---------------------------------------------------------------------------
 // Helper functions for color manipulation
@@ -79,6 +80,11 @@ pub struct Theme {
     // Agents
     pub agent: Style,
     pub agent_connector: Style,
+
+    // Agent status indicators (muted)
+    pub status_running: Style,
+    pub status_waiting: Style,
+    pub status_idle: Style,
 
     // Badges
     pub badge_dot: Style,
@@ -165,6 +171,11 @@ impl Theme {
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
 
+            // Agent status indicators (muted)
+            status_running: Style::new().fg(p.status_running),
+            status_waiting: Style::new().fg(p.status_waiting),
+            status_idle: Style::new().fg(p.status_idle),
+
             // Badges
             badge_dot: Style::new().fg(p.green),
             badge_count: Style::new().fg(muted_text),
@@ -191,6 +202,15 @@ impl Theme {
             preview_border: Style::new().fg(subtle_border),
             preview_title: Style::new().fg(dim_text),
             preview_placeholder: Style::new().fg(muted_text),
+        }
+    }
+
+    /// Style for an agent status dot/pill. Keeps the status→color mapping in one place.
+    pub fn agent_status_style(&self, status: AgentStatus) -> Style {
+        match status {
+            AgentStatus::Running => self.status_running,
+            AgentStatus::Waiting => self.status_waiting,
+            AgentStatus::Idle => self.status_idle,
         }
     }
 }
@@ -333,6 +353,24 @@ mod tests {
         let a = Color::Rgb(100, 100, 100);
         let b = Color::Rgb(200, 200, 200);
         assert_eq!(midpoint(a, b), Color::Rgb(150, 150, 150));
+    }
+
+    #[test]
+    fn agent_status_style_maps_each_state() {
+        let p = Palette::default();
+        let t = Theme::build(&p);
+        assert_eq!(
+            t.agent_status_style(AgentStatus::Running),
+            Style::new().fg(Color::Rgb(122, 154, 138))
+        );
+        assert_eq!(
+            t.agent_status_style(AgentStatus::Waiting),
+            Style::new().fg(Color::Rgb(197, 160, 90))
+        );
+        assert_eq!(
+            t.agent_status_style(AgentStatus::Idle),
+            Style::new().fg(Color::Rgb(100, 100, 100))
+        );
     }
 
     #[test]

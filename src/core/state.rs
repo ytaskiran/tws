@@ -28,6 +28,7 @@ pub struct FlatAgent {
     pub window_index: u32,
     pub pane_id: String,
     pub pin_slot: Option<u8>,
+    pub status: super::model::AgentStatus,
 }
 
 /// What the current tree selection points to.
@@ -577,6 +578,7 @@ impl AppState {
                             window_index: agent.window_index,
                             pane_id: agent.pane_id.clone(),
                             pin_slot: agent.pin_slot,
+                            status: agent.status,
                         });
                     }
                 }
@@ -997,6 +999,7 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: None,
+            status: crate::core::model::AgentStatus::Idle,
         }
     }
 
@@ -1155,6 +1158,7 @@ mod tests {
             display_name: id.into(),
             renamed: false,
             pin_slot: slot,
+            status: crate::core::model::AgentStatus::Idle,
         };
         state.agent_sessions.push(mk("%a", None));
         state.agent_sessions.push(mk("%b", Some(3)));
@@ -1178,6 +1182,7 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: Some(2),
+            status: crate::core::model::AgentStatus::Idle,
         });
 
         let saved_pin = state
@@ -1195,6 +1200,7 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: None,
+            status: crate::core::model::AgentStatus::Idle,
         });
 
         if let Some(agent) = state.agent_sessions.iter_mut().find(|a| a.pane_id == "%1") {

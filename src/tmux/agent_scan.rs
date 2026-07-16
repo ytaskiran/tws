@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
-use crate::core::model::{AgentSession, AgentType};
+use crate::core::model::{AgentSession, AgentStatus, AgentType};
 
 /// Pane info parsed from tmux list-panes output.
 struct PaneInfo {
@@ -121,6 +121,106 @@ fn parse_processes(raw: &str) -> HashMap<u32, Vec<(u32, String)>> {
     map
 }
 
+/// How many lines from the bottom of the pane to inspect. The live status line, the
+/// active permission prompt, and the input box all render in the bottom region; the
+/// scrollback above it is conversation text that must NOT be matched (it can contain
+/// the very phrases we look for — e.g. an agent discussing "Do you want" or "tokens").
+const LIVE_REGION_LINES: usize = 20;
+
+/// Infer what an agent is doing from a snapshot of its tmux pane content.
+///
+/// Pure and side-effect-free (the caller supplies captured pane text), so it can be
+/// unit-tested without tmux. Detection priority is **Waiting → Running → Idle**: a
+/// permission prompt means the task is paused for the user, so it wins over any
+/// lingering spinner text.
+///
+/// Two properties keep this from misfiring on the agent's own transcript:
+///   * only the bottom `LIVE_REGION_LINES` are examined (the live UI region), and
+///   * matches are anchored to UI *structure* (a `❯ 1.` selection cursor, a spinner
+///     glyph at line-start) rather than to bare phrases that also occur in prose.
+///
+/// Claude Code is matched precisely. Codex/Pi are best-effort on the shared "interrupt"
+/// running hint and otherwise fall back to `Idle` — we default to the least-alarming
+/// state rather than guess wrong.
+pub fn detect_status(content: &str, _agent_type: AgentType) -> AgentStatus {
+    let mut lines: Vec<&str> = content.lines().collect();
+    // Drop trailing blank lines first: a pane isn't always full (e.g. a fresh Claude
+    // sitting on the trust prompt renders near the top with the rest of the pane blank),
+    // so a fixed tail of the raw capture can land entirely in empty space and miss the
+    // active prompt.
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(LIVE_REGION_LINES);
+    let live = &lines[start..];
+
+    if is_waiting(live) {
+        AgentStatus::Waiting
+    } else if is_running(live) {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Idle
+    }
+}
+
+/// True when a permission / selection prompt is awaiting the user.
+///
+/// Anchored to the highlighted selection cursor Claude renders for the active choice —
+/// a line whose first non-space glyph is `❯` immediately followed by a numbered option,
+/// e.g. `❯ 1. Yes`. This is structural: the bare input prompt (`❯ ` with no number)
+/// doesn't match, and ordinary prose never contains a `❯ <n>.` cursor.
+fn is_waiting(live: &[&str]) -> bool {
+    live.iter().any(|line| {
+        // Skip leading whitespace and an optional box border (`│`) so both bordered
+        // (`│ ❯ 1. Yes │`) and borderless (`❯ 1. Yes`) prompts match.
+        let trimmed = line.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2502}');
+        let rest = match trimmed.strip_prefix('\u{276f}') {
+            Some(r) => r.trim_start(),
+            None => return false,
+        };
+        let mut chars = rest.chars();
+        matches!(
+            (chars.next(), chars.next()),
+            (Some(d), Some('.')) if d.is_ascii_digit()
+        )
+    })
+}
+
+/// Spinner glyphs Claude Code cycles through on its live working line — the growing
+/// "sparkle": `·` `✢` `✳` `✶` `✻` `✽`. Enumerated empirically by sampling live panes; the
+/// leading glyph is what distinguishes the real status line from prose that merely quotes
+/// it (message lines start with the `⏺` bullet, never a spinner glyph).
+const SPINNER_GLYPHS: [char; 6] = [
+    '\u{00b7}', '\u{2722}', '\u{2733}', '\u{2736}', '\u{273b}', '\u{273d}',
+];
+
+/// True when the agent is actively working.
+///
+/// The "(esc to interrupt)" hint is absent in bypass-permissions mode and newer Claude
+/// builds, where the only running signal is the live spinner line, e.g.
+/// `✽ Churning… (2m 41s · ↓ 4.2k tokens)`. So the primary signal is structural: a line
+/// whose first glyph is a spinner glyph and which carries the working ellipsis, token
+/// counter, or interrupt hint. A completed history line (`✻ Sautéed for 9s`) starts
+/// with a glyph but has none of those, so it's excluded. As a cross-agent fallback we
+/// also accept the full "esc to interrupt" phrase anywhere in the live region (Codex).
+fn is_running(live: &[&str]) -> bool {
+    live.iter().any(|line| {
+        let trimmed = line.trim_start();
+        let starts_with_spinner = trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| SPINNER_GLYPHS.contains(&c));
+        if starts_with_spinner
+            && (trimmed.contains('\u{2026}')
+                || trimmed.contains("tokens)")
+                || trimmed.to_ascii_lowercase().contains("interrupt"))
+        {
+            return true;
+        }
+        trimmed.to_ascii_lowercase().contains("esc to interrupt")
+    })
+}
+
 /// Check if a command line matches a known agent.
 /// `command` is the full command string from `ps -o command` (exe + args).
 fn identify_agent(command: &str) -> Option<AgentType> {
@@ -208,6 +308,9 @@ fn match_agents(
                         display_name,
                         renamed: false,
                         pin_slot: None,
+                        // Filled in by the caller after capturing pane content;
+                        // Idle is the safe default until then.
+                        status: AgentStatus::Idle,
                     });
                 }
             }
@@ -406,6 +509,171 @@ mod tests {
             "task with spaces"
         );
         assert_eq!(clean_pane_title("", AgentType::ClaudeCode), "");
+    }
+
+    #[test]
+    fn detect_status_running_from_interrupt() {
+        let content = "✻ Herding… (12s · ↑ 1.2k tokens · esc to interrupt)";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Running
+        );
+        // Codex capitalizes it differently.
+        assert_eq!(
+            detect_status("Working  Esc to interrupt", AgentType::Codex),
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn detect_status_running_bypass_mode_no_interrupt_hint() {
+        // Real captured line from a Claude Code pane in bypass-permissions mode:
+        // there is NO "esc to interrupt" text — the live spinner + token counter is
+        // the only running signal.
+        let content = "\
+⏺ Running 1 shell command…
+
+✽ Churning… (2m 41s · ↓ 4.2k tokens)
+
+  Opus 4.8 | tws ⎇main | ctx: 13% | tokens: 132k
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn detect_status_running_across_spinner_cycle() {
+        // The spinner animates through a cycle of glyphs; every frame must read Running.
+        // The middot frame (`·`) is easy to miss and was a real detection gap.
+        for glyph in [
+            '\u{00b7}', '\u{2722}', '\u{2733}', '\u{2736}', '\u{273b}', '\u{273d}',
+        ] {
+            let content = format!("{glyph} Churning… (10m 28s · ↓ 33.0k tokens)");
+            assert_eq!(
+                detect_status(&content, AgentType::ClaudeCode),
+                AgentStatus::Running,
+                "glyph U+{:04X} should read Running",
+                glyph as u32
+            );
+        }
+    }
+
+    #[test]
+    fn detect_status_running_spinner_before_token_counter() {
+        // First moment of a turn: spinner + ellipsis, counter not yet shown.
+        assert_eq!(
+            detect_status("✻ Herding…", AgentType::ClaudeCode),
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn detect_status_footer_tokens_is_not_running() {
+        // The context footer shows "tokens:" (colon), which must NOT read as running,
+        // and a completed history line starts with a spinner glyph but has no ellipsis.
+        let content = "\
+⏺ All done.
+✻ Sautéed for 9s
+
+  Opus 4.8 | tws ⎇main | ctx: 13% | tokens: 132k
+❯ ";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn detect_status_waiting_from_permission_prompt() {
+        let content = "\
+╭──────────────────────────────────────╮
+│ Do you want to make this edit?       │
+│ ❯ 1. Yes                             │
+│   2. No, tell Claude what to do      │
+╰──────────────────────────────────────╯";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn detect_status_waiting_wins_over_running() {
+        // A stale spinner line above a permission prompt must not mask the prompt.
+        let content = "\
+✽ Churning… (2m 41s · ↓ 4.2k tokens)
+╭──────────────────────────────────────╮
+│ Do you want to proceed?              │
+│ ❯ 1. Yes                             │
+│   2. No                              │
+╰──────────────────────────────────────╯";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn detect_status_waiting_trust_prompt_with_trailing_blanks() {
+        // Real first-launch trust prompt: rendered near the top with the rest of the
+        // pane blank. The `❯ 1.` cursor must be found despite ~dozens of trailing empty
+        // lines below it (regression: a fixed tail landed entirely in the blank region).
+        let mut content = String::from(
+            "\
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel",
+        );
+        for _ in 0..60 {
+            content.push('\n');
+        }
+        assert_eq!(
+            detect_status(&content, AgentType::ClaudeCode),
+            AgentStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn detect_status_ignores_transcript_prose() {
+        // Regression: an IDLE agent whose visible scrollback happens to contain the
+        // trigger phrases (an agent literally discussing this detection code) must not
+        // read as Waiting or Running. Only the live region at the bottom counts, and
+        // matches are anchored to UI structure — prose has no `❯ 1.` cursor and no
+        // spinner-glyph status line.
+        let content = "\
+⏺ The naive version matched \"Do you want\" and \"tokens)\" anywhere, e.g.:
+     1. it flagged Waiting from my own message text
+     2. it flagged Running from a stray (… tokens) in prose
+  So we anchor structurally instead.
+
+────────────────────────────────────────────────────────── agent-status ──
+❯
+────────────────────────────────────────────────────────────────────────────
+  Opus 4.8 | tws ⎇main | ctx: 13% | tokens: 132k
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn detect_status_idle_at_prompt() {
+        let content = "\
+╭──────────────────────────────────────╮
+│ > │
+╰──────────────────────────────────────╯
+  ? for shortcuts";
+        assert_eq!(
+            detect_status(content, AgentType::ClaudeCode),
+            AgentStatus::Idle
+        );
+        assert_eq!(detect_status("", AgentType::ClaudeCode), AgentStatus::Idle);
     }
 
     #[test]
