@@ -207,7 +207,7 @@ pub fn render(
     } else {
         "tws ".to_string()
     };
-    right_spans.push(Span::styled(tail.clone(), theme.statusbar_desc));
+    right_spans.push(Span::styled(tail, theme.statusbar_desc));
 
     let right_width: u16 = right_spans
         .iter()

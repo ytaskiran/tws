@@ -1824,6 +1824,10 @@ impl App {
         }
 
         // Delete status files for panes that are no longer live.
+        // Race: a just-spawned agent that writes its status file after this scan's
+        // pane snapshot but before prune runs can have that fresh file deleted,
+        // showing Unknown until its next status change re-writes the file. This
+        // self-heals on the next trigger-driven rescan, so it's left as-is.
         let live_panes: std::collections::HashSet<String> = self
             .state
             .agent_sessions

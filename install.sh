@@ -197,7 +197,7 @@ configure_claude_hooks() {
     e_pretool=$(status_hook_entry working "")
     e_notify=$(status_hook_entry waiting "permission_prompt|idle_prompt|agent_needs_input")
     e_stop=$(status_hook_entry idle "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-x}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
         --argjson prompt "$e_prompt" \
@@ -277,7 +277,7 @@ configure_codex_hooks() {
         e_work=$(status_hook_entry working "")
         e_wait=$(status_hook_entry waiting "")
         e_idle=$(status_hook_entry idle "")
-        e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-x}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+        e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
         jq \
             --argjson work "$e_work" --argjson wait "$e_wait" \

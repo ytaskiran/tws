@@ -55,9 +55,6 @@ impl AgentType {
 
 /// Live activity state of an agent, derived from hook events.
 /// Runtime-only, never serialized.
-// Working/Waiting/Idle are constructed starting in the task that wires up
-// hook-driven status detection; allow(dead_code) can be dropped then.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     /// Busy on its own work (thinking, running a tool/shell/subagent).
@@ -85,8 +82,6 @@ pub struct AgentSession {
     /// Live activity state, joined from `~/.config/tws/agents/<pane_id>`. Runtime-only.
     pub status: AgentStatus,
     /// Unix timestamp (status file mtime) of the last state transition. 0 when Unknown.
-    // Not read until the task that renders status in the agents view.
-    #[allow(dead_code)]
     pub status_since: i64,
 }
 
