@@ -28,6 +28,7 @@ pub struct FlatAgent {
     pub window_index: u32,
     pub pane_id: String,
     pub pin_slot: Option<u8>,
+    pub status: super::model::AgentStatus,
 }
 
 /// What the current tree selection points to.
@@ -577,6 +578,7 @@ impl AppState {
                             window_index: agent.window_index,
                             pane_id: agent.pane_id.clone(),
                             pin_slot: agent.pin_slot,
+                            status: agent.status,
                         });
                     }
                 }
@@ -988,7 +990,7 @@ mod tests {
     }
 
     fn make_agent(pane_id: &str) -> super::AgentSession {
-        use super::super::model::{AgentSession, AgentType};
+        use super::super::model::{AgentSession, AgentStatus, AgentType};
         AgentSession {
             agent_type: AgentType::ClaudeCode,
             tmux_session_name: "tws_x_y_a".into(),
@@ -997,6 +999,8 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: None,
+            status: AgentStatus::Unknown,
+            status_since: 0,
         }
     }
 
@@ -1146,7 +1150,7 @@ mod tests {
         let live = vec![("tws_work_edge-device-pipeline_one".to_string(), 0)];
         state.refresh_sessions(&live);
 
-        use crate::core::model::{AgentSession, AgentType};
+        use crate::core::model::{AgentSession, AgentStatus, AgentType};
         let mk = |id: &str, slot: Option<u8>| AgentSession {
             agent_type: AgentType::ClaudeCode,
             tmux_session_name: "tws_work_edge-device-pipeline_one".into(),
@@ -1155,6 +1159,8 @@ mod tests {
             display_name: id.into(),
             renamed: false,
             pin_slot: slot,
+            status: AgentStatus::Unknown,
+            status_since: 0,
         };
         state.agent_sessions.push(mk("%a", None));
         state.agent_sessions.push(mk("%b", Some(3)));
@@ -1168,7 +1174,7 @@ mod tests {
 
     #[test]
     fn pin_slot_survives_agent_list_rebuild() {
-        use crate::core::model::{AgentSession, AgentType};
+        use crate::core::model::{AgentSession, AgentStatus, AgentType};
         let mut state = AppState::new();
         state.agent_sessions.push(AgentSession {
             agent_type: AgentType::ClaudeCode,
@@ -1178,6 +1184,8 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: Some(2),
+            status: AgentStatus::Unknown,
+            status_since: 0,
         });
 
         let saved_pin = state
@@ -1195,6 +1203,8 @@ mod tests {
             display_name: "claude".into(),
             renamed: false,
             pin_slot: None,
+            status: AgentStatus::Unknown,
+            status_since: 0,
         });
 
         if let Some(agent) = state.agent_sessions.iter_mut().find(|a| a.pane_id == "%1") {

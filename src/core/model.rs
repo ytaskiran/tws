@@ -53,6 +53,20 @@ impl AgentType {
     }
 }
 
+/// Live activity state of an agent, derived from hook events.
+/// Runtime-only, never serialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Busy on its own work (thinking, running a tool/shell/subagent).
+    Working,
+    /// Blocked waiting on the human (permission or idle prompt).
+    Waiting,
+    /// Finished its turn, nothing pending.
+    Idle,
+    /// No status signal yet (hooks not installed, or not fired since launch).
+    Unknown,
+}
+
 /// Runtime-only. Represents an AI agent detected in a tmux pane.
 #[derive(Debug, Clone)]
 pub struct AgentSession {
@@ -65,6 +79,10 @@ pub struct AgentSession {
     /// Pin slot 0..=9 if this agent is pinned, None otherwise.
     /// Runtime-only, dies with the pane.
     pub pin_slot: Option<u8>,
+    /// Live activity state, joined from `~/.config/tws/agents/<pane_id>`. Runtime-only.
+    pub status: AgentStatus,
+    /// Unix timestamp (status file mtime) of the last state transition. 0 when Unknown.
+    pub status_since: i64,
 }
 
 impl Collection {
@@ -187,6 +205,12 @@ mod tests {
     fn thread_description_defaults_to_none() {
         let p = Thread::new("Test");
         assert!(p.description.is_none());
+    }
+
+    #[test]
+    fn agent_status_variants_are_distinct() {
+        assert_ne!(AgentStatus::Working, AgentStatus::Waiting);
+        assert_ne!(AgentStatus::Idle, AgentStatus::Unknown);
     }
 
     #[test]
