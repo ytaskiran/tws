@@ -118,12 +118,16 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
 }
 
 /// The single-character dot used to render a status in the agents view.
+///
+/// `Unknown` renders as the idle dot: an agent with no status file yet (freshly
+/// spawned, or never prompted since the hooks were installed) has nothing in
+/// flight, so idle is the honest presentation. The variants stay distinct in the
+/// model because `status_since` differs — `Unknown` carries 0, not a real mtime.
 pub fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "●",
         AgentStatus::Waiting => "◐",
-        AgentStatus::Idle => "○",
-        AgentStatus::Unknown => " ",
+        AgentStatus::Idle | AgentStatus::Unknown => "○",
     }
 }
 
@@ -212,7 +216,25 @@ mod tests {
         assert_eq!(status_glyph(AgentStatus::Working), "●");
         assert_eq!(status_glyph(AgentStatus::Waiting), "◐");
         assert_eq!(status_glyph(AgentStatus::Idle), "○");
-        assert_eq!(status_glyph(AgentStatus::Unknown), " ");
+    }
+
+    #[test]
+    fn unknown_renders_as_idle_dot() {
+        assert_eq!(
+            status_glyph(AgentStatus::Unknown),
+            status_glyph(AgentStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn unknown_is_still_distinct_in_the_model() {
+        // Sharing a glyph must not leak into the data: a status-less agent keeps
+        // status_since = 0 rather than claiming a real timestamp.
+        let mut agents = vec![mk_agent("%1")];
+        apply_statuses(&mut agents, &HashMap::new());
+        assert_eq!(agents[0].status, AgentStatus::Unknown);
+        assert_eq!(agents[0].status_since, 0);
+        assert_eq!(status_counts(&agents).idle, 0);
     }
 
     #[test]
