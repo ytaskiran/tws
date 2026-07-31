@@ -11,7 +11,7 @@ fn status_style(status: AgentStatus, theme: &Theme) -> Style {
     match status {
         AgentStatus::Working => theme.status_working,
         AgentStatus::Waiting => theme.status_waiting,
-        AgentStatus::Review => theme.status_review,
+        AgentStatus::Review => theme.status_waiting,
         AgentStatus::Idle => theme.status_idle,
         AgentStatus::Unknown => theme.status_idle,
     }
@@ -97,8 +97,6 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         Span::styled("● ", theme.status_working),
         Span::styled("working   ", theme.statusbar_desc),
         Span::styled("◐ ", theme.status_waiting),
-        Span::styled("waiting   ", theme.statusbar_desc),
-        Span::styled("◆ ", theme.status_review),
         Span::styled("review   ", theme.statusbar_desc),
         Span::styled("○ ", theme.status_idle),
         Span::styled("idle", theme.statusbar_desc),
