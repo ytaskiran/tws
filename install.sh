@@ -177,13 +177,7 @@ configure_claude_hooks() {
         return
     fi
 
-    # Already configured?
-    if grep -q 'config/tws/agents' "$settings" 2>/dev/null; then
-        ok "Claude Code agent status hooks already configured"
-        return
-    fi
-
-    printf '%s' "Configure Claude Code agent status hooks for tws? [y/N] "
+    printf '%s' "Configure/update Claude Code agent status hooks for tws? [y/N] "
     read -r answer < /dev/tty
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
         info "Skipped Claude Code hooks"
@@ -205,12 +199,20 @@ configure_claude_hooks() {
         --argjson notify "$e_notify" \
         --argjson stop "$e_stop" \
         --argjson end "$e_end" '
+        # A tws hook entry is identified by the config/tws/agents marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
         .hooks //= {} |
+        # Strip any prior tws entries (of any version/shape) from every event array,
+        # leaving non-tws hooks untouched. Makes re-runs idempotent.
+        .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
+        # Append the current, correct tws entries.
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end)
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end) |
+        # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
+        .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
     ok "Configured Claude Code agent status hooks"
 }
@@ -251,50 +253,44 @@ configure_codex_hooks() {
         return
     fi
 
-    local hooks_ok=false
-    local feature_ok=false
-    grep -q 'config/tws/agents' "$hooks_file" 2>/dev/null && hooks_ok=true
-    grep -q '^\s*hooks\s*=\s*true' "$HOME/.codex/config.toml" 2>/dev/null && feature_ok=true
-
-    if $hooks_ok && $feature_ok; then
-        ok "Codex agent status hooks already configured"
-        return
-    fi
-
-    printf '%s' "Configure Codex agent status hooks for tws? [y/N] "
+    printf '%s' "Configure/update Codex agent status hooks for tws? [y/N] "
     read -r answer < /dev/tty
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
         info "Skipped Codex hooks"
         return
     fi
 
-    if ! $hooks_ok; then
-        [ -f "$hooks_file" ] || echo '{}' > "$hooks_file"
+    [ -f "$hooks_file" ] || echo '{}' > "$hooks_file"
 
-        local tmp
-        tmp="$(mktemp)"
-        local e_work e_wait e_review e_end
-        e_work=$(status_hook_entry working "")
-        e_wait=$(status_hook_entry waiting "")
-        e_review=$(status_hook_entry review "")
-        e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    local tmp
+    tmp="$(mktemp)"
+    local e_work e_wait e_review e_end
+    e_work=$(status_hook_entry working "")
+    e_wait=$(status_hook_entry waiting "")
+    e_review=$(status_hook_entry review "")
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
-        jq \
-            --argjson work "$e_work" --argjson wait "$e_wait" \
-            --argjson review "$e_review" --argjson end "$e_end" '
-            .hooks //= {} |
-            .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
-            .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $work) |
-            .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
-            .hooks.Stop               = ((.hooks.Stop // []) + $review) |
-            .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end)
-        ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
-        ok "Configured Codex agent status hooks"
-    fi
+    jq \
+        --argjson work "$e_work" --argjson wait "$e_wait" \
+        --argjson review "$e_review" --argjson end "$e_end" '
+        # A tws hook entry is identified by the config/tws/agents marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
+        .hooks //= {} |
+        # Strip any prior tws entries (of any version/shape) from every event array,
+        # leaving non-tws hooks untouched. Makes re-runs idempotent.
+        .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
+        # Append the current, correct tws entries.
+        .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
+        .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $work) |
+        .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
+        .hooks.Stop               = ((.hooks.Stop // []) + $review) |
+        .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
+        # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
+        .hooks |= with_entries(select((.value | length) > 0))
+    ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
+    ok "Configured Codex agent status hooks"
 
-    if ! $feature_ok; then
-        configure_codex_feature_flag
-    fi
+    configure_codex_feature_flag
 }
 
 configure_agent_hooks() {
