@@ -196,6 +196,12 @@ pub fn render(
             theme.status_waiting,
         ));
     }
+    if counts.review > 0 {
+        right_spans.push(Span::styled(
+            format!("◆ {} ", counts.review),
+            theme.status_review,
+        ));
+    }
     if counts.working > 0 {
         right_spans.push(Span::styled(
             format!("● {} ", counts.working),

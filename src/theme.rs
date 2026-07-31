@@ -84,6 +84,7 @@ pub struct Theme {
     pub status_working: Style,
     pub status_waiting: Style,
     pub status_idle: Style,
+    pub status_review: Style,
 
     // Badges
     pub badge_dot: Style,
@@ -174,6 +175,7 @@ impl Theme {
             status_working: Style::new().fg(p.green),
             status_waiting: Style::new().fg(p.accent),
             status_idle: Style::new().fg(muted_text),
+            status_review: Style::new().fg(p.fg),
 
             // Badges
             badge_dot: Style::new().fg(p.green),
@@ -367,5 +369,6 @@ mod tests {
         assert_eq!(t.status_working.fg, Some(p.green));
         assert_eq!(t.status_waiting.fg, Some(p.accent));
         assert_eq!(t.status_idle.fg, Some(p.muted));
+        assert_eq!(t.status_review.fg, Some(p.fg));
     }
 }

@@ -15,6 +15,7 @@ pub fn parse_status(word: &str) -> AgentStatus {
     match word.trim() {
         "working" => AgentStatus::Working,
         "waiting" => AgentStatus::Waiting,
+        "review" => AgentStatus::Review,
         "idle" => AgentStatus::Idle,
         _ => AgentStatus::Unknown,
     }
@@ -77,6 +78,7 @@ pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentS
 pub struct StatusCounts {
     pub working: usize,
     pub waiting: usize,
+    pub review: usize,
     pub idle: usize,
 }
 
@@ -85,12 +87,14 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     let mut c = StatusCounts {
         working: 0,
         waiting: 0,
+        review: 0,
         idle: 0,
     };
     for a in agents {
         match a.status {
             AgentStatus::Working => c.working += 1,
             AgentStatus::Waiting => c.waiting += 1,
+            AgentStatus::Review => c.review += 1,
             AgentStatus::Idle => c.idle += 1,
             AgentStatus::Unknown => {}
         }
@@ -127,6 +131,7 @@ pub fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "●",
         AgentStatus::Waiting => "◐",
+        AgentStatus::Review => "◆",
         AgentStatus::Idle | AgentStatus::Unknown => "○",
     }
 }
@@ -155,6 +160,7 @@ mod tests {
         assert_eq!(parse_status("working"), AgentStatus::Working);
         assert_eq!(parse_status("waiting"), AgentStatus::Waiting);
         assert_eq!(parse_status("idle"), AgentStatus::Idle);
+        assert_eq!(parse_status("review"), AgentStatus::Review);
     }
 
     #[test]
@@ -212,10 +218,24 @@ mod tests {
     }
 
     #[test]
+    fn counts_tally_review() {
+        let mut agents = vec![mk_agent("%1"), mk_agent("%2")];
+        agents[0].status = AgentStatus::Review;
+        agents[1].status = AgentStatus::Idle;
+        let c = status_counts(&agents);
+        assert_eq!(c.review, 1);
+        assert_eq!(c.idle, 1);
+    }
+
+    #[test]
     fn glyphs_are_distinct_per_state() {
         assert_eq!(status_glyph(AgentStatus::Working), "●");
         assert_eq!(status_glyph(AgentStatus::Waiting), "◐");
+        assert_eq!(status_glyph(AgentStatus::Review), "◆");
         assert_eq!(status_glyph(AgentStatus::Idle), "○");
+        // Review is visually distinct from every other dot.
+        assert_ne!(status_glyph(AgentStatus::Review), status_glyph(AgentStatus::Waiting));
+        assert_ne!(status_glyph(AgentStatus::Review), status_glyph(AgentStatus::Idle));
     }
 
     #[test]
