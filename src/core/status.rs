@@ -267,8 +267,14 @@ mod tests {
         assert_eq!(status_glyph(AgentStatus::Review), "◆");
         assert_eq!(status_glyph(AgentStatus::Idle), "○");
         // Review is visually distinct from every other dot.
-        assert_ne!(status_glyph(AgentStatus::Review), status_glyph(AgentStatus::Waiting));
-        assert_ne!(status_glyph(AgentStatus::Review), status_glyph(AgentStatus::Idle));
+        assert_ne!(
+            status_glyph(AgentStatus::Review),
+            status_glyph(AgentStatus::Waiting)
+        );
+        assert_ne!(
+            status_glyph(AgentStatus::Review),
+            status_glyph(AgentStatus::Idle)
+        );
     }
 
     #[test]
