@@ -156,6 +156,12 @@ pub fn agents_to_ack(agents: &[AgentSession], session_name: &str) -> Vec<String>
 
 /// The single-character dot used to render a status in the agents view.
 ///
+/// `Waiting` and `Review` share the `◐` dot on purpose: both mean "your turn."
+/// They stay distinct in the model because they clear differently — `Waiting`
+/// (blocked on a prompt) self-heals when the agent resumes, while `Review`
+/// (delivered work) is cleared by attaching (see `agents_to_ack`). The UI hides
+/// that distinction; the clearing logic depends on it.
+///
 /// `Unknown` renders as the idle dot: an agent with no status file yet (freshly
 /// spawned, or never prompted since the hooks were installed) has nothing in
 /// flight, so idle is the honest presentation. The variants stay distinct in the
@@ -163,8 +169,7 @@ pub fn agents_to_ack(agents: &[AgentSession], session_name: &str) -> Vec<String>
 pub fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "●",
-        AgentStatus::Waiting => "◐",
-        AgentStatus::Review => "◆",
+        AgentStatus::Waiting | AgentStatus::Review => "◐",
         AgentStatus::Idle | AgentStatus::Unknown => "○",
     }
 }
@@ -261,15 +266,17 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_are_distinct_per_state() {
+    fn glyphs_map_states_to_dots() {
         assert_eq!(status_glyph(AgentStatus::Working), "●");
-        assert_eq!(status_glyph(AgentStatus::Waiting), "◐");
-        assert_eq!(status_glyph(AgentStatus::Review), "◆");
         assert_eq!(status_glyph(AgentStatus::Idle), "○");
-        // Review is visually distinct from every other dot.
+        // Waiting and Review deliberately share the "your turn" dot, even though
+        // they remain distinct states that clear differently.
+        assert_eq!(status_glyph(AgentStatus::Waiting), "◐");
+        assert_eq!(status_glyph(AgentStatus::Review), "◐");
+        // The shared dot is still distinct from working and idle.
         assert_ne!(
             status_glyph(AgentStatus::Review),
-            status_glyph(AgentStatus::Waiting)
+            status_glyph(AgentStatus::Working)
         );
         assert_ne!(
             status_glyph(AgentStatus::Review),

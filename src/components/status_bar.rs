@@ -190,17 +190,11 @@ pub fn render(
 
     // Right side: status counts + session count (or app name)
     let mut right_spans: Vec<Span> = Vec::new();
-    if counts.waiting > 0 {
-        right_spans.push(Span::styled(
-            format!("◐ {} ", counts.waiting),
-            theme.status_waiting,
-        ));
-    }
-    if counts.review > 0 {
-        right_spans.push(Span::styled(
-            format!("◆ {} ", counts.review),
-            theme.status_review,
-        ));
+    // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
+    // distinct in the model; see status_glyph), so their counts merge here.
+    let review = counts.waiting + counts.review;
+    if review > 0 {
+        right_spans.push(Span::styled(format!("◐ {} ", review), theme.status_waiting));
     }
     if counts.working > 0 {
         right_spans.push(Span::styled(
