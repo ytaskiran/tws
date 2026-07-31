@@ -6,12 +6,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                    # compile
-cargo test                     # run all 75 tests
+cargo test                     # run the full test suite
 cargo test state::tests        # run tests in a specific module
 cargo test resolve_selection   # run tests matching a name pattern
 ```
 
-No linter or formatter is configured. There's no CI beyond `cargo build && cargo test`.
+## CI
+
+`.github/workflows/ci.yml` runs on every PR and every push to `main`. Four jobs, all required to pass:
+
+```bash
+cargo test   --all-targets --locked                  # Test
+cargo fmt    --all --check                            # Rustfmt — formatting
+cargo clippy --all-targets --locked -- -D warnings    # Clippy — lints as errors
+cargo audit                                           # Security audit — RustSec advisories
+```
+
+Run `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings` before pushing. CI pins the toolchain to **Rust 1.96.1** (see `RUST_VERSION` in `ci.yml`); rustfmt reflows and clippy lints shift between releases, so format/lint with a matching toolchain to avoid CI turning red on formatting alone.
 
 ## Workflow
 
