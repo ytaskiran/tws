@@ -1725,7 +1725,8 @@ impl App {
         // Attaching to a session is acknowledgment: any delivered ("review")
         // agents in it drop back to idle. Write the files here; the
         // do_refresh_sessions() below reloads them into memory.
-        for pane_id in crate::core::status::agents_to_ack(&self.state.agent_sessions, session_name) {
+        for pane_id in crate::core::status::agents_to_ack(&self.state.agent_sessions, session_name)
+        {
             crate::core::status::write_status(&pane_id, crate::core::model::AgentStatus::Idle);
         }
 
