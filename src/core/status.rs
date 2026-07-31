@@ -121,6 +121,39 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     }
 }
 
+/// Map an `AgentStatus` to the word written into a status file — the inverse of
+/// `parse_status`. `Unknown` has no on-disk form; it maps to "idle" defensively.
+pub fn status_word(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Working => "working",
+        AgentStatus::Waiting => "waiting",
+        AgentStatus::Review => "review",
+        AgentStatus::Idle | AgentStatus::Unknown => "idle",
+    }
+}
+
+/// Write `status` as the pane's word into `dir/<pane_id>`, creating `dir` if needed.
+pub fn write_status_to(dir: &Path, pane_id: &str, status: AgentStatus) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(pane_id), status_word(status))
+}
+
+/// Production entry point: write into the real agents dir. Errors are swallowed —
+/// a failed status write must never crash an attach.
+pub fn write_status(pane_id: &str, status: AgentStatus) {
+    let _ = write_status_to(&agents_dir(), pane_id, status);
+}
+
+/// pane_ids of agents in `session_name` currently in `Review` — the panes an
+/// attach should acknowledge by writing them back to `idle`.
+pub fn agents_to_ack(agents: &[AgentSession], session_name: &str) -> Vec<String> {
+    agents
+        .iter()
+        .filter(|a| a.tmux_session_name == session_name && a.status == AgentStatus::Review)
+        .map(|a| a.pane_id.clone())
+        .collect()
+}
+
 /// The single-character dot used to render a status in the agents view.
 ///
 /// `Unknown` renders as the idle dot: an agent with no status file yet (freshly
@@ -255,6 +288,44 @@ mod tests {
         assert_eq!(agents[0].status, AgentStatus::Unknown);
         assert_eq!(agents[0].status_since, 0);
         assert_eq!(status_counts(&agents).idle, 0);
+    }
+
+    #[test]
+    fn status_word_round_trips_through_parse() {
+        for s in [
+            AgentStatus::Working,
+            AgentStatus::Waiting,
+            AgentStatus::Review,
+            AgentStatus::Idle,
+        ] {
+            assert_eq!(parse_status(status_word(s)), s);
+        }
+    }
+
+    #[test]
+    fn write_then_load_reads_back_the_status() {
+        let dir = std::env::temp_dir().join(format!("tws-test-write-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        write_status_to(&dir, "%7", AgentStatus::Review).unwrap();
+
+        let map = load_statuses_from(&dir);
+        assert_eq!(map.get("%7").unwrap().0, AgentStatus::Review);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_selects_only_review_agents_in_the_named_session() {
+        let mut agents = vec![mk_agent("%1"), mk_agent("%2"), mk_agent("%3")];
+        agents[0].tmux_session_name = "A".into();
+        agents[0].status = AgentStatus::Review;
+        agents[1].tmux_session_name = "A".into();
+        agents[1].status = AgentStatus::Working; // same session, not review
+        agents[2].tmux_session_name = "B".into();
+        agents[2].status = AgentStatus::Review; // review, wrong session
+
+        let acked = agents_to_ack(&agents, "A");
+        assert_eq!(acked, vec!["%1".to_string()]);
     }
 
     #[test]
