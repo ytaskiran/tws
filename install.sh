@@ -195,8 +195,8 @@ configure_claude_hooks() {
     local e_prompt e_pretool e_notify e_stop e_end
     e_prompt=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "")
-    e_notify=$(status_hook_entry waiting "permission_prompt|idle_prompt|agent_needs_input")
-    e_stop=$(status_hook_entry idle "")
+    e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
+    e_stop=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
@@ -273,20 +273,20 @@ configure_codex_hooks() {
 
         local tmp
         tmp="$(mktemp)"
-        local e_work e_wait e_idle e_end
+        local e_work e_wait e_review e_end
         e_work=$(status_hook_entry working "")
         e_wait=$(status_hook_entry waiting "")
-        e_idle=$(status_hook_entry idle "")
+        e_review=$(status_hook_entry review "")
         e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
         jq \
             --argjson work "$e_work" --argjson wait "$e_wait" \
-            --argjson idle "$e_idle" --argjson end "$e_end" '
+            --argjson review "$e_review" --argjson end "$e_end" '
             .hooks //= {} |
             .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
             .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $work) |
             .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
-            .hooks.Stop               = ((.hooks.Stop // []) + $idle) |
+            .hooks.Stop               = ((.hooks.Stop // []) + $review) |
             .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end)
         ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
         ok "Configured Codex agent status hooks"
