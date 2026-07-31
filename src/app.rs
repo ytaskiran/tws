@@ -1722,6 +1722,13 @@ impl App {
 
     /// Attach or switch to a tmux session by name.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
+        // Attaching to a session is acknowledgment: any delivered ("review")
+        // agents in it drop back to idle. Write the files here; the
+        // do_refresh_sessions() below reloads them into memory.
+        for pane_id in crate::core::status::agents_to_ack(&self.state.agent_sessions, session_name) {
+            crate::core::status::write_status(&pane_id, crate::core::model::AgentStatus::Idle);
+        }
+
         if tmux::is_inside_tmux() {
             let _ = tmux::switch_client(session_name);
             self.running = false;
