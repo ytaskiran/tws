@@ -61,6 +61,8 @@ pub enum AgentStatus {
     Working,
     /// Blocked waiting on the human (permission or idle prompt).
     Waiting,
+    /// Delivered its turn's work; awaiting the human's acknowledgment (attach).
+    Review,
     /// Finished its turn, nothing pending.
     Idle,
     /// No status signal yet (hooks not installed, or not fired since launch).

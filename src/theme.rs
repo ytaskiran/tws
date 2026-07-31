@@ -170,7 +170,8 @@ impl Theme {
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
 
-            // Agent status dots (derived from palette: green / accent / muted)
+            // Agent status dots (derived from palette: green / accent / muted).
+            // Waiting and Review share the accent dot (see status_glyph).
             status_working: Style::new().fg(p.green),
             status_waiting: Style::new().fg(p.accent),
             status_idle: Style::new().fg(muted_text),
