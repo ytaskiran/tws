@@ -67,7 +67,7 @@ Downloads the latest release binary to `~/.local/bin`. The script will, **with y
 
 - add `~/.local/bin` to your `PATH`,
 - install `glow`,
-- configure agent-detection hooks in `~/.claude/settings.json` and/or `~/.codex/config.toml` (so tws can refresh its agent view when an agent starts or stops).
+- configure agent-detection hooks in `~/.claude/settings.json`, `~/.codex/config.toml`, and/or `~/.pi/agent/extensions/` (so tws can refresh its agent view when an agent starts or stops).
 
 Re-run the same command any time to upgrade.
 

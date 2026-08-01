@@ -146,7 +146,7 @@ configure_path() {
     info "Restart your shell or run: source $rc_file"
 }
 
-# --- 4. Agent hooks (Claude Code + Codex) ---
+# --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
 # Writes the word to ~/.config/tws/agents/$TMUX_PANE only when it changes
@@ -293,9 +293,87 @@ configure_codex_hooks() {
     configure_codex_feature_flag
 }
 
+configure_pi_hooks() {
+    local ext_dir="$HOME/.pi/agent/extensions"
+    local ext_file="$ext_dir/tws-status.ts"
+
+    if [ ! -d "$HOME/.pi" ]; then
+        info "Pi config not found — skipping agent hooks"
+        return
+    fi
+
+    printf '%s' "Configure/update Pi agent status hooks for tws? [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped Pi hooks"
+        return
+    fi
+
+    mkdir -p "$ext_dir"
+    # Pi has no declarative hooks.json — extensions are TS modules loaded from
+    # ~/.pi/agent/extensions/*.ts. Overwriting this file wholesale is safe and
+    # idempotent since tws owns it outright (unlike the Claude/Codex configs,
+    # which are shared JSON we must merge into carefully).
+    cat > "$ext_file" <<'PI_EXT_EOF'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+
+const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
+const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
+
+async function panePath(pi: any): Promise<string | undefined> {
+  let pane = process.env.TMUX_PANE;
+  if (!pane) {
+    try {
+      const result = await pi.exec("tmux", ["display-message", "-p", "#{pane_id}"]);
+      pane = result.stdout?.trim();
+    } catch {
+      return undefined;
+    }
+  }
+  return pane ? `${AGENTS_DIR}/${pane}` : undefined;
+}
+
+// Only writes when the word actually changes, so the file's mtime reflects
+// state-entry time (tws reads mtime as status_since).
+function writeWord(path: string, word: string) {
+  let cur: string | undefined;
+  try {
+    cur = readFileSync(path, "utf8");
+  } catch {
+    cur = undefined;
+  }
+  if (cur === word) return;
+  mkdirSync(AGENTS_DIR, { recursive: true });
+  writeFileSync(path, word);
+  writeFileSync(TRIGGER, "");
+}
+
+export default function (pi: any) {
+  pi.on("turn_start", async () => {
+    const path = await panePath(pi);
+    if (path) writeWord(path, "working");
+  });
+  pi.on("agent_settled", async () => {
+    const path = await panePath(pi);
+    if (path) writeWord(path, "review");
+  });
+  pi.on("session_shutdown", async () => {
+    const path = await panePath(pi);
+    if (path && existsSync(path)) {
+      rmSync(path, { force: true });
+      writeFileSync(TRIGGER, "");
+    }
+  });
+}
+PI_EXT_EOF
+
+    ok "Configured Pi agent status hooks"
+}
+
 configure_agent_hooks() {
     configure_claude_hooks
     configure_codex_hooks
+    configure_pi_hooks
 }
 
 # --- 6. Optional: glow (rich markdown rendering) ---
