@@ -840,9 +840,10 @@ impl App {
             Some(Action::Enter) => {
                 if let Some(a) = agents.get(self.agent_list_cursor) {
                     let session_name = a.tmux_session_name.clone();
+                    let pane_id = a.pane_id.clone();
                     let _ = tmux::select_window(&session_name, a.window_index);
-                    let _ = tmux::select_pane(&a.pane_id);
-                    self.attach_to_session(&session_name, terminal)?;
+                    let _ = tmux::select_pane(&pane_id);
+                    self.attach_to_pane(&session_name, &pane_id, terminal)?;
                 }
             }
             Some(Action::Cancel) => {
@@ -897,8 +898,8 @@ impl App {
                             let a = &agents[idx];
                             let session_name = a.tmux_session_name.clone();
                             let _ = tmux::select_window(&session_name, a.window_index);
-                            let _ = tmux::select_pane(&a.pane_id);
-                            self.attach_to_session(&session_name, terminal)?;
+                            let _ = tmux::select_pane(&target_id);
+                            self.attach_to_pane(&session_name, &target_id, terminal)?;
                         }
                     }
                 }
@@ -1168,7 +1169,7 @@ impl App {
                     let pane_id = agent.pane_id.clone();
                     let _ = tmux::select_window(&session_name, window_index);
                     let _ = tmux::select_pane(&pane_id);
-                    self.attach_to_session(&session_name, terminal)?;
+                    self.attach_to_pane(&session_name, &pane_id, terminal)?;
                 }
             }
             SelectedItem::None => {
@@ -1720,14 +1721,44 @@ impl App {
         self.attach_to_session(session_name, terminal)
     }
 
-    /// Attach or switch to a tmux session by name.
+    /// Attach or switch to a tmux session by name, landing on whichever pane is
+    /// already active in it.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        // Attaching to a session is acknowledgment: any delivered ("review")
-        // agents in it drop back to idle. Write the files here; the
-        // do_refresh_sessions() below reloads them into memory.
-        for pane_id in crate::core::status::agents_to_ack(&self.state.agent_sessions, session_name)
+        self.attach(session_name, None, terminal)
+    }
+
+    /// Attach or switch to `session_name`, landing the user on `pane_id`.
+    /// The caller is responsible for having selected that window and pane first.
+    fn attach_to_pane(
+        &mut self,
+        session_name: &str,
+        pane_id: &str,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        self.attach(session_name, Some(pane_id), terminal)
+    }
+
+    /// Attach or switch to a tmux session, acknowledging the pane it lands on.
+    fn attach(
+        &mut self,
+        session_name: &str,
+        pane_id: Option<&str>,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        // Attaching is acknowledgment of the pane you land on, and only that pane:
+        // a session can hold several agents, and seeing one says nothing about its
+        // siblings. When the caller picked a pane we use it; otherwise we ask tmux
+        // which pane the client will land on. Write the file here; the
+        // do_refresh_sessions() below reloads it into memory.
+        let landing = match pane_id {
+            Some(p) => Some(p.to_string()),
+            None => tmux::active_pane(session_name),
+        };
+        if let Some(landing) = landing
+            && let Some(ack) =
+                crate::core::status::agent_to_ack(&self.state.agent_sessions, &landing)
         {
-            crate::core::status::write_status(&pane_id, crate::core::model::AgentStatus::Idle);
+            crate::core::status::write_status(&ack, crate::core::model::AgentStatus::Idle);
         }
 
         if tmux::is_inside_tmux() {

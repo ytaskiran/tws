@@ -144,14 +144,22 @@ pub fn write_status(pane_id: &str, status: AgentStatus) {
     let _ = write_status_to(&agents_dir(), pane_id, status);
 }
 
-/// pane_ids of agents in `session_name` currently in `Review` — the panes an
-/// attach should acknowledge by writing them back to `idle`.
-pub fn agents_to_ack(agents: &[AgentSession], session_name: &str) -> Vec<String> {
+/// The pane an attach should acknowledge, given the pane it lands the user on.
+///
+/// Acknowledgment is *pane*-scoped, never session-scoped: a tmux session can hold
+/// several agents (three panes split across one window is routine), and landing on
+/// one of them says nothing about the others. Returning at most one pane makes the
+/// over-broad ack unrepresentable in the type — a session-wide clear cannot be
+/// expressed here.
+///
+/// `Some` only when that pane holds an agent in `Review`; `Working`, `Idle` and
+/// `Unknown` panes have nothing to acknowledge, and neither does a pane with no
+/// agent in it at all.
+pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<String> {
     agents
         .iter()
-        .filter(|a| a.tmux_session_name == session_name && a.status == AgentStatus::Review)
+        .find(|a| a.pane_id == landing_pane && a.status == AgentStatus::Review)
         .map(|a| a.pane_id.clone())
-        .collect()
 }
 
 /// The single-character dot used to render a status in the agents view.
@@ -159,7 +167,7 @@ pub fn agents_to_ack(agents: &[AgentSession], session_name: &str) -> Vec<String>
 /// `Waiting` and `Review` share the `◐` dot on purpose: both mean "your turn."
 /// They stay distinct in the model because they clear differently — `Waiting`
 /// (blocked on a prompt) self-heals when the agent resumes, while `Review`
-/// (delivered work) is cleared by attaching (see `agents_to_ack`). The UI hides
+/// (delivered work) is cleared by attaching to its pane (see `agent_to_ack`). The UI hides
 /// that distinction; the clearing logic depends on it.
 ///
 /// `Unknown` renders as the idle dot: an agent with no status file yet (freshly
@@ -328,17 +336,60 @@ mod tests {
     }
 
     #[test]
-    fn ack_selects_only_review_agents_in_the_named_session() {
-        let mut agents = vec![mk_agent("%1"), mk_agent("%2"), mk_agent("%3")];
-        agents[0].tmux_session_name = "A".into();
+    fn ack_selects_the_landing_pane_when_it_is_in_review() {
+        let mut agents = vec![mk_agent("%1"), mk_agent("%2")];
         agents[0].status = AgentStatus::Review;
-        agents[1].tmux_session_name = "A".into();
-        agents[1].status = AgentStatus::Working; // same session, not review
-        agents[2].tmux_session_name = "B".into();
-        agents[2].status = AgentStatus::Review; // review, wrong session
+        agents[1].status = AgentStatus::Working;
 
-        let acked = agents_to_ack(&agents, "A");
-        assert_eq!(acked, vec!["%1".to_string()]);
+        assert_eq!(agent_to_ack(&agents, "%1"), Some("%1".to_string()));
+        // Landing on a pane that isn't in review acknowledges nothing.
+        assert_eq!(agent_to_ack(&agents, "%2"), None);
+        // A pane with no agent in it is not an ack target either.
+        assert_eq!(agent_to_ack(&agents, "%99"), None);
+    }
+
+    #[test]
+    fn ack_does_not_reach_review_siblings_sharing_the_session() {
+        // The regression: three agents split across panes of a single tmux window,
+        // all delivered and awaiting review. Attaching to one of them is an
+        // acknowledgment of that one only — the other two stay in review.
+        let mut agents = vec![mk_agent("%52"), mk_agent("%53"), mk_agent("%61")];
+        for a in agents.iter_mut() {
+            a.tmux_session_name = "twsr_experiments_software-factory".into();
+            a.window_index = 0;
+            a.status = AgentStatus::Review;
+        }
+
+        assert_eq!(agent_to_ack(&agents, "%53"), Some("%53".to_string()));
+        assert_eq!(agent_to_ack(&agents, "%52"), Some("%52".to_string()));
+        assert_eq!(agent_to_ack(&agents, "%61"), Some("%61".to_string()));
+    }
+
+    #[test]
+    fn acking_one_pane_leaves_sibling_status_files_in_review() {
+        // End-to-end over the files that actually hold the state: only the landing
+        // pane's file is rewritten, so a later scan still reports the siblings as
+        // needing review.
+        let dir = std::env::temp_dir().join(format!("tws-test-ack-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let panes = ["%52", "%53", "%61"];
+        for p in panes {
+            write_status_to(&dir, p, AgentStatus::Review).unwrap();
+        }
+
+        let mut agents: Vec<AgentSession> = panes.iter().map(|p| mk_agent(p)).collect();
+        apply_statuses(&mut agents, &load_statuses_from(&dir));
+
+        if let Some(pane) = agent_to_ack(&agents, "%53") {
+            write_status_to(&dir, &pane, AgentStatus::Idle).unwrap();
+        }
+
+        let map = load_statuses_from(&dir);
+        assert_eq!(map.get("%53").unwrap().0, AgentStatus::Idle);
+        assert_eq!(map.get("%52").unwrap().0, AgentStatus::Review);
+        assert_eq!(map.get("%61").unwrap().0, AgentStatus::Review);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
