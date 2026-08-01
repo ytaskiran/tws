@@ -112,6 +112,25 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
     Ok(output.status.success())
 }
 
+/// The pane a client lands on when attaching to `session_name` — the active pane
+/// of the session's current window. Used to scope attach acknowledgment when the
+/// caller targeted a session rather than a specific pane.
+///
+/// Returns `None` if the session is gone or tmux reports nothing useful: for an
+/// unknown target `display-message` exits 0 with empty output, so success alone
+/// isn't enough to trust the result.
+pub fn active_pane(session_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "-t", session_name, "#{pane_id}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let pane = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if pane.is_empty() { None } else { Some(pane) }
+}
+
 /// Captures the visible content of a tmux pane, including ANSI escape sequences.
 /// Returns `None` if the pane doesn't exist or the command fails.
 pub fn capture_pane(pane_id: &str) -> Option<String> {
