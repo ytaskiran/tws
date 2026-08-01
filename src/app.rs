@@ -1032,18 +1032,19 @@ impl App {
                 }
             }
             SelectedItem::Thread(col_idx, thread_idx)
-                if self.state.has_active_session(col_idx, thread_idx) => {
-                    let thread_name = self.state.collections[col_idx].threads[thread_idx]
-                        .name
-                        .clone();
-                    self.mode = Mode::Confirm {
-                        purpose: ConfirmPurpose::KillAllSessions {
-                            col_idx,
-                            thread_idx,
-                            thread_name,
-                        },
-                    };
-                }
+                if self.state.has_active_session(col_idx, thread_idx) =>
+            {
+                let thread_name = self.state.collections[col_idx].threads[thread_idx]
+                    .name
+                    .clone();
+                self.mode = Mode::Confirm {
+                    purpose: ConfirmPurpose::KillAllSessions {
+                        col_idx,
+                        thread_idx,
+                        thread_name,
+                    },
+                };
+            }
             _ => {}
         }
     }
