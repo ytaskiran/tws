@@ -7,9 +7,9 @@ use super::model::{
 
 pub struct AppState {
     pub collections: Vec<Collection>,
-    /// Runtime-only: live tmux sessions managed by tws. Never persisted.
+    /// Runtime-only; excluded from persistence.
     pub active_sessions: Vec<Session>,
-    /// Runtime-only: AI agents detected in tmux panes. Never persisted.
+    /// Runtime-only; excluded from persistence.
     pub agent_sessions: Vec<AgentSession>,
 }
 
@@ -31,30 +31,17 @@ pub struct FlatAgent {
     pub status: super::model::AgentStatus,
 }
 
-/// What the current tree selection points to.
 pub enum SelectedItem {
-    /// Nothing is selected.
     None,
-    /// A collection is selected (index into collections vec).
     Collection(usize),
-    /// A thread is selected (collection index, thread index).
     Thread(usize, usize),
-    /// A session is selected (collection index, thread index, session index within active_sessions for that thread).
     Session(usize, usize, usize),
-    /// An agent is selected (collection index, thread index, session index, agent index within agents_for_session).
     Agent(usize, usize, usize, usize),
 }
 
 impl AppState {
-    /// Resolve a tree selection path (from TreeState::selected()) to a SelectedItem.
-    ///
-    /// Path lengths:
-    /// - 0 → None
-    /// - 1 → collection UUID, or root thread UUID
-    /// - 2 → (col_uuid, thread_uuid) for regular threads, or (thread_uuid, session_name) for root sessions
-    /// - 3 → (col_uuid, thread_uuid, session_name) for regular sessions,
-    ///   or (thread_uuid, session_name, pane_id) for root agents
-    /// - 4 → (col_uuid, thread_uuid, session_name, pane_id) for regular agents
+    // Tree paths use UUIDs for collections and threads, tmux names for sessions,
+    // and pane IDs for agents; root threads omit the collection segment.
     pub fn resolve_selection(&self, selected: &[String]) -> SelectedItem {
         match selected.len() {
             0 => SelectedItem::None,
@@ -183,7 +170,6 @@ impl AppState {
         }
     }
 
-    /// Get the name of a selected item (for pre-filling rename input).
     pub fn selected_name(&self, selected: &SelectedItem) -> Option<String> {
         match selected {
             SelectedItem::None => None,
@@ -204,7 +190,6 @@ impl AppState {
         }
     }
 
-    /// Generate a labeled session name for a thread using the user-provided label.
     pub fn make_session_name(
         &self,
         col_idx: usize,
@@ -220,9 +205,7 @@ impl AppState {
         }
     }
 
-    /// Pin the agent identified by pane_id to the lowest free slot 0..=9.
-    /// Returns the assigned slot, or None if all 10 slots are taken.
-    /// If the agent is already pinned, returns its existing slot.
+    /// Assign the lowest free pin slot, preserving an existing assignment.
     pub fn pin_agent_auto(&mut self, pane_id: &str) -> Option<u8> {
         if let Some(slot) = self
             .agent_sessions
@@ -250,15 +233,7 @@ impl AppState {
         }
     }
 
-    /// Pin (or repin) the agent identified by pane_id to the given slot (0..=9).
-    ///
-    /// - If the agent already holds this slot, no-op.
-    /// - If the slot is currently held by another agent X:
-    ///     - If the moving agent was already pinned (slot Y), the two agents swap slots.
-    ///     - If the moving agent was unpinned, X is re-auto-pinned to the lowest free slot.
-    ///
-    /// Slot values outside 0..=9 are clamped to 9.
-    /// If `pane_id` does not match any current agent, this is a no-op.
+    /// Assign a pin slot, swapping or relocating an occupant as needed.
     pub fn pin_agent_to(&mut self, pane_id: &str, slot: u8) {
         let slot = slot.min(9);
 
@@ -298,9 +273,6 @@ impl AppState {
                     agent.pin_slot = Some(prev_slot);
                 }
             } else {
-                // Clear the occupant's slot *before* calling pin_agent_auto so that the
-                // freed slot is counted as available when it scans for the lowest free.
-                // pin_agent_auto cannot pick `slot` (the moving agent already owns it).
                 if let Some(agent) = self
                     .agent_sessions
                     .iter_mut()
@@ -313,7 +285,6 @@ impl AppState {
         }
     }
 
-    /// Unpin the agent identified by pane_id. No-op if not pinned or not found.
     pub fn unpin_agent(&mut self, pane_id: &str) {
         if let Some(agent) = self
             .agent_sessions
@@ -324,14 +295,12 @@ impl AppState {
         }
     }
 
-    /// Return the agent occupying the given pin slot, if any.
     pub fn agent_by_pin_slot(&self, slot: u8) -> Option<&AgentSession> {
         self.agent_sessions
             .iter()
             .find(|a| a.pin_slot == Some(slot))
     }
 
-    /// Get all agents detected in a given tmux session.
     pub fn agents_for_session(&self, tmux_session_name: &str) -> Vec<&AgentSession> {
         self.agent_sessions
             .iter()
@@ -339,7 +308,6 @@ impl AppState {
             .collect()
     }
 
-    /// Resolve a tree selection to the specific agent it points at.
     pub fn resolve_agent(
         &self,
         col_idx: usize,
@@ -354,7 +322,6 @@ impl AppState {
         agents.get(agent_idx).copied()
     }
 
-    /// Get all active sessions belonging to a given thread.
     pub fn sessions_for_thread(&self, thread_id: Uuid) -> Vec<&Session> {
         self.active_sessions
             .iter()
@@ -362,7 +329,6 @@ impl AppState {
             .collect()
     }
 
-    /// Check whether a thread has any active sessions.
     pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
         if let Some(col) = self.collections.get(col_idx)
             && let Some(thread) = col.threads.get(thread_idx)
@@ -375,11 +341,7 @@ impl AppState {
         false
     }
 
-    /// Refresh active_sessions by matching live tmux session names against
-    /// our collection/thread hierarchy. Matches by prefix to support
-    /// multiple labeled sessions per thread (e.g. `tws_work_pipeline_bugfix`).
-    ///
-    /// Each entry is `(session_name, last_attached_timestamp)`.
+    // Prefix matching supports multiple labeled sessions per thread.
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
         self.active_sessions.clear();
 
@@ -391,7 +353,6 @@ impl AppState {
                     tmux_session_prefix(&col.name, &thread.name)
                 };
                 for (session_name, last_attached) in live_tmux_sessions {
-                    // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix)
                         && let Some(label) = rest.strip_prefix('_')
                         && !label.is_empty()
@@ -408,7 +369,6 @@ impl AppState {
         }
     }
 
-    /// Format a session's display path: `Collection/Thread/label` or `Thread/label` for root threads.
     pub fn session_display_path(&self, session: &Session) -> Option<String> {
         let (col_name, thread_name) = self.resolve_thread_path(session.thread_id)?;
         Some(match col_name {
@@ -417,8 +377,6 @@ impl AppState {
         })
     }
 
-    /// List all threads as `(col_idx, thread_idx, display_path)` for the thread picker.
-    /// Display path is `"Collection/Thread"` or just `"Thread"` for root threads.
     pub fn all_threads_display(&self) -> Vec<(usize, usize, String)> {
         let mut result = Vec::new();
         for (col_idx, col) in self.collections.iter().enumerate() {
@@ -434,8 +392,6 @@ impl AppState {
         result
     }
 
-    /// Given a thread ID, find its collection and thread names.
-    /// Returns `(Option<collection_name>, thread_name)`. Collection name is `None` for root threads.
     pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(Option<String>, String)> {
         for col in &self.collections {
             for thread in &col.threads {
@@ -452,8 +408,6 @@ impl AppState {
         None
     }
 
-    /// Returns the `n` most recently attached sessions, sorted by
-    /// recency (most recent first). Sessions with `last_attached == 0` are excluded.
     pub fn recent_sessions(&self, n: usize) -> Vec<&Session> {
         let mut recent: Vec<&Session> = self
             .active_sessions
@@ -465,8 +419,6 @@ impl AppState {
         recent
     }
 
-    /// Returns the tree widget selection path for a session by its tmux name.
-    /// Path: `[collection_id, thread_id, session_name]` or `[thread_id, session_name]` for root threads.
     pub fn session_tree_path(&self, session_name: &str) -> Option<Vec<String>> {
         let session = self
             .active_sessions
@@ -490,13 +442,10 @@ impl AppState {
         None
     }
 
-    /// Find the index of the root collection (where `is_root == true`).
     pub fn find_root_collection_idx(&self) -> Option<usize> {
         self.collections.iter().position(|c| c.is_root)
     }
 
-    /// Find a thread within the root collection by UUID string.
-    /// Returns `(col_idx, thread_idx)`.
     pub fn find_root_thread_by_uuid(&self, uuid_str: &str) -> Option<(usize, usize)> {
         let id: Uuid = uuid_str.parse().ok()?;
         let col_idx = self.find_root_collection_idx()?;
@@ -507,7 +456,6 @@ impl AppState {
         Some((col_idx, thread_idx))
     }
 
-    /// Lazy-init: returns the root collection index, creating it on first call if absent.
     pub fn ensure_root_collection(&mut self) -> usize {
         if let Some(idx) = self.find_root_collection_idx() {
             idx
@@ -517,8 +465,6 @@ impl AppState {
         }
     }
 
-    /// Lazy-init: ensures the root collection has a "general" thread, creating it if absent.
-    /// Returns `(col_idx, thread_idx)`.
     pub fn ensure_general_thread(&mut self) -> (usize, usize) {
         let col_idx = self.ensure_root_collection();
         if let Some(thread_idx) = self.collections[col_idx]
@@ -549,8 +495,6 @@ impl AppState {
             .position(|p| p.id == id)
     }
 
-    /// Flatten every active agent across all collections/threads/sessions into a single list.
-    /// Each entry carries the display strings and the index tuple needed to produce `SelectedItem::Agent`.
     pub fn all_agents_flat(&self) -> Vec<FlatAgent> {
         let mut result = Vec::new();
         for (col_idx, col) in self.collections.iter().enumerate() {
@@ -597,7 +541,6 @@ impl AppState {
         }
     }
 
-    /// Creates sample data for development/testing.
     pub fn with_sample_data() -> Self {
         let mut work = Collection::new("Work");
         work.threads.push(Thread::new("Edge Device Pipeline"));
@@ -621,7 +564,6 @@ impl AppState {
         }
     }
 
-    /// Generate the session prefix for a given collection/thread index pair.
     pub fn session_prefix_for(&self, col_idx: usize, thread_idx: usize) -> Option<String> {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;

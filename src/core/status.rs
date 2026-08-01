@@ -5,12 +5,10 @@ use std::time::UNIX_EPOCH;
 use crate::core::model::{AgentSession, AgentStatus};
 use crate::core::persistence::config_dir;
 
-/// Directory where per-pane status files live: `~/.config/tws/agents/`.
 pub fn agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
 
-/// Map a status word written by a hook to an `AgentStatus`.
 pub fn parse_status(word: &str) -> AgentStatus {
     match word.trim() {
         "working" => AgentStatus::Working,
@@ -21,8 +19,7 @@ pub fn parse_status(word: &str) -> AgentStatus {
     }
 }
 
-/// Read every status file in `dir` into `pane_id -> (status, mtime_epoch_secs)`.
-/// Missing/unreadable dir yields an empty map. Unreadable individual files are skipped.
+/// Missing directories and unreadable files are ignored.
 pub fn load_statuses_from(dir: &Path) -> HashMap<String, (AgentStatus, i64)> {
     let mut map = HashMap::new();
     let entries = match std::fs::read_dir(dir) {
@@ -51,13 +48,11 @@ pub fn load_statuses_from(dir: &Path) -> HashMap<String, (AgentStatus, i64)> {
     map
 }
 
-/// Production entry point: read the real agents dir.
 pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
     load_statuses_from(&agents_dir())
 }
 
-/// Join loaded statuses onto agents by `pane_id`. Agents with no matching file
-/// are set to `Unknown` / `0` (so a removed file resets state on the next scan).
+/// Agents without a matching file reset to `Unknown` / `0`.
 pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentStatus, i64)>) {
     for agent in agents.iter_mut() {
         match map.get(&agent.pane_id) {
@@ -73,7 +68,6 @@ pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentS
     }
 }
 
-/// Aggregate counts for the status-bar summary.
 pub struct StatusCounts {
     pub working: usize,
     pub waiting: usize,
@@ -81,7 +75,6 @@ pub struct StatusCounts {
     pub idle: usize,
 }
 
-/// Count agent sessions by their status.
 pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     let mut c = StatusCounts {
         working: 0,
@@ -101,8 +94,7 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     c
 }
 
-/// Delete status files whose `pane_id` is not in the live set (pane died).
-/// Missing or unreadable dir is a no-op (not an error).
+/// Remove files for panes that are no longer live.
 pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -119,8 +111,7 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     }
 }
 
-/// Map an `AgentStatus` to the word written into a status file — the inverse of
-/// `parse_status`. `Unknown` has no on-disk form; it maps to "idle" defensively.
+/// Convert a status to its on-disk representation; `Unknown` maps to `idle`.
 pub fn status_word(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
@@ -130,29 +121,18 @@ pub fn status_word(status: AgentStatus) -> &'static str {
     }
 }
 
-/// Write `status` as the pane's word into `dir/<pane_id>`, creating `dir` if needed.
 pub fn write_status_to(dir: &Path, pane_id: &str, status: AgentStatus) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join(pane_id), status_word(status))
 }
 
-/// Production entry point: write into the real agents dir. Errors are swallowed —
-/// a failed status write must never crash an attach.
+/// Write to the real agents directory; failures do not interrupt attach.
 pub fn write_status(pane_id: &str, status: AgentStatus) {
     let _ = write_status_to(&agents_dir(), pane_id, status);
 }
 
-/// The pane an attach should acknowledge, given the pane it lands the user on.
-///
-/// Acknowledgment is *pane*-scoped, never session-scoped: a tmux session can hold
-/// several agents (three panes split across one window is routine), and landing on
-/// one of them says nothing about the others. Returning at most one pane makes the
-/// over-broad ack unrepresentable in the type — a session-wide clear cannot be
-/// expressed here.
-///
-/// `Some` only when that pane holds an agent in `Review`; `Working`, `Idle` and
-/// `Unknown` panes have nothing to acknowledge, and neither does a pane with no
-/// agent in it at all.
+/// Return the landing pane only when it contains an agent in `Review`.
+/// Acknowledgment is pane-scoped because a session may contain several agents.
 pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<String> {
     agents
         .iter()
@@ -160,18 +140,7 @@ pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<Strin
         .map(|a| a.pane_id.clone())
 }
 
-/// The single-character dot used to render a status in the agents view.
-///
-/// `Waiting` and `Review` share the `◐` dot on purpose: both mean "your turn."
-/// They stay distinct in the model because they clear differently — `Waiting`
-/// (blocked on a prompt) self-heals when the agent resumes, while `Review`
-/// (delivered work) is cleared by attaching to its pane (see `agent_to_ack`). The UI hides
-/// that distinction; the clearing logic depends on it.
-///
-/// `Unknown` renders as the idle dot: an agent with no status file yet (freshly
-/// spawned, or never prompted since the hooks were installed) has nothing in
-/// flight, so idle is the honest presentation. The variants stay distinct in the
-/// model because `status_since` differs — `Unknown` carries 0, not a real mtime.
+/// Map statuses to their display glyphs. `Waiting` and `Review` intentionally share one.
 pub fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "●",

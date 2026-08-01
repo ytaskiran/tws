@@ -1,7 +1,5 @@
 use std::process::Command;
 
-/// Returns the names of all running tmux sessions.
-/// Returns an empty Vec if the tmux server isn't running.
 pub fn list_sessions() -> Vec<String> {
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
@@ -16,13 +14,10 @@ pub fn list_sessions() -> Vec<String> {
                 .map(|l| l.to_string())
                 .collect()
         }
-        // tmux returns error when no server is running — that's fine
         _ => Vec::new(),
     }
 }
 
-/// Returns tws-prefixed sessions with their `last_attached` Unix timestamps.
-/// Each entry is `(session_name, last_attached_timestamp)`.
 pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     let output = Command::new("tmux")
         .args([
@@ -51,7 +46,6 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     }
 }
 
-/// Creates a new detached tmux session with the given name.
 pub fn new_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
         .args(["new-session", "-d", "-s", name])
@@ -59,7 +53,6 @@ pub fn new_session(name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
-/// Kills the tmux session with the given name.
 pub fn kill_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
         .args(["kill-session", "-t", name])
@@ -67,7 +60,6 @@ pub fn kill_session(name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
-/// Renames a tmux session.
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
         .args(["rename-session", "-t", old_name, new_name])
@@ -75,8 +67,7 @@ pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
-/// Switches the current tmux client to the given session.
-/// Non-blocking — only works when already inside tmux.
+/// Switches the current client without blocking; only works inside tmux.
 pub fn switch_client(name: &str) -> std::io::Result<bool> {
     let output = Command::new("tmux")
         .args(["switch-client", "-t", name])
@@ -84,8 +75,7 @@ pub fn switch_client(name: &str) -> std::io::Result<bool> {
     Ok(output.status.success())
 }
 
-/// Attaches to the given tmux session, inheriting stdio.
-/// **Blocks** until the user detaches. Only use outside tmux.
+/// Attaches outside tmux and blocks until the user detaches.
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
         .args(["attach-session", "-t", name])
@@ -93,8 +83,7 @@ pub fn attach_session(name: &str) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
-/// Selects the given window in the target session.
-/// Works across sessions — doesn't require being attached to that session.
+/// Selects a window across sessions without requiring an attached client.
 pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
     let target = format!("{}:{}", session_name, window_index);
     let output = Command::new("tmux")
@@ -103,8 +92,7 @@ pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<b
     Ok(output.status.success())
 }
 
-/// Selects the given pane (by global pane ID like "%5").
-/// Works across sessions — doesn't require being attached to that session.
+/// Selects a pane by global ID without requiring an attached client.
 pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
     let output = Command::new("tmux")
         .args(["select-pane", "-t", pane_id])
@@ -112,13 +100,10 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
     Ok(output.status.success())
 }
 
-/// The pane a client lands on when attaching to `session_name` — the active pane
-/// of the session's current window. Used to scope attach acknowledgment when the
-/// caller targeted a session rather than a specific pane.
+/// Returns the active pane tmux uses when attaching to a session.
 ///
-/// Returns `None` if the session is gone or tmux reports nothing useful: for an
-/// unknown target `display-message` exits 0 with empty output, so success alone
-/// isn't enough to trust the result.
+/// An empty result is treated as missing because `display-message` can exit
+/// successfully for an unknown target.
 pub fn active_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["display-message", "-p", "-t", session_name, "#{pane_id}"])
@@ -131,8 +116,7 @@ pub fn active_pane(session_name: &str) -> Option<String> {
     if pane.is_empty() { None } else { Some(pane) }
 }
 
-/// Captures the visible content of a tmux pane, including ANSI escape sequences.
-/// Returns `None` if the pane doesn't exist or the command fails.
+/// Captures visible pane content, preserving ANSI escape sequences.
 pub fn capture_pane(pane_id: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["capture-pane", "-t", pane_id, "-e", "-p"])
@@ -145,7 +129,6 @@ pub fn capture_pane(pane_id: &str) -> Option<String> {
     }
 }
 
-/// Returns true if we're currently running inside a tmux session.
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
 }
