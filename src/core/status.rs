@@ -58,7 +58,6 @@ pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
 
 /// Join loaded statuses onto agents by `pane_id`. Agents with no matching file
 /// are set to `Unknown` / `0` (so a removed file resets state on the next scan).
-/// Used in a later task for joining status-file data onto live agent sessions.
 pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentStatus, i64)>) {
     for agent in agents.iter_mut() {
         match map.get(&agent.pane_id) {
@@ -104,7 +103,6 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
 
 /// Delete status files whose `pane_id` is not in the live set (pane died).
 /// Missing or unreadable dir is a no-op (not an error).
-/// Used in a later task for garbage collecting stale status files.
 pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,

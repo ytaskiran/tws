@@ -25,7 +25,6 @@ use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
 
-/// What the input modal is being used for.
 enum InputPurpose {
     AddCollection,
     AddThread {
@@ -52,7 +51,6 @@ enum InputPurpose {
     },
 }
 
-/// What the confirm modal is confirming.
 enum ConfirmPurpose {
     DeleteCollection {
         idx: usize,
@@ -75,11 +73,8 @@ enum ConfirmPurpose {
 
 struct FinderState {
     query: String,
-    /// (tmux_session_name, "Collection/Thread/session_label"), sorted by recency.
     all_entries: Vec<(String, String)>,
-    /// Indices into all_entries matching current query.
     filtered: Vec<usize>,
-    /// Cursor position within filtered.
     cursor: usize,
 }
 
@@ -112,13 +107,11 @@ impl FinderState {
     }
 }
 
-/// Which pane has keyboard focus during normal mode.
 enum Focus {
     Tree,
     Notes,
 }
 
-/// Which primary view is active.
 enum ViewMode {
     Tree,
     Agents,
@@ -155,19 +148,12 @@ pub struct App {
     last_refresh: Instant,
     last_agent_trigger_mtime: Option<SystemTime>,
     flash: Option<(String, Instant)>,
-    /// Cached pane content for agent preview, converted to ratatui Text.
     preview_content: Option<Text<'static>>,
-    /// Which pane_id the cached preview is for (invalidate on selection change).
     preview_pane_id: Option<String>,
-    /// When the preview was last refreshed.
     last_preview_refresh: Instant,
-    /// Whether to show the tree or agents flat-list view.
     view_mode: ViewMode,
-    /// Cursor position within the agents flat list.
     agent_list_cursor: usize,
-    /// Runtime theme derived from the palette.
     theme: Theme,
-    /// Key bindings (user-configurable).
     keymap: Keymap,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
     /// Drained on first successful agent rebuild; entries whose pane_id
@@ -178,10 +164,8 @@ pub struct App {
     pin_assign_pending: Option<String>,
 }
 
-/// How often to poll tmux for session changes (seconds).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
@@ -224,21 +208,16 @@ impl App {
         terminal: &mut Tui,
         ui_state: persistence::UiState,
     ) -> std::io::Result<()> {
-        // Stage pin restore before the initial scan so the first do_agent_scan picks it up.
         self.pending_pin_restore = ui_state.pins;
 
-        // Initial session refresh (must run first so session children exist in the tree)
         self.do_refresh_sessions();
 
-        // Restore expansion state
         for path in ui_state.open_nodes {
             self.tree_state.open(path);
         }
-        // Restore last selection
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
         }
-        // Restore view mode and agents cursor
         if ui_state.agents_view_active {
             self.view_mode = ViewMode::Agents;
         }
@@ -246,23 +225,19 @@ impl App {
         self.sync_note_editor();
 
         while self.running {
-            // Periodic session refresh (includes agent scan)
             if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
                 self.do_refresh_sessions();
             }
 
-            // Hook-triggered agent scan (sub-250ms latency)
             if self.check_agent_trigger() {
                 self.do_agent_scan();
             }
 
-            // Refresh agent preview if one is visible
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
 
             self.draw(terminal)?;
             if let Some(key) = event::poll_key(Duration::from_millis(250))? {
-                // Ctrl+C always quits
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     self.running = false;
                     continue;
@@ -301,9 +276,6 @@ impl App {
             None => None,
         };
 
-        // Pre-compute recent sessions data outside the closure for readability.
-        // (Only flash_msg *must* be outside — it mutates self.flash on expiry.)
-        // Only show the bar in Normal mode when there are recent sessions.
         let is_normal = matches!(self.mode, Mode::Normal);
         let recent_data: Vec<(String, String)> =
             if is_normal && matches!(self.view_mode, ViewMode::Tree) {
@@ -321,14 +293,12 @@ impl App {
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
 
-        // Pre-compute flat agents list for agents view mode.
         let flat_agents: Vec<FlatAgent> = if matches!(self.view_mode, ViewMode::Agents) {
             self.state.all_agents_flat()
         } else {
             Vec::new()
         };
 
-        // Pre-compute sidebar data: resolve which note or preview to display.
         let selected_item = match self.view_mode {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
             ViewMode::Agents => flat_agents
@@ -379,10 +349,8 @@ impl App {
         terminal.draw(|frame| {
             let area = frame.area();
 
-            // Paint the theme background before any widgets
             frame.render_widget(Block::default().style(self.theme.background), area);
 
-            // Build layout: tree, [separator, recent bar], separator, status bar
             let constraints = if show_recent {
                 vec![
                     Constraint::Min(0),
@@ -400,14 +368,12 @@ impl App {
             };
             let chunks = Layout::vertical(constraints).split(area);
 
-            // Index variables for separator and status bar positions
             let (recent_sep_idx, recent_idx, sep_idx, status_idx) = if show_recent {
                 (Some(1), Some(2), 3, 4)
             } else {
                 (None, None, 1, 2)
             };
 
-            // Split content area horizontally if sidebar should show
             let content_area = chunks[0];
             let (tree_area, sidebar_area) = if show_sidebar {
                 let horiz =
@@ -418,7 +384,6 @@ impl App {
                 (content_area, None)
             };
 
-            // Tree area or agents flat-list view
             if matches!(self.view_mode, ViewMode::Agents) {
                 agents_view::render(
                     frame,
@@ -471,12 +436,9 @@ impl App {
                 }
             }
 
-            // Sidebar: agent preview or notes
             if let Some(sb_area) = sidebar_area {
                 if show_preview {
                     let title = format!("Preview: {}", sidebar_title);
-                    // Pin to bottom: scroll so the last screenful is visible.
-                    // Inner height = area minus 2 for top/bottom border.
                     let visible = sb_area.height.saturating_sub(2) as usize;
                     let scroll = self
                         .preview_content
@@ -509,7 +471,6 @@ impl App {
                 }
             }
 
-            // Separator between tree and recent bar
             if let Some(idx) = recent_sep_idx {
                 let sep = "\u{2500}".repeat(chunks[idx].width as usize);
                 frame.render_widget(
@@ -518,19 +479,16 @@ impl App {
                 );
             }
 
-            // Recent sessions bar (only in Normal mode with active sessions)
             if let Some(idx) = recent_idx {
                 recent_bar::render(frame, &recent_data, chunks[idx], &self.theme);
             }
 
-            // Separator line
             let separator = "\u{2500}".repeat(chunks[sep_idx].width as usize);
             frame.render_widget(
                 Paragraph::new(Line::styled(separator, self.theme.separator)),
                 chunks[sep_idx],
             );
 
-            // Status bar
             let active_count = self.state.active_sessions.len();
             let status_counts = crate::core::status::status_counts(&self.state.agent_sessions);
             let status_ctx = self.status_context(&selected_item);
@@ -545,7 +503,6 @@ impl App {
                 &self.keymap,
             );
 
-            // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
                 Mode::Input { purpose, buffer } => {
@@ -606,7 +563,6 @@ impl App {
         Ok(())
     }
 
-    /// Build a `StatusContext` from the current mode and already-resolved selection.
     fn status_context(&self, selected: &SelectedItem) -> StatusContext {
         match &self.mode {
             Mode::Input { .. } => StatusContext::Input,
@@ -646,8 +602,6 @@ impl App {
         }
     }
 
-    /// Top-level handler for Normal mode: checks focus-switching keys first,
-    /// then dispatches to the tree or notes handler based on current focus.
     fn handle_normal_mode(
         &mut self,
         code: KeyCode,
@@ -656,7 +610,6 @@ impl App {
     ) -> std::io::Result<()> {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
 
-        // Toggle between tree and agents view
         let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
         if normal_action == Some(Action::ToggleView) {
             match self.view_mode {
@@ -670,12 +623,10 @@ impl App {
             return Ok(());
         }
 
-        // In agents mode, route all keys there (bypasses tree/notes focus logic)
         if matches!(self.view_mode, ViewMode::Agents) {
             return self.handle_agents_view_key(code, modifiers, terminal);
         }
 
-        // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
         let is_focus_switch = code == KeyCode::Tab
             || (ctrl && code == KeyCode::Left)
             || (ctrl && code == KeyCode::Right);
@@ -704,7 +655,6 @@ impl App {
         match self.focus {
             Focus::Tree => {
                 self.handle_normal_key(code, modifiers, terminal)?;
-                // After tree navigation, sync note editor if selection changed
                 self.sync_note_editor();
             }
             Focus::Notes => self.handle_notes_key(code, modifiers, terminal)?,
@@ -886,7 +836,6 @@ impl App {
                 }
             }
             _ => {
-                // Plain digit → jump to that pinned slot and attach immediately.
                 if let KeyCode::Char(c) = code
                     && c.is_ascii_digit()
                 {
@@ -1064,7 +1013,6 @@ impl App {
                     name,
                 }
             }
-            // Use 'x' to kill sessions, not 'd'
             SelectedItem::Session(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Confirm { purpose };
@@ -1084,7 +1032,6 @@ impl App {
                 }
             }
             SelectedItem::Thread(col_idx, thread_idx)
-                // If the thread has active sessions, offer to kill all of them
                 if self.state.has_active_session(col_idx, thread_idx) => {
                     let thread_name = self.state.collections[col_idx].threads[thread_idx]
                         .name
@@ -1246,7 +1193,6 @@ impl App {
                 }
             }
             _ => {
-                // Character input for search query
                 if let KeyCode::Char(c) = code
                     && let Mode::Finder { state } = &mut self.mode
                 {
@@ -1368,7 +1314,6 @@ impl App {
         Ok(())
     }
 
-    /// Refresh the agent preview if an agent is selected and enough time has elapsed.
     fn refresh_preview(&mut self, selected: &SelectedItem) {
         if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
             if let Some(agent) =
@@ -1398,7 +1343,6 @@ impl App {
         }
     }
 
-    /// Derive the note key for the currently selected tree item.
     fn selected_note_key(&self) -> Option<String> {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
@@ -1418,7 +1362,6 @@ impl App {
         }
     }
 
-    /// Sync the note viewer with the current tree selection.
     fn sync_note_editor(&mut self) {
         let new_key = self.selected_note_key();
         if new_key == self.note_editor.target_key {
@@ -1433,13 +1376,11 @@ impl App {
             }
             None => {
                 self.note_editor.clear();
-                // Also reset focus to tree if nothing is selected
                 self.focus = Focus::Tree;
             }
         }
     }
 
-    /// Suspend tws, open the current note in $EDITOR, then resume.
     fn spawn_external_editor(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         let key = match &self.note_editor.target_key {
             Some(k) => k.clone(),
@@ -1447,7 +1388,6 @@ impl App {
         };
 
         let path = self.notes.note_path(&key);
-        // Ensure the file exists (NoteStore deletes empty files)
         if !path.exists() {
             let _ = std::fs::write(&path, "");
         }
@@ -1593,7 +1533,6 @@ impl App {
                     // Refresh first so active_sessions reflects any sessions created
                     // since the last 2-second tick.
                     self.do_refresh_sessions();
-                    // Collect note keys and session names before deletion
                     let col = &self.state.collections[idx];
                     let mut note_keys: Vec<String> = vec![col.id.to_string()];
                     let mut session_names: Vec<String> = Vec::new();
@@ -1715,14 +1654,11 @@ impl App {
         }
     }
 
-    /// Launch a new tmux session with the given name and attach to it.
     fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         tmux::new_session(session_name)?;
         self.attach_to_session(session_name, terminal)
     }
 
-    /// Attach or switch to a tmux session by name, landing on whichever pane is
-    /// already active in it.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         self.attach(session_name, None, terminal)
     }
@@ -1765,13 +1701,11 @@ impl App {
             let _ = tmux::switch_client(session_name);
             self.running = false;
         } else {
-            // Outside tmux: suspend TUI, attach (blocks), then resume TUI
             tui::restore()?;
             let _ = tmux::attach_session(session_name);
             *terminal = tui::init()?;
         }
 
-        // Refresh sessions immediately after attach/switch
         self.do_refresh_sessions();
         Ok(())
     }
@@ -1842,12 +1776,9 @@ impl App {
             }
         }
 
-        // Join live status from ~/.config/tws/agents/<pane_id>.
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
 
-        // Reapply pins persisted from the previous session, one-shot. Drained on first match attempt.
-        // Pins whose pane_id is no longer live get silently dropped (pin dies with the pane).
         if !self.pending_pin_restore.is_empty() {
             let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);
             for (pane_id, slot) in restore {
@@ -1862,7 +1793,6 @@ impl App {
             }
         }
 
-        // Delete status files for panes that are no longer live.
         // Race: a just-spawned agent that writes its status file after this scan's
         // pane snapshot but before prune runs can have that fresh file deleted,
         // showing Unknown until its next status change re-writes the file. This
@@ -1892,7 +1822,6 @@ impl App {
                         .any(|s| s.thread_id == thread.id)
                     {
                         all_paths.push(vec![thread.id.to_string()]);
-                        // Also expand sessions that have agents
                         for session in &self.state.active_sessions {
                             if session.thread_id == thread.id
                                 && !self
@@ -1918,7 +1847,6 @@ impl App {
                         .any(|s| s.thread_id == thread.id)
                     {
                         all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
-                        // Also expand sessions that have agents
                         for session in &self.state.active_sessions {
                             if session.thread_id == thread.id
                                 && !self

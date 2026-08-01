@@ -53,7 +53,6 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, String> {
         return Err("empty key string".to_string());
     }
 
-    // Handle ctrl+ prefix
     if let Some(rest) = s.strip_prefix("ctrl+") {
         if rest.is_empty() {
             return Err("ctrl+ requires a key".to_string());
@@ -62,7 +61,6 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, String> {
         return Ok(KeyEvent::new(code, KeyModifiers::CONTROL));
     }
 
-    // Handle alt+ prefix
     if let Some(rest) = s.strip_prefix("alt+") {
         if rest.is_empty() {
             return Err("alt+ requires a key".to_string());
@@ -71,7 +69,6 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, String> {
         return Ok(KeyEvent::new(code, KeyModifiers::ALT));
     }
 
-    // Named special keys (case-insensitive)
     let code = parse_keycode(s)?;
     let modifiers = match &code {
         KeyCode::Char(c) if c.is_uppercase() => KeyModifiers::SHIFT,
@@ -191,7 +188,6 @@ impl Keymap {
         use Action as A;
         use KeyMode as M;
 
-        // ── Normal mode ─────────────────────────────────────────────────────
         bind!(M::Normal, KeyCode::Char('q'), KeyModifiers::NONE, A::Quit);
         bind!(
             M::Normal,
@@ -284,7 +280,6 @@ impl Keymap {
             A::ToggleView
         );
 
-        // ── Agents mode ──────────────────────────────────────────────────────
         bind!(
             M::Agents,
             KeyCode::Char('j'),
@@ -310,7 +305,6 @@ impl Keymap {
             A::PinAgentSlot
         );
 
-        // ── Notes mode ───────────────────────────────────────────────────────
         bind!(M::Notes, KeyCode::Enter, KeyModifiers::NONE, A::OpenEditor);
         bind!(M::Notes, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
         bind!(
@@ -328,7 +322,6 @@ impl Keymap {
         );
         bind!(M::Notes, KeyCode::Down, KeyModifiers::NONE, A::ScrollDown);
 
-        // ── Input modal ──────────────────────────────────────────────────────
         bind!(M::Input, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
         bind!(M::Input, KeyCode::Enter, KeyModifiers::NONE, A::Confirm);
         bind!(
@@ -338,7 +331,6 @@ impl Keymap {
             A::Backspace
         );
 
-        // ── Confirm modal ────────────────────────────────────────────────────
         bind!(
             M::ConfirmModal,
             KeyCode::Char('y'),
@@ -359,7 +351,6 @@ impl Keymap {
         );
         bind!(M::ConfirmModal, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
 
-        // ── Finder ───────────────────────────────────────────────────────────
         bind!(M::Finder, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
         bind!(M::Finder, KeyCode::Enter, KeyModifiers::NONE, A::Confirm);
         bind!(M::Finder, KeyCode::Down, KeyModifiers::NONE, A::MoveDown);
@@ -436,10 +427,8 @@ impl Keymap {
                     continue;
                 }
             };
-            // Remove old binding(s) for this action in this mode
             self.map
                 .retain(|&(m, _, _), &mut a| !(m == mode && a == action));
-            // Normalize and insert; warn if the key slot is already taken
             let norm_mods = normalized_mods(key.code, key.modifiers);
             if let Some(&existing) = self.map.get(&(mode, key.code, norm_mods)) {
                 eprintln!(
@@ -600,9 +589,7 @@ mod tests {
 
     #[test]
     fn resolve_uppercase_without_shift_flag() {
-        // Terminals that omit SHIFT for uppercase chars must still match.
         let km = Keymap::default_bindings();
-        // 'A' is bound as AddCollection — should resolve with or without SHIFT
         assert_eq!(
             km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::SHIFT),
             Some(Action::AddCollection)
@@ -611,7 +598,6 @@ mod tests {
             km.resolve(KeyMode::Normal, KeyCode::Char('A'), KeyModifiers::NONE),
             Some(Action::AddCollection)
         );
-        // 'P' (agents) bound as PinAgentSlot
         assert_eq!(
             km.resolve(KeyMode::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT),
             Some(Action::PinAgentSlot)
@@ -624,8 +610,6 @@ mod tests {
 
     #[test]
     fn resolve_shifted_symbol_works() {
-        // Symbols like '?' may arrive with SHIFT from crossterm; binding via config uses NONE.
-        // After normalization both should resolve the same.
         let mut km = Keymap::default_bindings();
         let mut overrides = HashMap::new();
         overrides.insert("finder".to_string(), "?".to_string());

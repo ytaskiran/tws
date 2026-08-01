@@ -2,10 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::palette::Palette;
 
-// ---------------------------------------------------------------------------
-// Helper functions for color manipulation
-// ---------------------------------------------------------------------------
-
 /// Brighten an RGB color by adding `amount` to each channel, capped at 255.
 fn brighten(color: Color, amount: u8) -> Color {
     if let Color::Rgb(r, g, b) = color {
@@ -35,18 +31,9 @@ fn midpoint(a: Color, b: Color) -> Color {
     darken_toward(a, b, 0.5)
 }
 
-// ---------------------------------------------------------------------------
-// Theme — all styles derived from a Palette
-// ---------------------------------------------------------------------------
-
 pub struct Theme {
-    // Full-screen background fill
     pub background: Style,
-
-    // Raw color (for components that need Color, not Style)
     pub dim_text: Color,
-
-    // Tree hierarchy
     pub collection: Style,
     pub thread: Style,
     pub thread_dim: Style,
@@ -54,60 +41,43 @@ pub struct Theme {
     pub highlight: Style,
     pub highlight_unfocused: Style,
 
-    // Pin badge in agents view
     pub pin_badge: Style,
-
-    // Chrome
     pub separator: Style,
-
-    // Status bar
     pub statusbar_key: Style,
     pub statusbar_desc: Style,
 
-    // Cursor
     pub cursor: Style,
-
-    // Modals
     pub modal_border: Style,
     pub modal_title: Style,
     pub modal_muted: Style,
 
-    // Empty state
     pub empty_title: Style,
     pub empty_hint: Style,
 
-    // Agents
     pub agent: Style,
     pub agent_connector: Style,
 
-    // Agent status dots
     pub status_working: Style,
     pub status_waiting: Style,
     pub status_idle: Style,
 
-    // Badges
     pub badge_dot: Style,
     pub badge_count: Style,
 
-    // Flash
     pub flash: Style,
 
-    // Recent bar
     pub recent_number: Style,
     pub recent_name: Style,
 
-    // Scrollbar
     pub scrollbar_thumb: Style,
     pub scrollbar_track: Style,
 
-    // Notes sidebar
     pub notes_border_focused: Style,
     pub notes_border_unfocused: Style,
     pub notes_title_focused: Style,
     pub notes_title_unfocused: Style,
     pub notes_placeholder: Style,
 
-    // Agent preview
     pub preview_border: Style,
     pub preview_title: Style,
     pub preview_placeholder: Style,
@@ -119,21 +89,13 @@ impl Theme {
         let muted_text = p.muted;
         let subtle_border = p.border;
 
-        // Derived: statusbar key is between dim and muted
         let statusbar_key_color = midpoint(p.dim, p.muted);
-        // Derived: statusbar desc is between muted and border
         let statusbar_desc_color = midpoint(p.muted, p.border);
-        // Derived: agent color is a light gray (between fg and dim)
         let agent_color = midpoint(p.fg, p.dim);
 
         Self {
-            // Full-screen background
             background: Style::new().bg(p.bg),
-
-            // Raw color
             dim_text,
-
-            // Tree hierarchy
             collection: Style::new()
                 .fg(brighten(p.accent, 16))
                 .add_modifier(Modifier::BOLD),
@@ -147,68 +109,49 @@ impl Theme {
             highlight_unfocused: Style::new().fg(Color::White).bg(p.border),
             pin_badge: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 
-            // Chrome
             separator: Style::new().fg(subtle_border),
-
-            // Status bar
             statusbar_key: Style::new().fg(statusbar_key_color),
             statusbar_desc: Style::new().fg(statusbar_desc_color),
 
-            // Cursor
             cursor: Style::new().fg(p.accent).add_modifier(Modifier::SLOW_BLINK),
 
-            // Modals
             modal_border: Style::new().fg(p.accent),
             modal_title: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             modal_muted: Style::new().fg(muted_text),
 
-            // Empty state
             empty_title: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             empty_hint: Style::new().fg(muted_text),
 
-            // Agents
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
 
-            // Agent status dots (derived from palette: green / accent / muted).
-            // Waiting and Review share the accent dot (see status_glyph).
             status_working: Style::new().fg(p.green),
             status_waiting: Style::new().fg(p.accent),
             status_idle: Style::new().fg(muted_text),
 
-            // Badges
             badge_dot: Style::new().fg(p.green),
             badge_count: Style::new().fg(muted_text),
 
-            // Flash
             flash: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 
-            // Recent bar
             recent_number: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             recent_name: Style::new().fg(dim_text),
 
-            // Scrollbar
             scrollbar_thumb: Style::new().fg(muted_text),
             scrollbar_track: Style::new().fg(subtle_border),
 
-            // Notes sidebar
             notes_border_focused: Style::new().fg(p.accent),
             notes_border_unfocused: Style::new().fg(subtle_border),
             notes_title_focused: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             notes_title_unfocused: Style::new().fg(dim_text),
             notes_placeholder: Style::new().fg(muted_text),
 
-            // Agent preview (shares unfocused styles with notes)
             preview_border: Style::new().fg(subtle_border),
             preview_title: Style::new().fg(dim_text),
             preview_placeholder: Style::new().fg(muted_text),
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// NoteStyleSheet — tui-markdown stylesheet derived from Palette
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct NoteStyleSheet {
@@ -261,10 +204,6 @@ impl tui_markdown::StyleSheet for NoteStyleSheet {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,18 +214,14 @@ mod tests {
         let p = Palette::default();
         let t = Theme::build(&p);
 
-        // Collection: bold, brightened accent
         assert_eq!(
             t.collection,
             Style::new()
                 .fg(Color::Rgb(220, 136, 66))
                 .add_modifier(Modifier::BOLD)
         );
-        // Thread: plain accent
         assert_eq!(t.thread, Style::new().fg(Color::Rgb(204, 120, 50)));
-        // Session: green
         assert_eq!(t.session, Style::new().fg(Color::Rgb(130, 180, 130)));
-        // Highlight: bg=accent, fg=bg, bold
         assert_eq!(
             t.highlight,
             Style::new()
@@ -294,7 +229,6 @@ mod tests {
                 .bg(Color::Rgb(204, 120, 50))
                 .add_modifier(Modifier::BOLD)
         );
-        // Modal border = accent
         assert_eq!(t.modal_border, Style::new().fg(Color::Rgb(204, 120, 50)));
     }
 
@@ -306,16 +240,13 @@ mod tests {
         };
         let t = Theme::build(&p);
 
-        // Thread should use the new accent
         assert_eq!(t.thread, Style::new().fg(Color::Rgb(255, 0, 0)));
-        // Collection brightened
         assert_eq!(
             t.collection,
             Style::new()
                 .fg(Color::Rgb(255, 16, 16))
                 .add_modifier(Modifier::BOLD)
         );
-        // Highlight bg should be new accent
         assert_eq!(
             t.highlight,
             Style::new()

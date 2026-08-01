@@ -62,7 +62,6 @@ pub fn load_config() -> Config {
 pub fn resolve_palette(config: &Config) -> Palette {
     let theme_name = config.theme.as_deref().unwrap_or("default");
 
-    // Try user custom theme file first
     let base = try_load_user_theme(theme_name)
         .or_else(|| palette::load_preset(theme_name))
         .unwrap_or_else(|| {
@@ -75,7 +74,6 @@ pub fn resolve_palette(config: &Config) -> Palette {
             Palette::default()
         });
 
-    // Apply inline palette overrides on top
     match &config.palette {
         Some(overrides) => base.with_overrides(overrides),
         None => base,
@@ -185,7 +183,6 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         let p = resolve_palette(&config);
         assert_eq!(p.accent, ratatui::style::Color::Rgb(255, 0, 0));
-        // green not overridden → nord's green, not the default palette's green
         assert_eq!(p.green, ratatui::style::Color::Rgb(163, 190, 140));
     }
 
@@ -248,19 +245,16 @@ mod tests {
         "##;
         let config: Config = toml::from_str(toml_str).unwrap();
 
-        // Palette: tokyo-night base with accent override
         let p = resolve_palette(&config);
         assert_eq!(p.accent, ratatui::style::Color::Rgb(255, 0, 0));
-        assert_eq!(p.green, ratatui::style::Color::Rgb(158, 206, 106)); // tokyo-night green
+        assert_eq!(p.green, ratatui::style::Color::Rgb(158, 206, 106));
 
-        // Theme builds without panic
         let theme = crate::theme::Theme::build(&p);
         assert_eq!(
             theme.thread,
             ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(255, 0, 0))
         );
 
-        // Keymap: 'Q' should be quit, 'q' unbound, 'n' is add
         let km = build_keymap(&config);
         use crossterm::event::{KeyCode, KeyModifiers};
         assert_eq!(
@@ -287,7 +281,6 @@ mod tests {
             ),
             Some(keys::Action::Add)
         );
-        // Confirm mode still works
         assert_eq!(
             km.resolve(
                 keys::KeyMode::ConfirmModal,

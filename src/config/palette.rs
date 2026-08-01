@@ -140,19 +140,14 @@ mod tests {
         assert_eq!(parse_hex_color("#cc7832"), Ok(Color::Rgb(204, 120, 50)));
         assert_eq!(parse_hex_color("#000000"), Ok(Color::Rgb(0, 0, 0)));
         assert_eq!(parse_hex_color("#ffffff"), Ok(Color::Rgb(255, 255, 255)));
-        // case insensitive
         assert_eq!(parse_hex_color("#FF9E64"), Ok(Color::Rgb(255, 158, 100)));
     }
 
     #[test]
     fn parse_hex_invalid() {
-        // missing '#'
         assert!(parse_hex_color("cc7832").is_err());
-        // too short
         assert!(parse_hex_color("#cc78").is_err());
-        // invalid hex chars
         assert!(parse_hex_color("#gggggg").is_err());
-        // empty after '#'
         assert!(parse_hex_color("#").is_err());
     }
 
@@ -177,7 +172,6 @@ mod tests {
         let p: Palette = toml::from_str(toml_str).expect("should deserialize");
         assert_eq!(p.accent, Color::Rgb(255, 0, 0));
         assert_eq!(p.green, Color::Rgb(0, 255, 0));
-        // unspecified fields fall back to defaults
         let defaults = Palette::default();
         assert_eq!(p.fg, defaults.fg);
         assert_eq!(p.dim, defaults.dim);

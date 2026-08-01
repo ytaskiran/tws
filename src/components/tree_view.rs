@@ -12,7 +12,6 @@ use crate::theme::Theme;
 pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<'a, String>> {
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
-    // Regular collections first
     for col in &state.collections {
         if col.is_root {
             continue;
@@ -33,7 +32,6 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
         );
     }
 
-    // Root threads at the bottom, rendered as root-level items
     for col in &state.collections {
         if !col.is_root {
             continue;

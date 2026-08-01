@@ -126,7 +126,6 @@ fn slugify(s: &str) -> String {
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
 
-    // Collapse consecutive hyphens
     let mut result = String::with_capacity(slug.len());
     let mut prev_hyphen = false;
     for c in slug.chars() {
@@ -141,7 +140,6 @@ fn slugify(s: &str) -> String {
         }
     }
 
-    // Strip leading/trailing hyphens
     result.trim_matches('-').to_string()
 }
 

@@ -60,7 +60,6 @@ impl AppState {
             0 => SelectedItem::None,
             1 => {
                 let id = &selected[0];
-                // Try collection first, then root thread
                 if let Some(idx) = self.find_collection_idx(id) {
                     SelectedItem::Collection(idx)
                 } else if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(id) {
@@ -72,13 +71,11 @@ impl AppState {
             2 => {
                 let first = &selected[0];
                 let second = &selected[1];
-                // Try regular thread first (col_uuid + thread_uuid)
                 if let Some(col_idx) = self.find_collection_idx(first)
                     && let Some(thread_idx) = self.find_thread_idx(col_idx, second)
                 {
                     return SelectedItem::Thread(col_idx, thread_idx);
                 }
-                // Try root session (thread_uuid + session_name)
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(first) {
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
@@ -91,7 +88,6 @@ impl AppState {
                 SelectedItem::None
             }
             3 => {
-                // Try regular session: col / thread / session
                 if let Some(col_idx) = self.find_collection_idx(&selected[0])
                     && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
                 {
@@ -106,7 +102,6 @@ impl AppState {
                         return SelectedItem::Thread(col_idx, thread_idx);
                     }
                 }
-                // Try root agent: thread / session / pane_id
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(&selected[0]) {
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
@@ -126,7 +121,6 @@ impl AppState {
                 SelectedItem::None
             }
             4 => {
-                // Regular agent: col / thread / session / pane_id
                 if let Some(col_idx) = self.find_collection_idx(&selected[0])
                     && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
                 {
@@ -780,7 +774,6 @@ mod tests {
     #[test]
     fn refresh_sessions_ignores_bare_prefix() {
         let mut state = AppState::with_sample_data();
-        // The bare prefix without _label should NOT match
         let live = vec![("tws_work_edge-device-pipeline".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.active_sessions.is_empty());
@@ -827,7 +820,6 @@ mod tests {
         let col_id = state.collections[0].id.to_string();
         let thread_id = state.collections[0].threads[0].id.to_string();
 
-        // Select the second session
         let sess_name = "tws_work_edge-device-pipeline_hotfix".to_string();
         match state.resolve_selection(&[col_id, thread_id, sess_name]) {
             SelectedItem::Session(_, _, sess_idx) => assert_eq!(sess_idx, 1),
@@ -946,11 +938,9 @@ mod tests {
 
     #[test]
     fn resolve_selection_prefers_collection_over_root_thread() {
-        // Mixed state: regular collections + root collection
         let mut state = AppState::with_sample_data();
         state.ensure_general_thread();
 
-        // 1-segment path with a regular collection UUID → must resolve to Collection, not root thread
         let col_id = state.collections[0].id.to_string();
         match state.resolve_selection(&[col_id]) {
             SelectedItem::Collection(idx) => assert_eq!(idx, 0),
@@ -960,13 +950,11 @@ mod tests {
 
     #[test]
     fn resolve_selection_prefers_regular_thread_over_root_session() {
-        // Mixed state: regular collections + root collection with an active session
         let mut state = AppState::with_sample_data();
         state.ensure_general_thread();
         let live = vec![("twsr_general_quick".to_string(), 0)];
         state.refresh_sessions(&live);
 
-        // 2-segment path with (col_uuid, thread_uuid) → must resolve to regular Thread
         let col_id = state.collections[0].id.to_string();
         let thread_id = state.collections[0].threads[0].id.to_string();
         match state.resolve_selection(&[col_id, thread_id]) {
@@ -983,7 +971,6 @@ mod tests {
     fn refresh_sessions_ignores_bare_root_prefix() {
         let mut state = AppState::new();
         state.ensure_general_thread();
-        // Bare root prefix without _label should NOT match
         let live = vec![("twsr_general".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.active_sessions.is_empty());
@@ -1133,11 +1120,10 @@ mod tests {
 
         let recent = state.recent_sessions(5);
         assert_eq!(recent.len(), 3);
-        assert_eq!(recent[0].display_name, "hotfix"); // ts 3000
-        assert_eq!(recent[1].display_name, "main"); // ts 2000
-        assert_eq!(recent[2].display_name, "bugfix"); // ts 1000
+        assert_eq!(recent[0].display_name, "hotfix");
+        assert_eq!(recent[1].display_name, "main");
+        assert_eq!(recent[2].display_name, "bugfix");
 
-        // Truncation works
         let recent2 = state.recent_sessions(2);
         assert_eq!(recent2.len(), 2);
         assert_eq!(recent2[0].display_name, "hotfix");

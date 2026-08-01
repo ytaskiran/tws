@@ -6,7 +6,6 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use crate::theme::Theme;
 
-/// Maximum number of result rows visible at once.
 const MAX_VISIBLE: usize = 10;
 
 #[allow(clippy::too_many_arguments)]
@@ -21,7 +20,6 @@ pub fn render(
     theme: &Theme,
 ) {
     let visible_count = filtered.len().min(MAX_VISIBLE);
-    // borders (2) + query line (1) + separator (1) + padding top (1) + at least 1 result row
     let height = (visible_count.max(1) + 5) as u16;
     let popup = centered_rect(60, height, area);
     frame.render_widget(Clear, popup);
@@ -37,15 +35,13 @@ pub fn render(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    // Layout: query line, separator, results area
     let chunks = Layout::vertical([
-        Constraint::Length(1), // query
-        Constraint::Length(1), // separator
-        Constraint::Min(0),    // results
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
     ])
     .split(inner);
 
-    // Query line with blinking cursor
     let query_line = Line::from(vec![
         Span::styled("/", theme.modal_muted),
         Span::raw(query),
@@ -53,14 +49,12 @@ pub fn render(
     ]);
     frame.render_widget(Paragraph::new(query_line), chunks[0]);
 
-    // Separator
     let sep = "\u{2500}".repeat(chunks[1].width as usize);
     frame.render_widget(
         Paragraph::new(Line::styled(sep, theme.separator)),
         chunks[1],
     );
 
-    // Results
     if filtered.is_empty() {
         let empty = Line::from(Span::styled("No matches", theme.modal_muted));
         frame.render_widget(Paragraph::new(empty), chunks[2]);
