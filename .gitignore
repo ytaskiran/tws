@@ -2,3 +2,4 @@
 /dev-docs
 /.worktrees
 /docs/superpowers
+.DS_Store

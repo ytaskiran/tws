@@ -6,9 +6,6 @@ use ratatui::widgets::Paragraph;
 use crate::theme::Theme;
 
 /// Renders a vertical list of recently attached sessions with number shortcuts.
-///
-/// Each session gets its own line: `1 Collection/Thread/label`
-/// Numbers are styled with RECENT_NUMBER_STYLE, paths with RECENT_NAME_STYLE.
 pub fn render(frame: &mut Frame, sessions: &[(String, String)], area: Rect, theme: &Theme) {
     let lines: Vec<Line> = sessions
         .iter()

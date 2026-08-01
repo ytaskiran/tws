@@ -40,7 +40,6 @@ pub fn run() -> io::Result<()> {
             }
         };
 
-        // If pick_collection returned an index beyond current length, a new one was created
         if col_idx >= collections.len() {
             let name = prompt("  New collection name: ")?;
             if name.is_empty() {

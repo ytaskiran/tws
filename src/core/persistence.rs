@@ -86,8 +86,6 @@ mod tests {
     fn with_temp_config<F: FnOnce()>(f: F) {
         let dir = env::temp_dir().join(format!("tws_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
-        // We test save/load by writing directly to a temp path
-        // rather than overriding config_dir
         let path = dir.join("state.json");
 
         let mut col = Collection::new("Test");
@@ -115,12 +113,8 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_empty() {
-        // load() returns empty vec when file doesn't exist
-        // We can't easily test this without mocking config_dir,
-        // so we test the logic directly
         let path = env::temp_dir().join("tws_nonexistent_state.json");
         assert!(!path.exists());
-        // Simulating what load() does:
         if !path.exists() {
             let result: Vec<Collection> = Vec::new();
             assert!(result.is_empty());
@@ -129,7 +123,6 @@ mod tests {
 
     #[test]
     fn deserialize_without_is_root_defaults_false() {
-        // Simulate loading an old state.json that predates the is_root field
         let json = r#"[{
             "id": "00000000-0000-0000-0000-000000000001",
             "name": "Legacy",

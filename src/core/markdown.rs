@@ -9,8 +9,7 @@ use ratatui::text::{Line, Span, Text};
 use super::persistence;
 use crate::theme::NoteStyleSheet;
 
-/// Cached markdown renderer that delegates to `glow` when available,
-/// falling back to `tui-markdown` otherwise.
+/// Cached renderer using `glow` when available and `tui-markdown` otherwise.
 pub struct MarkdownRenderer {
     glow_available: bool,
     theme_path: PathBuf,
@@ -25,7 +24,6 @@ struct RenderCache {
 }
 
 impl MarkdownRenderer {
-    /// Create a new renderer, probing for `glow` on `$PATH`.
     pub fn new(stylesheet: NoteStyleSheet) -> Self {
         let glow_available = Command::new("glow")
             .arg("--version")
@@ -34,8 +32,6 @@ impl MarkdownRenderer {
             .status()
             .is_ok_and(|s| s.success());
 
-        // Write the embedded theme to disk once if it doesn't exist.
-        // Users can edit the file at ~/.config/tws/glow-theme.json to customize.
         let theme_path = persistence::config_dir().join("glow-theme.json");
         if glow_available && !theme_path.exists() {
             let _ = std::fs::write(&theme_path, include_str!("../../styles/tws-glow.json"));
@@ -49,9 +45,6 @@ impl MarkdownRenderer {
         }
     }
 
-    /// Render markdown to styled `Text`, using cache when possible.
-    ///
-    /// Re-renders only when the source text or target width changes.
     pub fn render(&mut self, markdown: &str, width: u16) -> &Text<'static> {
         let cache_valid = self
             .cache
@@ -76,19 +69,14 @@ impl MarkdownRenderer {
         &self.cache.as_ref().unwrap().text
     }
 
-    /// Number of lines in the last rendered output. Returns 0 if nothing cached.
     pub fn line_count(&self) -> usize {
         self.cache.as_ref().map_or(0, |c| c.text.lines.len())
     }
 
-    /// Clear the cache, forcing a re-render on the next `render()` call.
     pub fn invalidate(&mut self) {
         self.cache = None;
     }
 
-    /// Fallback renderer using `tui-markdown` with the tws theme.
-    ///
-    /// Converts the borrowed `Text<'a>` to owned `Text<'static>` so it can be cached.
     fn render_fallback(&self, markdown: &str) -> Text<'static> {
         let options = tui_markdown::Options::new(self.stylesheet.clone());
         let text = tui_markdown::from_str_with_options(markdown, &options);
@@ -124,17 +112,10 @@ fn render_with_glow(markdown: &str, width: u16, theme_path: &Path) -> Option<Tex
     Some(text)
 }
 
-/// `glow` emits ANSI resets (`ESC[0m`) on every span, which `ansi_to_tui` maps
-/// to `bg: Some(Color::Reset)`. At render time `Color::Reset` repaints the cell
-/// with the *terminal's* default background — punching through the app's themed
-/// background and making the text area look darker than the rest of the UI.
-///
-/// Remap those to `bg: None` so the cell keeps whatever background was painted
-/// underneath (the app theme), matching how the tree renders. Backgrounds the
-/// theme sets explicitly (any non-`Reset` color) are left untouched.
-///
-/// Also used for captured tmux pane content in the agent preview, which goes
-/// through the same `into_text()` path and has the same `Reset` punch-through.
+// `ansi_to_tui` maps glow's reset sequences to `Color::Reset`, which repaints
+// themed cells with the terminal default. Clearing only reset backgrounds also
+// keeps explicitly styled backgrounds intact. Captured tmux pane output uses
+// the same conversion path.
 pub(crate) fn clear_reset_backgrounds(text: &mut Text<'static>) {
     for line in &mut text.lines {
         if line.style.bg == Some(Color::Reset) {
@@ -185,7 +166,6 @@ mod tests {
         assert_eq!(text.lines[0].style.bg, None);
         assert_eq!(text.lines[0].spans[0].style.bg, None);
         assert_eq!(text.lines[0].spans[1].style.bg, None);
-        // Foreground is untouched.
         assert_eq!(text.lines[0].spans[0].style.fg, Some(Color::Gray));
     }
 

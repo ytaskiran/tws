@@ -272,7 +272,6 @@ mod tests {
 
     #[test]
     fn identify_agent_node_npm() {
-        // npm-installed codex
         assert_eq!(
             identify_agent("node /opt/homebrew/lib/node_modules/@openai/codex/dist/cli.js"),
             Some(AgentType::Codex)
@@ -281,7 +280,6 @@ mod tests {
             identify_agent("node /home/user/.nvm/versions/node/v20/lib/node_modules/codex/cli.js"),
             Some(AgentType::Codex)
         );
-        // npm-installed Claude Code (@anthropic-ai/claude-code)
         assert_eq!(
             identify_agent("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"),
             Some(AgentType::ClaudeCode)
@@ -290,7 +288,6 @@ mod tests {
             identify_agent("node /usr/lib/node_modules/claude-code/dist/cli.js"),
             Some(AgentType::ClaudeCode)
         );
-        // npm-installed Pi coding agent
         assert_eq!(
             identify_agent(
                 "node /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
@@ -309,7 +306,6 @@ mod tests {
             ),
             Some(AgentType::Pi)
         );
-        // node running something unrelated — should not match
         assert_eq!(identify_agent("node /path/to/my-app/index.js"), None);
         assert_eq!(
             identify_agent("node /path/to/codex-tutorial/index.js"),

@@ -39,7 +39,6 @@ pub fn render(
     theme: &Theme,
     keymap: &Keymap,
 ) {
-    // Slot-assign mode renders a custom prompt instead of the hint row.
     let slot_assign_prompt: Option<String> = match &ctx {
         StatusContext::AgentsViewSlotAssign { target_path } => Some(format!(
             "Set slot for {} — 0-9 assign · Esc cancel",
@@ -167,11 +166,9 @@ pub fn render(
             ),
             (keymap.key_hint(KeyMode::Agents, Action::Quit), "quit"),
         ],
-        // Hint row is empty when assign prompt is active — prompt replaces it.
         StatusContext::AgentsViewSlotAssign { .. } => vec![],
     };
 
-    // Left side: assign prompt > flash message > key hints
     let mut left_spans = Vec::new();
     if let Some(prompt) = &slot_assign_prompt {
         left_spans.push(Span::styled(prompt.as_str(), theme.flash));
@@ -188,7 +185,6 @@ pub fn render(
         }
     }
 
-    // Right side: status counts + session count (or app name)
     let mut right_spans: Vec<Span> = Vec::new();
     // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
     // distinct in the model; see status_glyph), so their counts merge here.

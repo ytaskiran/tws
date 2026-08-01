@@ -35,8 +35,6 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         (chunks[0], chunks[1])
     };
 
-    // The flat list is already sorted: pinned first, then unpinned.
-    // Find the split point: index of the first unpinned agent.
     let split = agents
         .iter()
         .position(|a| a.pin_slot.is_none())
@@ -73,7 +71,6 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
 
     for (idx, agent) in agents.iter().enumerate() {
         if idx == split && has_pinned && has_unpinned {
-            // Insert separator row between pinned and unpinned blocks
             let sep_width = list_area.width.saturating_sub(2) as usize;
             let sep = "─".repeat(sep_width);
             items.push(ListItem::new(Line::from(Span::styled(
