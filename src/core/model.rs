@@ -59,7 +59,7 @@ impl AgentType {
 pub enum AgentStatus {
     /// Busy on its own work (thinking, running a tool/shell/subagent).
     Working,
-    /// Blocked waiting on the human (permission or idle prompt).
+    /// Blocked waiting on the human (question, permission, or idle prompt).
     Waiting,
     /// Delivered its turn's work; awaiting the human's acknowledgment (attach).
     Review,
