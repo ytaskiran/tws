@@ -218,6 +218,26 @@ fn match_agents(
     agents
 }
 
+#[allow(dead_code)]
+fn find_pane_agent(
+    panes: &[PaneInfo],
+    children: &HashMap<u32, Vec<(u32, String)>>,
+    pane_id: &str,
+) -> Option<AgentType> {
+    let pane = panes.iter().find(|p| p.pane_id == pane_id)?;
+    let kids = children.get(&pane.pane_pid)?;
+    kids.iter().find_map(|(_pid, comm)| identify_agent(comm))
+}
+
+/// Unlike `scan_agents`, this deliberately skips the tws-session filter:
+/// forking must work in any pane, managed by tws or not.
+#[allow(dead_code)]
+pub fn agent_in_pane(pane_id: &str) -> Option<AgentType> {
+    let panes = parse_panes(&list_all_panes()?);
+    let children = parse_processes(&list_all_processes()?);
+    find_pane_agent(&panes, &children, pane_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +435,71 @@ mod tests {
             "codex-task"
         );
         assert_eq!(clean_pane_title("pi-task", AgentType::Pi), "pi-task");
+    }
+
+    #[test]
+    fn find_pane_agent_matches_target_pane() {
+        let panes = vec![
+            PaneInfo {
+                session_name: "anything".into(),
+                window_index: 0,
+                pane_id: "%0".into(),
+                pane_pid: 100,
+                pane_title: "".into(),
+            },
+            PaneInfo {
+                session_name: "anything".into(),
+                window_index: 1,
+                pane_id: "%1".into(),
+                pane_pid: 101,
+                pane_title: "".into(),
+            },
+        ];
+        let mut children = HashMap::new();
+        children.insert(100, vec![(200, "claude".into())]);
+        children.insert(101, vec![(300, "codex".into())]);
+
+        assert_eq!(
+            find_pane_agent(&panes, &children, "%0"),
+            Some(AgentType::ClaudeCode)
+        );
+        assert_eq!(
+            find_pane_agent(&panes, &children, "%1"),
+            Some(AgentType::Codex)
+        );
+    }
+
+    #[test]
+    fn find_pane_agent_none_for_unknown_pane_or_no_agent() {
+        let panes = vec![PaneInfo {
+            session_name: "anything".into(),
+            window_index: 0,
+            pane_id: "%0".into(),
+            pane_pid: 100,
+            pane_title: "".into(),
+        }];
+        let mut children = HashMap::new();
+        children.insert(100, vec![(200, "vim".into())]);
+
+        assert_eq!(find_pane_agent(&panes, &children, "%0"), None);
+        assert_eq!(find_pane_agent(&panes, &children, "%9"), None);
+    }
+
+    #[test]
+    fn find_pane_agent_ignores_session_membership() {
+        let panes = vec![PaneInfo {
+            session_name: "not_a_tws_session".into(),
+            window_index: 0,
+            pane_id: "%5".into(),
+            pane_pid: 100,
+            pane_title: "".into(),
+        }];
+        let mut children = HashMap::new();
+        children.insert(100, vec![(200, "claude".into())]);
+
+        assert_eq!(
+            find_pane_agent(&panes, &children, "%5"),
+            Some(AgentType::ClaudeCode)
+        );
     }
 }
