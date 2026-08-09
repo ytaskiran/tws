@@ -218,7 +218,6 @@ fn match_agents(
     agents
 }
 
-#[allow(dead_code)]
 fn find_pane_agent(
     panes: &[PaneInfo],
     children: &HashMap<u32, Vec<(u32, String)>>,
@@ -231,7 +230,6 @@ fn find_pane_agent(
 
 /// Unlike `scan_agents`, this deliberately skips the tws-session filter:
 /// forking must work in any pane, managed by tws or not.
-#[allow(dead_code)]
 pub fn agent_in_pane(pane_id: &str) -> Option<AgentType> {
     let panes = parse_panes(&list_all_panes()?);
     let children = parse_processes(&list_all_processes()?);
