@@ -25,6 +25,11 @@ struct Cli {
 enum Command {
     /// Import existing tmux sessions into tws
     Import,
+    /// Fork the Claude Code session running in a tmux pane (experimental)
+    ForkPane {
+        /// tmux pane id, e.g. %12
+        pane_id: String,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -32,6 +37,7 @@ fn main() -> std::io::Result<()> {
 
     match cli.command {
         Some(Command::Import) => import::run(),
+        Some(Command::ForkPane { pane_id }) => fork::run(&pane_id),
         None => run_tui(),
     }
 }

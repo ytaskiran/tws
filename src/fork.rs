@@ -1,16 +1,18 @@
+use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::core::model::AgentType;
 use crate::core::persistence::config_dir;
+use crate::tmux::agent_scan::agent_in_pane;
 
 #[derive(Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct ForkTarget {
     pub session_id: String,
     pub cwd: PathBuf,
 }
 
-#[allow(dead_code)]
 pub fn parse_pointer(contents: &str) -> Option<ForkTarget> {
     let line = contents.lines().next()?;
     let (session_id, cwd) = line.split_once('\t')?;
@@ -23,7 +25,6 @@ pub fn parse_pointer(contents: &str) -> Option<ForkTarget> {
     })
 }
 
-#[allow(dead_code)]
 pub fn pointer_path(pane_id: &str) -> PathBuf {
     config_dir().join("sessions").join(pane_id)
 }
@@ -31,7 +32,6 @@ pub fn pointer_path(pane_id: &str) -> PathBuf {
 /// Claude Code names its per-project transcript directory after the session cwd
 /// with every non-alphanumeric character replaced by `-`. Undocumented internal;
 /// `classify` treats a missing projects dir as "rule changed" rather than an error.
-#[allow(dead_code)]
 pub fn project_slug(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
@@ -39,7 +39,6 @@ pub fn project_slug(cwd: &Path) -> String {
         .collect()
 }
 
-#[allow(dead_code)]
 pub fn transcript_path(home: &Path, cwd: &Path, session_id: &str) -> PathBuf {
     home.join(".claude")
         .join("projects")
@@ -48,7 +47,6 @@ pub fn transcript_path(home: &Path, cwd: &Path, session_id: &str) -> PathBuf {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ForkError {
     NoAgent,
     UnsupportedAgent(AgentType),
@@ -57,7 +55,6 @@ pub enum ForkError {
     WrongDirectory,
 }
 
-#[allow(dead_code)]
 pub struct Facts<'a> {
     pub pointer: Option<&'a str>,
     pub agent: Option<AgentType>,
@@ -66,7 +63,6 @@ pub struct Facts<'a> {
     pub transcript_exists: bool,
 }
 
-#[allow(dead_code)]
 pub fn classify(f: &Facts) -> Result<ForkTarget, ForkError> {
     let Some(raw) = f.pointer else {
         return Err(match f.agent {
@@ -93,7 +89,6 @@ pub fn classify(f: &Facts) -> Result<ForkTarget, ForkError> {
     Ok(target)
 }
 
-#[allow(dead_code)]
 pub fn message(e: &ForkError) -> String {
     match e {
         ForkError::NoAgent => "fork: no agent running in this pane".into(),
@@ -116,6 +111,81 @@ pub fn message(e: &ForkError) -> String {
                 .into()
         }
     }
+}
+
+pub fn build_argv(t: &ForkTarget) -> Vec<String> {
+    vec![
+        "--resume".to_string(),
+        t.session_id.clone(),
+        "--fork-session".to_string(),
+    ]
+}
+
+fn pane_cwd(pane_id: &str) -> Option<PathBuf> {
+    let out = Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_current_path}",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then(|| PathBuf::from(s))
+}
+
+fn fail(e: &ForkError) -> ! {
+    eprintln!("{}", message(e));
+    eprint!("\npress any key to close ");
+    let _ = std::io::stderr().flush();
+    let mut buf = [0u8; 1];
+    let _ = std::io::stdin().read(&mut buf);
+    std::process::exit(1);
+}
+
+pub fn run(pane_id: &str) -> ! {
+    let raw = std::fs::read_to_string(pointer_path(pane_id)).ok();
+    let home = dirs::home_dir().unwrap_or_default();
+    let live_cwd = pane_cwd(pane_id);
+
+    let parsed = raw.as_deref().and_then(parse_pointer);
+    let (project_dir_exists, transcript_exists) = match &parsed {
+        Some(t) => {
+            let transcript = transcript_path(&home, &t.cwd, &t.session_id);
+            let dir_exists = transcript.parent().is_some_and(|p| p.exists());
+            (dir_exists, transcript.exists())
+        }
+        None => (false, false),
+    };
+
+    let facts = Facts {
+        pointer: raw.as_deref(),
+        agent: agent_in_pane(pane_id),
+        pane_cwd: live_cwd.as_deref(),
+        project_dir_exists,
+        transcript_exists,
+    };
+
+    let target = match classify(&facts) {
+        Ok(t) => t,
+        Err(e) => fail(&e),
+    };
+
+    // TWS_FORK stops the fork's own SessionStart hook from overwriting the
+    // parent's pointer — without it, the next fork would fork this fork.
+    let err = Command::new("claude")
+        .args(build_argv(&target))
+        .current_dir(&target.cwd)
+        .env("TWS_FORK", "1")
+        .exec();
+
+    eprintln!("fork: could not launch claude: {err}");
+    std::process::exit(1);
 }
 
 #[cfg(test)]
@@ -251,6 +321,22 @@ mod tests {
         let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
         f.pane_cwd = Some(Path::new("/proj"));
         assert!(classify(&f).is_ok());
+    }
+
+    #[test]
+    fn build_argv_exact_flag_order() {
+        let t = ForkTarget {
+            session_id: "sid-7".into(),
+            cwd: PathBuf::from("/proj"),
+        };
+        assert_eq!(
+            build_argv(&t),
+            vec![
+                "--resume".to_string(),
+                "sid-7".to_string(),
+                "--fork-session".to_string(),
+            ]
+        );
     }
 
     #[test]
