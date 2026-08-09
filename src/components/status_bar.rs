@@ -28,6 +28,29 @@ pub enum StatusContext {
     },
 }
 
+fn right_group(counts: &StatusCounts, session_count: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
+    // distinct in the model; see status_glyph), so their counts merge here.
+    let review = counts.waiting + counts.review;
+    if review > 0 {
+        spans.push(Span::styled(format!("◐ {} ", review), theme.status_waiting));
+    }
+    if counts.working > 0 {
+        spans.push(Span::styled(
+            format!("● {} ", counts.working),
+            theme.status_working,
+        ));
+    }
+    let tail = if session_count > 0 {
+        format!("{} active ", session_count)
+    } else {
+        "tws ".to_string()
+    };
+    spans.push(Span::styled(tail, theme.statusbar_desc));
+    spans
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
@@ -185,25 +208,7 @@ pub fn render(
         }
     }
 
-    let mut right_spans: Vec<Span> = Vec::new();
-    // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
-    // distinct in the model; see status_glyph), so their counts merge here.
-    let review = counts.waiting + counts.review;
-    if review > 0 {
-        right_spans.push(Span::styled(format!("◐ {} ", review), theme.status_waiting));
-    }
-    if counts.working > 0 {
-        right_spans.push(Span::styled(
-            format!("● {} ", counts.working),
-            theme.status_working,
-        ));
-    }
-    let tail = if active_session_count > 0 {
-        format!("{} active ", active_session_count)
-    } else {
-        "tws ".to_string()
-    };
-    right_spans.push(Span::styled(tail, theme.statusbar_desc));
+    let right_spans = right_group(&counts, active_session_count, theme);
 
     let right_width: u16 = right_spans
         .iter()
@@ -219,4 +224,51 @@ pub fn render(
         Paragraph::new(right_line).alignment(Alignment::Right),
         chunks[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::palette::Palette;
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn theme() -> Theme {
+        Theme::build(&Palette::default())
+    }
+
+    fn counts(working: usize, waiting: usize, review: usize) -> StatusCounts {
+        StatusCounts {
+            working,
+            waiting,
+            review,
+            idle: 0,
+        }
+    }
+
+    #[test]
+    fn review_and_waiting_agents_merge_into_one_count() {
+        let spans = right_group(&counts(0, 1, 2), 0, &theme());
+        assert!(text_of(&spans).contains("◐ 3"));
+    }
+
+    #[test]
+    fn working_agents_render_their_own_count() {
+        let spans = right_group(&counts(4, 0, 0), 0, &theme());
+        assert!(text_of(&spans).contains("● 4"));
+    }
+
+    #[test]
+    fn tail_shows_the_session_count() {
+        let spans = right_group(&counts(0, 0, 0), 6, &theme());
+        assert_eq!(text_of(&spans), "6 active ");
+    }
+
+    #[test]
+    fn tail_falls_back_to_the_app_name() {
+        let spans = right_group(&counts(0, 0, 0), 0, &theme());
+        assert_eq!(text_of(&spans), "tws ");
+    }
 }
