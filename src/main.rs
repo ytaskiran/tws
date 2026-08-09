@@ -28,7 +28,7 @@ enum Command {
     /// Fork the Claude Code session running in a tmux pane (experimental)
     ForkPane {
         /// tmux pane id, e.g. %12
-        pane_id: String,
+        pane_id: Option<String>,
     },
 }
 
@@ -37,7 +37,7 @@ fn main() -> std::io::Result<()> {
 
     match cli.command {
         Some(Command::Import) => import::run(),
-        Some(Command::ForkPane { pane_id }) => fork::run(&pane_id),
+        Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
         None => run_tui(),
     }
 }

@@ -53,6 +53,7 @@ pub enum ForkError {
     NoPointer,
     StalePointer,
     WrongDirectory,
+    NoPaneId,
 }
 
 pub struct Facts<'a> {
@@ -110,6 +111,10 @@ pub fn message(e: &ForkError) -> String {
             "fork: the recorded session belongs to a different directory (tmux reused this pane id)"
                 .into()
         }
+        ForkError::NoPaneId => {
+            "fork: could not determine the pane id — run this inside tmux, or pass a pane id"
+                .into()
+        }
     }
 }
 
@@ -139,6 +144,20 @@ fn pane_cwd(pane_id: &str) -> Option<PathBuf> {
     (!s.is_empty()).then(|| PathBuf::from(s))
 }
 
+// tmux does not expand `#{pane_id}` inside a `display-popup` shell-command,
+// so the popup must ask tmux for its originating pane itself, from inside.
+fn current_pane_id() -> Option<String> {
+    let out = Command::new("tmux")
+        .args(["display-message", "-p", "#{pane_id}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
 fn fail(e: &ForkError) -> ! {
     eprintln!("{}", message(e));
     eprint!("\npress any key to close ");
@@ -148,7 +167,16 @@ fn fail(e: &ForkError) -> ! {
     std::process::exit(1);
 }
 
-pub fn run(pane_id: &str) -> ! {
+pub fn run(pane_id: Option<&str>) -> ! {
+    let resolved = match pane_id {
+        Some(id) => id.to_string(),
+        None => match current_pane_id() {
+            Some(id) => id,
+            None => fail(&ForkError::NoPaneId),
+        },
+    };
+    let pane_id = resolved.as_str();
+
     let raw = std::fs::read_to_string(pointer_path(pane_id)).ok();
     let home = dirs::home_dir().unwrap_or_default();
     let live_cwd = pane_cwd(pane_id);
@@ -347,6 +375,7 @@ mod tests {
             ForkError::NoPointer,
             ForkError::StalePointer,
             ForkError::WrongDirectory,
+            ForkError::NoPaneId,
         ] {
             assert!(!message(&e).is_empty());
         }
