@@ -343,7 +343,7 @@ configure_pi_hooks() {
     # idempotent since tws owns it outright (unlike the Claude/Codex configs,
     # which are shared JSON we must merge into carefully).
     cat > "$ext_file" <<'PI_EXT_EOF'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
@@ -361,25 +361,51 @@ async function panePath(pi: any): Promise<string | undefined> {
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
 }
 
-// Only writes when the word actually changes, so the file's mtime reflects
-// state-entry time (tws reads mtime as status_since).
-function writeWord(path: string, word: string) {
-  let cur: string | undefined;
+function readWord(path: string): string | undefined {
   try {
-    cur = readFileSync(path, "utf8");
+    return readFileSync(path, "utf8");
   } catch {
-    cur = undefined;
+    return undefined;
   }
-  if (cur === word) return;
+}
+
+// Only writes on a real change, so TRIGGER stays quiet during a run — tws does a
+// full tmux+ps rescan every time it is rung.
+function writeWord(path: string, word: string) {
+  if (readWord(path) === word) return;
   mkdirSync(AGENTS_DIR, { recursive: true });
   writeFileSync(path, word);
   writeFileSync(TRIGGER, "");
+}
+
+// Heartbeat: refresh mtime without rewriting, which tws reads as proof of life
+// (see core::status::expire_stale_working). Never creates the file; a missing one
+// is restored by the next writeWord.
+function beat(path: string) {
+  const now = new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {
+    // Pane file not there yet — the next state change writes it.
+  }
 }
 
 export default function (pi: any) {
   pi.on("turn_start", async () => {
     const path = await panePath(pi);
     if (path) writeWord(path, "working");
+  });
+  // Pi's only per-tool-call event, and so the only place a heartbeat can live.
+  pi.on("tool_execution_start", async () => {
+    const path = await panePath(pi);
+    if (!path) return;
+    if (readWord(path) === "working") beat(path);
+    else writeWord(path, "working");
+  });
+  // Compaction can end a turn without agent_settled firing.
+  pi.on("session_compact", async () => {
+    const path = await panePath(pi);
+    if (path) writeWord(path, "review");
   });
   pi.on("agent_settled", async () => {
     const path = await panePath(pi);
