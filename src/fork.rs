@@ -236,6 +236,17 @@ mod tests {
     }
 
     #[test]
+    fn classify_checks_cwd_before_transcript() {
+        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        f.pane_cwd = Some(Path::new("/other-proj"));
+        f.transcript_exists = false;
+        // project_dir_exists remains true from facts() default.
+        // If cwd check runs first, result is WrongDirectory.
+        // If transcript check runs first, result is StalePointer.
+        assert_eq!(classify(&f), Err(ForkError::WrongDirectory));
+    }
+
+    #[test]
     fn classify_matching_cwd_is_ok() {
         let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
         f.pane_cwd = Some(Path::new("/proj"));
