@@ -5,6 +5,7 @@ REPO="ytaskiran/tws"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 tmpdir=""
+hooks_configured=0
 
 # --- Helpers ---
 
@@ -239,6 +240,7 @@ configure_claude_hooks() {
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
     ok "Configured Claude Code agent status hooks"
+    hooks_configured=1
 }
 
 configure_codex_feature_flag() {
@@ -317,6 +319,7 @@ configure_codex_hooks() {
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
     ok "Configured Codex agent status hooks"
+    hooks_configured=1
 
     configure_codex_feature_flag
 }
@@ -422,12 +425,24 @@ export default function (pi: any) {
 PI_EXT_EOF
 
     ok "Configured Pi agent status hooks"
+    hooks_configured=1
 }
 
 configure_agent_hooks() {
     configure_claude_hooks
     configure_codex_hooks
     configure_pi_hooks
+
+    # Agents snapshot their hook config at session start, so panes running during
+    # this upgrade keep the old config — and any file already stuck at `working`
+    # would outlive it. Clearing once makes the upgrade clean; live panes rewrite
+    # their file on the next hook fire.
+    if [ "$hooks_configured" -eq 1 ]; then
+        rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
+        mkdir -p "$HOME/.config/tws"
+        touch "$HOME/.config/tws/agent.trigger"
+        info "Cleared stale agent status files"
+    fi
 }
 
 # --- 6. Optional: glow (rich markdown rendering) ---
