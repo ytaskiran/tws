@@ -163,6 +163,32 @@ status_hook_entry() {
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
+# Emits the SessionStart hook entry that records <session_id>\t<cwd> for the pane,
+# so `tws fork-pane` can fork that session. Skipped when TWS_FORK is set, which is
+# how a fork avoids overwriting its parent's pointer.
+session_hook_entry() {
+    local cmd
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='input=$(cat); '
+    cmd+='id=$(printf "%s" "$input" | jq -r ".session_id // empty"); '
+    cmd+='[ -z "$id" ] && exit 0; '
+    cmd+='cwd=$(printf "%s" "$input" | jq -r ".cwd // empty"); '
+    cmd+='[ -z "$cwd" ] && cwd=$PWD; '
+    cmd+='p=${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}; '
+    cmd+='[ -z "$p" ] && exit 0; '
+    cmd+='mkdir -p "$HOME/.config/tws/sessions"; '
+    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$p"; :'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+session_end_entry() {
+    local cmd
+    cmd='rm -f "$HOME/.config/tws/sessions/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; :'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
 configure_claude_hooks() {
     local settings="$HOME/.claude/settings.json"
 
@@ -194,6 +220,9 @@ configure_claude_hooks() {
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    local e_sessionstart e_sessionrm
+    e_sessionstart=$(session_hook_entry)
+    e_sessionrm=$(session_end_entry)
 
     jq \
         --argjson prompt "$e_prompt" \
@@ -201,9 +230,11 @@ configure_claude_hooks() {
         --argjson question "$e_question" \
         --argjson notify "$e_notify" \
         --argjson stop "$e_stop" \
-        --argjson end "$e_end" '
-        # A tws hook entry is identified by the config/tws/agents marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
+        --argjson end "$e_end" \
+        --argjson sessionstart "$e_sessionstart" \
+        --argjson sessionrm "$e_sessionrm" '
+        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
@@ -213,7 +244,8 @@ configure_claude_hooks() {
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $sessionstart) |
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $sessionrm) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
