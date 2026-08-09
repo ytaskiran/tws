@@ -58,7 +58,7 @@ Collections and threads are user-created, persisted to `~/.config/tws/state.json
 
 ## Architecture
 
-**Single-threaded event loop** in `app.rs` — the brain of the app. It owns the `Mode` state machine, key routing, rendering, and all side effects. The loop polls keys every 250ms and refreshes tmux sessions periodically (30s for agent scans).
+**Single-threaded event loop** in `app.rs` — the brain of the app. It owns the `Mode` state machine, key routing, rendering, and all side effects. The loop polls keys every 250ms and refreshes tmux sessions on a 30s floor, plus immediately whenever an agent hook fires (see [Agent status protocol](#agent-status-protocol)).
 
 ### Mode state machine
 
@@ -96,7 +96,21 @@ Immediate-mode: all widgets are rebuilt from `AppState` each frame. Components a
 
 - Sessions are launched detached (`tmux new-session -d`), then attached via `switch-client` (inside tmux) or `attach-session` (outside tmux)
 - Agent detection: `tmux list-panes -a` gets pane PIDs → `ps -e` finds child processes → match against known agent binaries (`claude`, `codex`)
-- Agent renames are in-memory only (not persisted), preserved across 30s scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
+- Agent renames are in-memory only (not persisted), preserved across scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
+
+### Agent status protocol
+
+Agents report state through the filesystem. A hook writes one word (`working` / `waiting` / `review`) to `~/.config/tws/agents/$TMUX_PANE`, then touches `~/.config/tws/agent.trigger`. tws polls that trigger's mtime every 250ms (`AgentTrigger` in `core/status.rs`) and rescans when it moves.
+
+A hook writes only when the word *changes*, so mtime is the state-entry time that `status_since` displays. `PreToolUse` is the exception: it refreshes mtime on every tool call even when the word is unchanged, giving `expire_stale_working()` a liveness heartbeat. For `working` panes, then, mtime means last-activity rather than state-entry.
+
+Two further properties keep this responsive, and both are easy to break:
+
+**Every state needs an exit event.** tws can only be as fresh as the hooks that fire. `working` is asserted by `UserPromptSubmit`, `PreToolUse` *and* `PostToolUse` (Claude and Codex alike); Pi's extension gets the same signal from `turn_start`. `PostToolUse` is the "turn resumed" event, and it is the one that is easy to forget. Without it, leaving `waiting` — a permission granted, an `AskUserQuestion` answered — waits on the model reaching its *next* tool call, which is unbounded: measured at 8s in a busy session and 18 hours against an idle one. When adding a state, ask what event returns the agent *out* of it, and whether that event is bounded by something other than the model's own choice to act.
+
+**Scans snapshot the trigger before reading statuses.** `do_agent_scan()` reads the trigger mtime up front and acknowledges *that* value at the end. Reading it fresh at the end instead would mark a hook that fired mid-scan as seen while its status went unread, stranding the agent until its next hook. `prune_stale_files()` has the mirror-image guard: it keeps files written since the scan began, since an agent that spawned mid-scan is missing from the pane snapshot but is very much running.
+
+Hook wiring lives in `install.sh` (`status_hook_entry`). Editing it does **not** reach existing installs — the mappings are copied into `~/.claude/settings.json` at install time, so protocol changes require re-running `install.sh`.
 
 ## Tests
 
