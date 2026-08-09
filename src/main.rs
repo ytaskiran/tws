@@ -14,7 +14,7 @@ use core::persistence;
 use core::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "tws", about = "tmux workspace manager")]
+#[command(name = "tws", about = "tmux workspace manager", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
