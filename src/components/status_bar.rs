@@ -147,10 +147,22 @@ pub fn render(
             ),
         ],
         StatusContext::DirPicker => vec![
-            ("Tab".to_string(), "enter dir"),
-            ("Enter".to_string(), "select"),
-            ("^x".to_string(), "clear"),
-            ("Esc".to_string(), "cancel"),
+            (
+                keymap.key_hint(KeyMode::DirPicker, Action::Complete),
+                "enter dir",
+            ),
+            (
+                keymap.key_hint(KeyMode::DirPicker, Action::Confirm),
+                "select",
+            ),
+            (
+                keymap.key_hint(KeyMode::DirPicker, Action::ClearDirectory),
+                "clear",
+            ),
+            (
+                keymap.key_hint(KeyMode::DirPicker, Action::Cancel),
+                "cancel",
+            ),
         ],
         StatusContext::ThreadPicker => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm), "move"),
