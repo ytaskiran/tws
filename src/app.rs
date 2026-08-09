@@ -1789,8 +1789,8 @@ impl App {
             .collect();
         crate::core::status::prune_stale_files(&crate::core::status::agents_dir(), &live_panes);
 
-        // Prune first so no expiry write lands on a file about to be deleted, and
-        // both before the load so a flip shows this frame rather than the next.
+        // After prune so no write lands on a doomed file, before the load so a
+        // flip shows this frame.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

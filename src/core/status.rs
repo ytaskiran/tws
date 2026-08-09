@@ -111,17 +111,15 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     }
 }
 
-/// A `working` file whose heartbeat has not advanced in this long is no longer
-/// credible: `PreToolUse` refreshes mtime on every tool call, so real activity
-/// beats every few seconds.
+/// `PreToolUse` refreshes mtime on every tool call, so real activity beats every
+/// few seconds; silence this long means the turn ended without a hook firing.
 pub const STALE_WORKING_SECS: i64 = 15 * 60;
 
 /// Downgrade `working` files whose heartbeat stopped to `idle`.
 ///
-/// Covers the turn-ends with no hook to fire — ESC interrupts, hard kills — that
-/// would otherwise pin a pane at `working` forever. `idle` rather than `review`
-/// because those panes finished nothing, so alerting on them is noise. Resting
-/// states are skipped: their mtime legitimately never advances.
+/// Backstop for turn-ends with no hook to fire — ESC interrupts, hard kills.
+/// `idle` rather than `review` because those panes finished nothing, so alerting
+/// on them is noise.
 pub fn expire_stale_working(dir: &Path, now: i64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -437,7 +435,6 @@ mod tests {
 
     #[test]
     fn resting_states_never_expire() {
-        // Only `working` claims ongoing activity, so only `working` can go stale.
         // Downgrading a long-resting `review` would swallow a real alert.
         let dir = stale_dir("resting");
         write_status_to(&dir, "%1", AgentStatus::Review).unwrap();
@@ -457,8 +454,7 @@ mod tests {
 
     #[test]
     fn expiry_is_idempotent() {
-        // The flip bumps mtime, so a second pass must see a non-working word
-        // and leave it alone rather than re-expiring forever.
+        // The flip bumps mtime, so a second pass must see a non-working word.
         let dir = stale_dir("idem");
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
@@ -483,8 +479,8 @@ mod tests {
 
     #[test]
     fn expires_against_a_real_backdated_mtime() {
-        // The other tests drive the clock through `now`. This one proves the
-        // mtime read path itself works, not just the arithmetic.
+        // The other tests drive the clock through `now`; this one exercises the
+        // mtime read path itself.
         use std::fs::{File, FileTimes};
         use std::time::{Duration, SystemTime};
 

@@ -150,14 +150,10 @@ configure_path() {
 # --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
-# Writes the word to ~/.config/tws/agents/$TMUX_PANE only when it changes, then
-# touches agent.trigger. With a third argument the unchanged case refreshes the
-# file's mtime instead of doing nothing, which tws reads as a liveness heartbeat
-# (see core::status::expire_stale_working). agent.trigger stays guarded either
-# way: ringing it per tool call would force a full tmux+ps rescan every few
-# seconds. The refresh is `touch -c` rather than a rewrite because `>` truncates
-# before writing, so a concurrent reader can see an empty file, and -c avoids
-# recreating a just-deleted file as an empty one.
+# A third argument makes the unchanged case refresh mtime, which tws reads as a
+# liveness heartbeat. agent.trigger stays guarded either way — ringing it per
+# tool call would force a full tmux+ps rescan. The refresh is `touch -c` because
+# `>` truncates before writing, exposing an empty file to concurrent readers.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
@@ -201,14 +197,11 @@ configure_claude_hooks() {
     local e_prompt e_pretool e_question e_notify e_stop e_compact e_fail e_end
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    # Only the working entry heartbeats: a pane parked on a question is meant to
-    # go quiet, and that entry writes waiting anyway.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
-    # Compaction and API errors end a turn without firing Stop, which otherwise
-    # leaves the pane pinned at working until stale expiry catches it.
+    # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
     e_fail=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
@@ -372,8 +365,7 @@ function readWord(path: string): string | undefined {
   }
 }
 
-// Only writes on a real change, so TRIGGER stays quiet during a run — tws does a
-// full tmux+ps rescan every time it is rung.
+// TRIGGER stays quiet during a run: tws does a full tmux+ps rescan when rung.
 function writeWord(path: string, word: string) {
   if (readWord(path) === word) return;
   mkdirSync(AGENTS_DIR, { recursive: true });
@@ -381,9 +373,8 @@ function writeWord(path: string, word: string) {
   writeFileSync(TRIGGER, "");
 }
 
-// Heartbeat: refresh mtime without rewriting, which tws reads as proof of life
-// (see core::status::expire_stale_working). Never creates the file; a missing one
-// is restored by the next writeWord.
+// Refreshing mtime is how a pane proves liveness to tws. Never creates the file;
+// a missing one is restored by the next writeWord.
 function beat(path: string) {
   const now = new Date();
   try {
@@ -433,10 +424,9 @@ configure_agent_hooks() {
     configure_codex_hooks
     configure_pi_hooks
 
-    # Agents snapshot their hook config at session start, so panes running during
-    # this upgrade keep the old config — and any file already stuck at `working`
-    # would outlive it. Clearing once makes the upgrade clean; live panes rewrite
-    # their file on the next hook fire.
+    # Agents snapshot hook config at session start, so a file already stuck at
+    # `working` would outlive this upgrade. Live panes rewrite theirs on the next
+    # hook fire.
     if [ "$hooks_configured" -eq 1 ]; then
         rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
