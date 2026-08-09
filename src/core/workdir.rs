@@ -110,9 +110,6 @@ impl DirPicker {
             .filter(|(_, name)| q.is_empty() || name.to_lowercase().contains(&q))
             .map(|(i, _)| i)
             .collect();
-        if self.cursor >= self.filtered.len() {
-            self.cursor = self.filtered.len().saturating_sub(1);
-        }
     }
 
     /// Descends into the highlighted entry. The query is cleared by `reload`,
@@ -293,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_clamps_when_filter_shrinks_results() {
+    fn push_char_resets_cursor_to_top() {
         let root = fixture(&["aa", "ab", "ac"], &[]);
         let mut picker = DirPicker::open(root.clone());
         picker.move_down();
