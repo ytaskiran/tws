@@ -261,6 +261,9 @@ mod tests {
         }
     }
 
+    // These tests pass session_count = 0 with nonzero agent counts, an unreachable
+    // state in production. They verify that the session_count == 0 path appends
+    // "tws " after agent spans rather than replacing them.
     #[test]
     fn review_and_waiting_agents_merge_into_one_count() {
         let spans = right_group(&counts(0, 1, 2), 0, &theme());
@@ -275,8 +278,8 @@ mod tests {
 
     #[test]
     fn all_three_counts_render_with_a_divider() {
-        let text = text_of(&right_group(&counts(4, 0, 2), 6, &theme()));
-        assert_eq!(text, "◐ 2 ● 4  │  6 sessions ");
+        let text = text_of(&right_group(&counts(4, 1, 2), 6, &theme()));
+        assert_eq!(text, "◐ 3 ● 4  │  6 sessions ");
     }
 
     #[test]
@@ -306,17 +309,10 @@ mod tests {
 
     #[test]
     fn tail_falls_back_to_the_app_name() {
-        let spans = right_group(&counts(0, 0, 0), 0, &theme());
-        assert_eq!(text_of(&spans), "tws ");
-    }
-
-    #[test]
-    fn zero_sessions_never_shows_a_count_or_a_divider() {
         // Agents run inside sessions, so zero sessions implies zero agents.
         // The fallback must never collide with an agent count.
-        let text = text_of(&right_group(&counts(0, 0, 0), 0, &theme()));
-        assert!(!text.contains('│'));
-        assert!(!text.chars().any(|c| c.is_ascii_digit()));
+        let spans = right_group(&counts(0, 0, 0), 0, &theme());
+        assert_eq!(text_of(&spans), "tws ");
     }
 
     #[test]
