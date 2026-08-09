@@ -149,16 +149,27 @@ configure_path() {
 # --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
-# Writes the word to ~/.config/tws/agents/$TMUX_PANE only when it changes
-# (keeps the file mtime = state-entry time), then touches agent.trigger.
+# Writes the word to ~/.config/tws/agents/$TMUX_PANE only when it changes, then
+# touches agent.trigger. With a third argument the unchanged case refreshes the
+# file's mtime instead of doing nothing, which tws reads as a liveness heartbeat
+# (see core::status::expire_stale_working). agent.trigger stays guarded either
+# way: ringing it per tool call would force a full tmux+ps rescan every few
+# seconds. The refresh is `touch -c` rather than a rewrite because `>` truncates
+# before writing, so a concurrent reader can see an empty file, and -c avoids
+# recreating a just-deleted file as an empty one.
 status_hook_entry() {
     local word="$1"
-    local matcher="$2"   # "" for match-all
+    local matcher="$2"      # "" for match-all
+    local heartbeat="${3:-}"
     local cmd
     cmd='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
-    cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
+    if [ -n "$heartbeat" ]; then
+        cmd+="if [ \"\$cur\" != $word ]; then printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; else touch -c \"\$f\"; fi; :"
+    else
+        cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
+    fi
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -189,7 +200,9 @@ configure_claude_hooks() {
     local e_prompt e_pretool e_question e_notify e_stop e_end
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*")
+    # Only the working entry heartbeats: a pane parked on a question is meant to
+    # go quiet, and that entry writes waiting anyway.
+    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
@@ -267,14 +280,15 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_wait e_review e_end
+    local e_work e_pretool e_wait e_review e_end
     e_work=$(status_hook_entry working "")
+    e_pretool=$(status_hook_entry working "" heartbeat)
     e_wait=$(status_hook_entry waiting "")
     e_review=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
-        --argjson work "$e_work" --argjson wait "$e_wait" \
+        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson end "$e_end" '
         # A tws hook entry is identified by the config/tws/agents marker in its command.
         def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
@@ -284,7 +298,7 @@ configure_codex_hooks() {
         .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
-        .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $work) |
+        .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
