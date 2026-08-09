@@ -42,12 +42,25 @@ fn right_group(counts: &StatusCounts, session_count: usize, theme: &Theme) -> Ve
             theme.status_working,
         ));
     }
-    let tail = if session_count > 0 {
-        format!("{} active ", session_count)
+    if session_count == 0 {
+        spans.push(Span::styled("tws ", theme.statusbar_desc));
+        return spans;
+    }
+    // The agent counts and the session count measure different things. Set
+    // side by side they read as a single "N of M" phrase, so they need a rule
+    // between them — but only when there is an agent count to separate from.
+    if !spans.is_empty() {
+        spans.push(Span::styled(" │  ", theme.separator));
+    }
+    let noun = if session_count == 1 {
+        "session"
     } else {
-        "tws ".to_string()
+        "sessions"
     };
-    spans.push(Span::styled(tail, theme.statusbar_desc));
+    spans.push(Span::styled(
+        format!("{} {} ", session_count, noun),
+        theme.statusbar_desc,
+    ));
     spans
 }
 
@@ -261,14 +274,59 @@ mod tests {
     }
 
     #[test]
-    fn tail_shows_the_session_count() {
-        let spans = right_group(&counts(0, 0, 0), 6, &theme());
-        assert_eq!(text_of(&spans), "6 active ");
+    fn all_three_counts_render_with_a_divider() {
+        let text = text_of(&right_group(&counts(4, 0, 2), 6, &theme()));
+        assert_eq!(text, "◐ 2 ● 4  │  6 sessions ");
+    }
+
+    #[test]
+    fn divider_appears_with_only_working_agents() {
+        let text = text_of(&right_group(&counts(4, 0, 0), 6, &theme()));
+        assert_eq!(text, "● 4  │  6 sessions ");
+    }
+
+    #[test]
+    fn divider_appears_with_only_review_agents() {
+        let text = text_of(&right_group(&counts(0, 0, 2), 6, &theme()));
+        assert_eq!(text, "◐ 2  │  6 sessions ");
+    }
+
+    #[test]
+    fn no_agents_means_no_divider() {
+        let text = text_of(&right_group(&counts(0, 0, 0), 6, &theme()));
+        assert_eq!(text, "6 sessions ");
+        assert!(!text.contains('│'));
+    }
+
+    #[test]
+    fn one_session_is_singular() {
+        let text = text_of(&right_group(&counts(0, 0, 0), 1, &theme()));
+        assert_eq!(text, "1 session ");
     }
 
     #[test]
     fn tail_falls_back_to_the_app_name() {
         let spans = right_group(&counts(0, 0, 0), 0, &theme());
         assert_eq!(text_of(&spans), "tws ");
+    }
+
+    #[test]
+    fn zero_sessions_never_shows_a_count_or_a_divider() {
+        // Agents run inside sessions, so zero sessions implies zero agents.
+        // The fallback must never collide with an agent count.
+        let text = text_of(&right_group(&counts(0, 0, 0), 0, &theme()));
+        assert!(!text.contains('│'));
+        assert!(!text.chars().any(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn divider_uses_the_separator_style() {
+        let t = theme();
+        let spans = right_group(&counts(4, 0, 0), 6, &t);
+        let divider = spans
+            .iter()
+            .find(|s| s.content.contains('│'))
+            .expect("a divider span");
+        assert_eq!(divider.style, t.separator);
     }
 }
