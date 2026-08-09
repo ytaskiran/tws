@@ -23,6 +23,19 @@ The main view. The thread/session tree on the left, a notes panel on the right. 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
 
 
+### Thread working directories
+
+A thread can have a default working directory. Sessions launched from it start
+there; threads without one start in your home directory.
+
+Press `c` on a thread to open the directory picker. Type to filter, `Tab` to
+enter a directory, `Backspace` to go back up, `Enter` to select, `Ctrl+x` to
+clear it, `Esc` to cancel. New threads prompt for a directory right after you
+name them.
+
+If a thread's directory is deleted, sessions still launch — they start in your
+home directory with a warning in the status bar.
+
 ### Agents view
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
@@ -120,6 +133,7 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `r` | Rename selected item |
 | `d` | Delete selected thread |
 | `m` | Move a session to another thread |
+| `c` | Set the selected thread's working directory |
 
 ### Sessions
 
@@ -179,9 +193,13 @@ toggle_view = "v"
 [keys.notes]
 scroll_down = "j"
 scroll_up   = "k"
+
+[keys.dir_picker]
+complete        = "tab"
+clear_directory = "ctrl+x"
 ```
 
-**Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`.
+**Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`, `dir_picker`.
 
 **Key syntax:** single chars (`"q"`, `"A"`), modifier prefixes (`"ctrl+j"`, `"alt+x"`), named keys (`"enter"`, `"esc"`, `"space"`, `"tab"`, `"backspace"`, `"up"`, `"down"`, `"left"`, `"right"`).
 
