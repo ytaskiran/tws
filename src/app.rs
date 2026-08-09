@@ -407,7 +407,16 @@ impl App {
                 );
             } else {
                 let block = Block::default();
-                let items = tree_view::build_tree_items(&self.state, &self.theme);
+                let selected_thread = match selected_item {
+                    SelectedItem::Thread(c, t) => self
+                        .state
+                        .collections
+                        .get(c)
+                        .and_then(|col| col.threads.get(t))
+                        .map(|thread| thread.id),
+                    _ => None,
+                };
+                let items = tree_view::build_tree_items(&self.state, &self.theme, selected_thread);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
