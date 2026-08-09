@@ -150,24 +150,40 @@ configure_path() {
 # --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
-# A third argument makes the unchanged case refresh mtime, which tws reads as a
-# liveness heartbeat. agent.trigger stays guarded either way — ringing it per
-# tool call would force a full tmux+ps rescan. The refresh is `touch -c` because
-# `>` truncates before writing, exposing an empty file to concurrent readers.
+# agent.trigger stays guarded in every mode — ringing it per tool call would
+# force a full tmux+ps rescan. The mtime refresh is `touch -c` because `>`
+# truncates before writing, exposing an empty file to concurrent readers.
+#
+# Modes:
+#   set    unconditional — the event names the new state outright.
+#   live   liveness only — refresh `working`, or claim an empty file. A pane in a
+#          resting state stays there. Background subagents share the pane with the
+#          main loop and fire the same tool hooks, so without this guard their
+#          tool calls repaint a finished or question-blocked pane as `working`.
+#   alert  raise `waiting`, but only over `working` or an empty file. Leaving
+#          `review` alone keeps attach-time acknowledgment working.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
-    local heartbeat="${3:-}"
-    local cmd
+    local mode="${3:-set}"
+    local cmd trig
+    trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
-    if [ -n "$heartbeat" ]; then
-        cmd+="if [ \"\$cur\" != $word ]; then printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; else touch -c \"\$f\"; fi; :"
-    else
-        cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
-    fi
+    case "$mode" in
+        live)
+            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            ;;
+        alert)
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            ;;
+        *)
+            cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; $trig; }; :"
+            ;;
+    esac
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -206,14 +222,20 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_stop e_compact e_fail e_end
+    # Submitting a prompt is the only event that starts a turn, so it is the only
+    # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
+    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" live)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
-    # The "turn resumed" signal. Without it, leaving `waiting` waits for the
-    # model to reach its next tool call — unbounded. See AGENTS.md.
-    e_posttool=$(status_hook_entry working "")
-    e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
+    # The "turn resumed" signal, scoped to the question it answers. A match-all
+    # PostToolUse would hand every background subagent the same power, and its
+    # tool calls would repaint the pane the moment `Stop` set `review`.
+    e_posttool=$(status_hook_entry working "^AskUserQuestion$")
+    # `idle_prompt` is the real event name — Claude sends it 60s after the main
+    # loop goes quiet. It is also the backstop that heals a pane no other hook
+    # reached. `agent_needs_input`, the name used before, never existed.
+    e_notify=$(status_hook_entry waiting "permission_prompt|idle_prompt" alert)
     e_stop=$(status_hook_entry review "")
     # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
@@ -301,8 +323,8 @@ configure_codex_hooks() {
     tmp="$(mktemp)"
     local e_work e_pretool e_wait e_review e_compact e_end
     e_work=$(status_hook_entry working "")
-    e_pretool=$(status_hook_entry working "" heartbeat)
-    e_wait=$(status_hook_entry waiting "")
+    e_pretool=$(status_hook_entry working "" live)
+    e_wait=$(status_hook_entry waiting "" alert)
     e_review=$(status_hook_entry review "")
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto")
@@ -406,8 +428,11 @@ export default function (pi: any) {
   pi.on("tool_execution_start", async () => {
     const path = panePath();
     if (!path) return;
-    if (readWord(path) === "working") beat(path);
-    else writeWord(path, "working");
+    const cur = readWord(path);
+    // A tool call proves liveness, it does not start a turn. A pane resting in
+    // review or waiting stays there; only an empty file is claimed.
+    if (cur === "working") beat(path);
+    else if (cur === undefined) writeWord(path, "working");
   });
   // Compaction can end a turn without agent_settled firing.
   pi.on("session_compact", async () => {
@@ -501,7 +526,4 @@ main() {
     echo ""
 }
 
-# Guarded so tests can source the functions without installing anything.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    main
-fi
+main
