@@ -30,6 +30,20 @@ Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) r
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 24 23" src="https://github.com/user-attachments/assets/d4f09aca-03d9-49df-b391-bcdc6c06fd7e" />
 
 
+### Session fork (experimental)
+
+Press `prefix+F` in a Claude Code pane to open a **forked** copy of that session
+in a tmux popup. The fork inherits the whole conversation but writes to a new
+session id, so the parent transcript is untouched — ask a throwaway question,
+close the popup, and nothing is left behind.
+
+Requires the tws agent hooks (installed by `install.sh`) and the binding:
+
+    bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"
+
+Claude Code only. `codex resume` appends to the parent session rather than
+forking it, so Codex and Pi panes report that forking is unsupported.
+
 ### Notes
 
 Each thread and session has its own markdown note, stored as a plain `.md` file under `~/.config/tws/notes/`. Press `Tab` to focus the notes panel, `Enter` to open the current note in `$EDITOR`. Renders with [glow](https://github.com/charmbracelet/glow) if installed, falls back to basic markdown otherwise. Handy for per-workstream scratch notes, todo lists, and command snippets.

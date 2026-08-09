@@ -411,6 +411,47 @@ configure_agent_hooks() {
     configure_pi_hooks
 }
 
+# --- 5. Optional: tmux fork binding (experimental) ---
+
+FORK_BINDING='bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"'
+FORK_MARKER='# tws fork binding'
+
+configure_fork_binding() {
+    local conf="$HOME/.tmux.conf"
+
+    if [ ! -f "$conf" ]; then
+        info "No ~/.tmux.conf — skipping fork binding"
+        return
+    fi
+
+    printf '%s' "Add tws fork binding (prefix+F) to ~/.tmux.conf? [EXPERIMENTAL] [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped fork binding — add it manually with:"
+        printf '  %s\n' "$FORK_BINDING"
+        return
+    fi
+
+    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-T prefix[[:space:]]+)?F[[:space:]]' \
+        && ! grep -qF "$FORK_MARKER" "$conf"; then
+        warn "prefix+F is already bound to something else — not overwriting"
+        info "Add this manually under a different key if you want it:"
+        printf '  %s\n' "$FORK_BINDING"
+        return
+    fi
+
+    # Idempotent: drop any previously marked block before re-adding.
+    if grep -qF "$FORK_MARKER" "$conf"; then
+        local tmp
+        tmp="$(mktemp)"
+        grep -vF -e "$FORK_MARKER" -e "tws fork-pane" "$conf" > "$tmp" && mv "$tmp" "$conf"
+    fi
+
+    printf '\n%s\n%s\n' "$FORK_MARKER" "$FORK_BINDING" >> "$conf"
+    ok "Added fork binding (prefix+F) — EXPERIMENTAL"
+    info "Run: tmux source-file ~/.tmux.conf"
+}
+
 # --- 6. Optional: glow (rich markdown rendering) ---
 
 configure_glow() {
@@ -454,6 +495,7 @@ main() {
 
     install_binary "$target"
     configure_agent_hooks
+    configure_fork_binding
     configure_glow
 
     echo ""
