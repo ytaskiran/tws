@@ -159,7 +159,10 @@ status_hook_entry() {
     local matcher="$2"      # "" for match-all
     local heartbeat="${3:-}"
     local cmd
-    cmd='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
+    # A fork's own hooks resolve to the PARENT pane (tmux popups report the
+    # originating pane, not the popup), so a fork must not write any status.
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     if [ -n "$heartbeat" ]; then
@@ -169,6 +172,35 @@ status_hook_entry() {
     fi
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+# Emits the SessionStart hook entry that records <session_id>\t<cwd> for the pane,
+# so `tws fork-pane` can fork that session. Skipped when TWS_FORK is set, which is
+# how a fork avoids overwriting its parent's pointer.
+session_hook_entry() {
+    local cmd
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='input=$(cat); '
+    cmd+='id=$(printf "%s" "$input" | jq -r ".session_id // empty"); '
+    cmd+='[ -z "$id" ] && exit 0; '
+    cmd+='cwd=$(printf "%s" "$input" | jq -r ".cwd // empty"); '
+    cmd+='[ -z "$cwd" ] && cwd=$PWD; '
+    cmd+='p=${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}; '
+    cmd+='[ -z "$p" ] && exit 0; '
+    cmd+='mkdir -p "$HOME/.config/tws/sessions"; '
+    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$p"; :'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+session_end_entry() {
+    local cmd
+    # Guard for the same reason as session_hook_entry: without it, a fork's
+    # SessionEnd hook deletes the PARENT pane's session pointer.
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='rm -f "$HOME/.config/tws/sessions/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; :'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
 configure_claude_hooks() {
@@ -207,7 +239,10 @@ configure_claude_hooks() {
     # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
     e_fail=$(status_hook_entry review "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    local e_sessionstart e_sessionrm
+    e_sessionstart=$(session_hook_entry)
+    e_sessionrm=$(session_end_entry)
 
     jq \
         --argjson prompt "$e_prompt" \
@@ -218,9 +253,11 @@ configure_claude_hooks() {
         --argjson stop "$e_stop" \
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
-        --argjson end "$e_end" '
-        # A tws hook entry is identified by the config/tws/agents marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
+        --argjson end "$e_end" \
+        --argjson sessionstart "$e_sessionstart" \
+        --argjson sessionrm "$e_sessionrm" '
+        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
@@ -231,9 +268,10 @@ configure_claude_hooks() {
         .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $sessionstart) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end) |
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $sessionrm) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
@@ -295,13 +333,13 @@ configure_codex_hooks() {
     e_review=$(status_hook_entry review "")
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" '
-        # A tws hook entry is identified by the config/tws/agents marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
+        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
@@ -442,6 +480,87 @@ configure_agent_hooks() {
     fi
 }
 
+# --- 5. Optional: tmux fork binding (experimental) ---
+
+FORK_BINDING='bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"'
+FORK_MARKER='# tws fork binding'
+# Matches a bind or bind-key line that targets the plain key F, with any
+# number of leading flags (e.g. "bind F ...", "bind-key -r F ...",
+# "bind-key -r -T prefix F ..."). Anchored at the start of the line (after
+# optional leading whitespace), so a commented-out line never matches.
+FORK_KEY_PATTERN='^[[:space:]]*bind(-key)?[[:space:]]+(-[[:alnum:]]+[[:space:]]+|-T[[:space:]]+[^[:space:]]+[[:space:]]+)*F([[:space:]]|$)'
+# A bind with -n, or with -T root, targets the ROOT key table, not the
+# prefix table, so it can never collide with prefix+F. Lines that match
+# FORK_KEY_PATTERN but also match this are excluded from the conflict check.
+FORK_ROOT_TABLE_PATTERN='(^|[[:space:]])-n([[:space:]]|$)|-T[[:space:]]+root([[:space:]]|$)'
+
+configure_fork_binding() {
+    local conf="$HOME/.tmux.conf"
+
+    if [ ! -f "$conf" ]; then
+        info "No ~/.tmux.conf — skipping fork binding"
+        return
+    fi
+
+    # hooks_configured turns 1 when any agent's hooks install succeeds, but the
+    # SessionStart hook that prefix+F needs comes only from configure_claude_hooks.
+    # We accept that looseness here: it matches how the rest of the installer
+    # already reads this shared flag, and a false positive just offers a binding
+    # that finds no session to fork, which is harmless.
+    if [ "$hooks_configured" -ne 1 ]; then
+        info "Claude Code agent hooks are not configured — prefix+F needs them to find a session to fork"
+        info "Skipping fork binding. Re-run install and accept the Claude Code hooks step, then add it manually with:"
+        printf '  %s\n' "$FORK_BINDING"
+        return
+    fi
+
+    printf '%s' "Add tws fork binding (prefix+F) to ~/.tmux.conf? [EXPERIMENTAL] [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped fork binding — add it manually with:"
+        printf '  %s\n' "$FORK_BINDING"
+        return
+    fi
+
+    # A conflict can come from the live tmux server (already-loaded config)
+    # or from the file text itself (added by hand but not yet sourced).
+    # Either source counts. Our own previously written marker+binding lines
+    # are excluded from the file check, so re-runs stay idempotent.
+    local live_conflict=0 file_conflict=0
+    # `list-keys -T prefix` only ever lists prefix-table bindings, so a -n /
+    # -T root exclusion isn't needed here — those never show up in this table.
+    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)'; then
+        live_conflict=1
+    fi
+    if grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" \
+        | grep -vE "$FORK_ROOT_TABLE_PATTERN" \
+        | grep -qE "$FORK_KEY_PATTERN"; then
+        file_conflict=1
+    fi
+
+    if { [ "$live_conflict" -eq 1 ] || [ "$file_conflict" -eq 1 ]; } \
+        && ! grep -qF "$FORK_MARKER" "$conf"; then
+        warn "prefix+F is already bound to something else — not overwriting"
+        info "Add this manually under a different key if you want it:"
+        printf '  %s\n' "$FORK_BINDING"
+        return
+    fi
+
+    # Idempotent: drop any previously marked block before re-adding.
+    if grep -qF "$FORK_MARKER" "$conf"; then
+        local tmp
+        tmp="$(mktemp)"
+        # grep exits 1 (no error) when the filter matches nothing, which
+        # would abort the script under set -o pipefail if chained with &&.
+        grep -vF -e "$FORK_MARKER" -e "tws fork-pane" "$conf" > "$tmp" || true
+        mv "$tmp" "$conf"
+    fi
+
+    printf '\n%s\n%s\n' "$FORK_MARKER" "$FORK_BINDING" >> "$conf"
+    ok "Added fork binding (prefix+F) — EXPERIMENTAL"
+    info "Run: tmux source-file ~/.tmux.conf"
+}
+
 # --- 6. Optional: glow (rich markdown rendering) ---
 
 configure_glow() {
@@ -485,6 +604,7 @@ main() {
 
     install_binary "$target"
     configure_agent_hooks
+    configure_fork_binding
     configure_glow
 
     echo ""
