@@ -111,6 +111,41 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>) {
     }
 }
 
+/// `PreToolUse` refreshes mtime on every tool call, so real activity beats every
+/// few seconds; silence this long means the turn ended without a hook firing.
+pub const STALE_WORKING_SECS: i64 = 15 * 60;
+
+/// Downgrade `working` files whose heartbeat stopped to `idle`.
+///
+/// Backstop for turn-ends with no hook to fire — ESC interrupts, hard kills.
+/// `idle` rather than `review` because those panes finished nothing, so alerting
+/// on them is noise.
+pub fn expire_stale_working(dir: &Path, now: i64) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if parse_status(&contents) != AgentStatus::Working {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if now - mtime > STALE_WORKING_SECS {
+            std::fs::write(&path, status_word(AgentStatus::Idle)).ok();
+        }
+    }
+}
+
 /// Convert a status to its on-disk representation; `Unknown` maps to `idle`.
 pub fn status_word(status: AgentStatus) -> &'static str {
     match status {
@@ -355,6 +390,118 @@ mod tests {
         assert_eq!(map.get("%53").unwrap().0, AgentStatus::Idle);
         assert_eq!(map.get("%52").unwrap().0, AgentStatus::Review);
         assert_eq!(map.get("%61").unwrap().0, AgentStatus::Review);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn stale_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tws-test-{}-{}", tag, std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn expires_working_past_the_threshold() {
+        let dir = stale_dir("expire");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+
+        let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
+        expire_stale_working(&dir, now);
+
+        assert_eq!(
+            load_statuses_from(&dir).get("%1").unwrap().0,
+            AgentStatus::Idle
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn keeps_working_inside_the_threshold() {
+        let dir = stale_dir("fresh");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+
+        let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS - 1;
+        expire_stale_working(&dir, now);
+
+        assert_eq!(
+            load_statuses_from(&dir).get("%1").unwrap().0,
+            AgentStatus::Working
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resting_states_never_expire() {
+        // Downgrading a long-resting `review` would swallow a real alert.
+        let dir = stale_dir("resting");
+        write_status_to(&dir, "%1", AgentStatus::Review).unwrap();
+        write_status_to(&dir, "%2", AgentStatus::Waiting).unwrap();
+        write_status_to(&dir, "%3", AgentStatus::Idle).unwrap();
+
+        let base = load_statuses_from(&dir).get("%1").unwrap().1;
+        expire_stale_working(&dir, base + STALE_WORKING_SECS * 100);
+
+        let map = load_statuses_from(&dir);
+        assert_eq!(map.get("%1").unwrap().0, AgentStatus::Review);
+        assert_eq!(map.get("%2").unwrap().0, AgentStatus::Waiting);
+        assert_eq!(map.get("%3").unwrap().0, AgentStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expiry_is_idempotent() {
+        // The flip bumps mtime, so a second pass must see a non-working word.
+        let dir = stale_dir("idem");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+
+        let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
+        expire_stale_working(&dir, now);
+        let after_first = load_statuses_from(&dir).get("%1").copied().unwrap();
+        expire_stale_working(&dir, now);
+        let after_second = load_statuses_from(&dir).get("%1").copied().unwrap();
+
+        assert_eq!(after_first.0, AgentStatus::Idle);
+        assert_eq!(after_second, after_first);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expire_on_missing_dir_is_a_noop() {
+        let dir = std::env::temp_dir().join(format!("tws-test-noexist-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        expire_stale_working(&dir, 1_000_000);
+    }
+
+    #[test]
+    fn expires_against_a_real_backdated_mtime() {
+        // The other tests drive the clock through `now`; this one exercises the
+        // mtime read path itself.
+        use std::fs::{File, FileTimes};
+        use std::time::{Duration, SystemTime};
+
+        let dir = stale_dir("backdate");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+
+        let old = SystemTime::now() - Duration::from_secs(STALE_WORKING_SECS as u64 + 60);
+        let f = File::options().write(true).open(dir.join("%1")).unwrap();
+        f.set_times(FileTimes::new().set_modified(old)).unwrap();
+        drop(f);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        expire_stale_working(&dir, now);
+
+        assert_eq!(
+            load_statuses_from(&dir).get("%1").unwrap().0,
+            AgentStatus::Idle
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1777,6 +1777,26 @@ impl App {
             }
         }
 
+        // Race: a just-spawned agent that writes its status file after this scan's
+        // pane snapshot but before prune runs can have that fresh file deleted,
+        // showing Unknown until its next status change re-writes the file. This
+        // self-heals on the next trigger-driven rescan, so it's left as-is.
+        let live_panes: std::collections::HashSet<String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| a.pane_id.clone())
+            .collect();
+        crate::core::status::prune_stale_files(&crate::core::status::agents_dir(), &live_panes);
+
+        // After prune so no write lands on a doomed file, before the load so a
+        // flip shows this frame.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        crate::core::status::expire_stale_working(&crate::core::status::agents_dir(), now);
+
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
 
@@ -1793,18 +1813,6 @@ impl App {
                 }
             }
         }
-
-        // Race: a just-spawned agent that writes its status file after this scan's
-        // pane snapshot but before prune runs can have that fresh file deleted,
-        // showing Unknown until its next status change re-writes the file. This
-        // self-heals on the next trigger-driven rescan, so it's left as-is.
-        let live_panes: std::collections::HashSet<String> = self
-            .state
-            .agent_sessions
-            .iter()
-            .map(|a| a.pane_id.clone())
-            .collect();
-        crate::core::status::prune_stale_files(&crate::core::status::agents_dir(), &live_panes);
 
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
