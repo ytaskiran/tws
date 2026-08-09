@@ -197,7 +197,7 @@ configure_claude_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_prompt e_pretool e_question e_notify e_stop e_end
+    local e_prompt e_pretool e_question e_notify e_stop e_compact e_fail e_end
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     # Only the working entry heartbeats: a pane parked on a question is meant to
@@ -206,6 +206,10 @@ configure_claude_hooks() {
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
+    # Compaction and API errors end a turn without firing Stop, which otherwise
+    # leaves the pane pinned at working until stale expiry catches it.
+    e_compact=$(status_hook_entry review "manual|auto")
+    e_fail=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
@@ -214,6 +218,8 @@ configure_claude_hooks() {
         --argjson question "$e_question" \
         --argjson notify "$e_notify" \
         --argjson stop "$e_stop" \
+        --argjson compact "$e_compact" \
+        --argjson fail "$e_fail" \
         --argjson end "$e_end" '
         # A tws hook entry is identified by the config/tws/agents marker in its command.
         def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
@@ -226,6 +232,8 @@ configure_claude_hooks() {
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
+        .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
+        .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
@@ -280,16 +288,18 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_end
+    local e_work e_pretool e_wait e_review e_compact e_end
     e_work=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "" heartbeat)
     e_wait=$(status_hook_entry waiting "")
     e_review=$(status_hook_entry review "")
+    # Codex has no API-error event, so stale expiry is the only backstop there.
+    e_compact=$(status_hook_entry review "manual|auto")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson end "$e_end" '
+        --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" '
         # A tws hook entry is identified by the config/tws/agents marker in its command.
         def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
         .hooks //= {} |
@@ -301,6 +311,7 @@ configure_codex_hooks() {
         .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
+        .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
