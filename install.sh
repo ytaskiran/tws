@@ -194,11 +194,14 @@ configure_claude_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_prompt e_pretool e_question e_notify e_stop e_compact e_fail e_end
+    local e_prompt e_pretool e_question e_posttool e_notify e_stop e_compact e_fail e_end
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
+    # The "turn resumed" signal. Without it, leaving `waiting` waits for the
+    # model to reach its next tool call — unbounded. See AGENTS.md.
+    e_posttool=$(status_hook_entry working "")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
     # Compaction and API errors end a turn without firing Stop.
@@ -210,6 +213,7 @@ configure_claude_hooks() {
         --argjson prompt "$e_prompt" \
         --argjson pretool "$e_pretool" \
         --argjson question "$e_question" \
+        --argjson posttool "$e_posttool" \
         --argjson notify "$e_notify" \
         --argjson stop "$e_stop" \
         --argjson compact "$e_compact" \
@@ -224,6 +228,7 @@ configure_claude_hooks() {
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
+        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
@@ -304,6 +309,8 @@ configure_codex_hooks() {
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
         .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
+        # PermissionRequest enters waiting; this is its only bounded exit.
+        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $work) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
