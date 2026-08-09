@@ -1806,7 +1806,14 @@ impl App {
         let (dir, missing) = workdir::resolve_launch_dir(configured.as_deref());
         tmux::new_session(session_name, Some(&dir))?;
         if missing {
-            self.set_flash("Directory no longer exists — started in ~");
+            // Inside tmux the app exits via switch-client before another frame is
+            // drawn, so a flash would never be painted; the tmux status line is the
+            // only surface the user still sees.
+            if tmux::is_inside_tmux() {
+                let _ = tmux::display_message("tws: thread directory is missing — started in ~");
+            } else {
+                self.set_flash("Directory no longer exists — started in ~");
+            }
         } else {
             self.set_flash("Session launched");
         }

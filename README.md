@@ -34,7 +34,8 @@ clear it, `Esc` to cancel. New threads prompt for a directory right after you
 name them.
 
 If a thread's directory is deleted, sessions still launch — they start in your
-home directory with a warning in the status bar.
+home directory with a warning in the status bar (tmux's status line, if tws
+is running inside tmux).
 
 ### Agents view
 

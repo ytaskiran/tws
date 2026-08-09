@@ -120,6 +120,16 @@ pub fn active_pane(session_name: &str) -> Option<String> {
     if pane.is_empty() { None } else { Some(pane) }
 }
 
+/// Shows a transient message in the attached client's status line. Used when
+/// tws is about to exit via switch-client, where its own status bar would
+/// never be painted.
+pub fn display_message(msg: &str) -> std::io::Result<bool> {
+    let output = Command::new("tmux")
+        .args(["display-message", msg])
+        .output()?;
+    Ok(output.status.success())
+}
+
 /// Captures visible pane content, preserving ANSI escape sequences.
 pub fn capture_pane(pane_id: &str) -> Option<String> {
     let output = Command::new("tmux")
