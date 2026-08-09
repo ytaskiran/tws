@@ -3,6 +3,7 @@
 #
 # Jobs run in parallel and are all required to pass:
 #   test   - cargo test (the full suite)
+#   hooks  - tests/install_hooks.sh (the agent status hooks install.sh writes)
 #   fmt    - cargo fmt --check (formatting)
 #   clippy - cargo clippy -D warnings (lints as errors)
 #   audit  - cargo audit (RustSec advisory / dependency vulnerability scan)
@@ -41,6 +42,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --all-targets --locked
+
+  hooks:
+    name: Agent status hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The hook commands in install.sh are shell, so cargo test cannot reach
+      # them. This runs each emitted command against a sandbox HOME.
+      - name: Run install.sh hook tests
+        run: bash tests/install_hooks.sh
 
   fmt:
     name: Rustfmt

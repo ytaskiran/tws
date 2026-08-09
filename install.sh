@@ -159,7 +159,8 @@ status_hook_entry() {
     local matcher="$2"      # "" for match-all
     local heartbeat="${3:-}"
     local cmd
-    cmd='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     if [ -n "$heartbeat" ]; then
@@ -169,6 +170,16 @@ status_hook_entry() {
     fi
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+# The end-of-session counterpart: drops this pane's status file.
+session_end_hook_entry() {
+    local cmd
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
+    cmd+='touch "$HOME/.config/tws/agent.trigger"'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
 configure_claude_hooks() {
@@ -207,7 +218,7 @@ configure_claude_hooks() {
     # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
     e_fail=$(status_hook_entry review "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end=$(session_end_hook_entry)
 
     jq \
         --argjson prompt "$e_prompt" \
@@ -295,7 +306,7 @@ configure_codex_hooks() {
     e_review=$(status_hook_entry review "")
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end=$(session_end_hook_entry)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
@@ -351,16 +362,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
-async function panePath(pi: any): Promise<string | undefined> {
-  let pane = process.env.TMUX_PANE;
-  if (!pane) {
-    try {
-      const result = await pi.exec("tmux", ["display-message", "-p", "#{pane_id}"]);
-      pane = result.stdout?.trim();
-    } catch {
-      return undefined;
-    }
-  }
+// Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
+// answers with the current client's active pane, so an agent outside a pane
+// would stamp its status onto whichever pane the user is watching.
+function panePath(): string | undefined {
+  const pane = process.env.TMUX_PANE;
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
 }
 
@@ -393,27 +399,27 @@ function beat(path: string) {
 
 export default function (pi: any) {
   pi.on("turn_start", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "working");
   });
   // Pi's only per-tool-call event, and so the only place a heartbeat can live.
   pi.on("tool_execution_start", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (!path) return;
     if (readWord(path) === "working") beat(path);
     else writeWord(path, "working");
   });
   // Compaction can end a turn without agent_settled firing.
   pi.on("session_compact", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "review");
   });
   pi.on("agent_settled", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "review");
   });
   pi.on("session_shutdown", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path && existsSync(path)) {
       rmSync(path, { force: true });
       writeFileSync(TRIGGER, "");
@@ -495,4 +501,7 @@ main() {
     echo ""
 }
 
-main
+# Guarded so tests can source the functions without installing anything.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main
+fi

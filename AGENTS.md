@@ -108,13 +108,17 @@ Two further properties keep this responsive, and both are easy to break:
 
 **Every state needs an exit event.** tws can only be as fresh as the hooks that fire. `working` is asserted by `UserPromptSubmit`, `PreToolUse` *and* `PostToolUse` (Claude and Codex alike); Pi's extension gets the same signal from `turn_start`. `PostToolUse` is the "turn resumed" event, and it is the one that is easy to forget. Without it, leaving `waiting` — a permission granted, an `AskUserQuestion` answered — waits on the model reaching its *next* tool call, which is unbounded: measured at 8s in a busy session and 18 hours against an idle one. When adding a state, ask what event returns the agent *out* of it, and whether that event is bounded by something other than the model's own choice to act.
 
+**`$TMUX_PANE` is the only pane identity, and a hook without one must stay silent.** The file name *is* the sender's identity, so a wrong name is an undetectable forged write. Never fall back to `tmux display-message -p "#{pane_id}"`: that answers for the current client's *active* pane, not the caller's, so an agent outside a pane stamps whichever pane the user is watching — and that pane, being idle, fires no hook of its own to correct it. Agents do run without `TMUX_PANE`: Claude Code's background sessions (`claude daemon run` → `bg-pty-host` → `bg-spare`) carry neither `TMUX` nor `TMUX_PANE`. tws tracks only agents inside panes, so a pane-less agent has nothing to report and must write nothing.
+
 **Scans snapshot the trigger before reading statuses.** `do_agent_scan()` reads the trigger mtime up front and acknowledges *that* value at the end. Reading it fresh at the end instead would mark a hook that fired mid-scan as seen while its status went unread, stranding the agent until its next hook. `prune_stale_files()` has the mirror-image guard: it keeps files written since the scan began, since an agent that spawned mid-scan is missing from the pane snapshot but is very much running.
 
-Hook wiring lives in `install.sh` (`status_hook_entry`). Editing it does **not** reach existing installs — the mappings are copied into `~/.claude/settings.json` at install time, so protocol changes require re-running `install.sh`.
+Hook wiring lives in `install.sh` (`status_hook_entry`, `session_end_hook_entry`). Editing it does **not** reach existing installs — the mappings are copied into `~/.claude/settings.json` at install time, so protocol changes require re-running `install.sh`.
 
 ## Tests
 
-All tests are in-file `#[cfg(test)]` modules, not in a separate `tests/` directory. Coverage focuses on model construction, persistence round-trips, CRUD operations, selection resolution, and agent scan parsing. tmux command wrappers are not unit-tested (side-effectful).
+All Rust tests are in-file `#[cfg(test)]` modules. Coverage focuses on model construction, persistence round-trips, CRUD operations, selection resolution, and agent scan parsing. tmux command wrappers are not unit-tested (side-effectful).
+
+The hook commands are shell, not Rust, so `cargo test` cannot reach them. `tests/install_hooks.sh` sources `install.sh` and runs each emitted command against a sandbox `HOME` and a fake `tmux`, then asserts which status file it touched. Run it with `bash tests/install_hooks.sh`; CI runs it as the `hooks` job. `install.sh` guards its `main` call so sourcing installs nothing.
 
 ## CLI
 
