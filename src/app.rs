@@ -11,8 +11,8 @@ use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{
-    agent_preview, agents_view, confirm_modal, finder_modal, input_modal, notes_sidebar,
-    recent_bar, tree_view,
+    agent_preview, agents_view, confirm_modal, dir_picker_modal, finder_modal, input_modal,
+    notes_sidebar, recent_bar, tree_view,
 };
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::core::markdown::MarkdownRenderer;
@@ -20,7 +20,7 @@ use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::core::status::AgentTrigger;
-use crate::core::workdir;
+use crate::core::workdir::{self, DirPicker};
 use crate::event;
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
@@ -135,6 +135,11 @@ enum Mode {
         state: FinderState,
         session_name: String,
         session_label: String,
+    },
+    DirPicker {
+        picker: DirPicker,
+        col_idx: usize,
+        thread_idx: usize,
     },
 }
 
@@ -261,6 +266,9 @@ impl App {
                     }
                     Mode::ThreadPicker { .. } => {
                         self.handle_thread_picker_key(key.code, key.modifiers)?
+                    }
+                    Mode::DirPicker { .. } => {
+                        self.handle_dir_picker_key(key.code, key.modifiers);
                     }
                 }
             }
@@ -563,6 +571,20 @@ impl App {
                         &self.theme,
                     );
                 }
+                Mode::DirPicker {
+                    picker,
+                    col_idx,
+                    thread_idx,
+                } => {
+                    let thread_name = self
+                        .state
+                        .collections
+                        .get(*col_idx)
+                        .and_then(|c| c.threads.get(*thread_idx))
+                        .map(|t| t.name.as_str())
+                        .unwrap_or("thread");
+                    dir_picker_modal::render(frame, picker, thread_name, area, &self.theme);
+                }
             }
         })?;
         Ok(())
@@ -574,6 +596,7 @@ impl App {
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
+            Mode::DirPicker { .. } => StatusContext::DirPicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents) {
                     if let Some(pending) = &self.pin_assign_pending {
@@ -722,6 +745,13 @@ impl App {
             Action::RecentSession4 => self.attach_recent(3, terminal)?,
             Action::RecentSession5 => self.attach_recent(4, terminal)?,
             Action::ExpandAll => self.toggle_expand_all(),
+            Action::SetDirectory => {
+                if let SelectedItem::Thread(col_idx, thread_idx) =
+                    self.state.resolve_selection(self.tree_state.selected())
+                {
+                    self.open_dir_picker(col_idx, thread_idx);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1139,6 +1169,27 @@ impl App {
         Ok(())
     }
 
+    /// Opens the picker on the selected thread. Starts at the thread's current
+    /// directory when it still exists, then the directory tws was launched
+    /// from, then home.
+    fn open_dir_picker(&mut self, col_idx: usize, thread_idx: usize) {
+        let start = self
+            .state
+            .collections
+            .get(col_idx)
+            .and_then(|c| c.threads.get(thread_idx))
+            .and_then(|t| t.working_dir.clone())
+            .filter(|d| d.is_dir())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(workdir::home_dir);
+
+        self.mode = Mode::DirPicker {
+            picker: DirPicker::open(start),
+            col_idx,
+            thread_idx,
+        };
+    }
+
     fn start_finder(&mut self) {
         let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_attached));
@@ -1154,6 +1205,72 @@ impl App {
         self.mode = Mode::Finder {
             state: FinderState::new(entries),
         };
+    }
+
+    fn handle_dir_picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let action = self.keymap.resolve(KeyMode::DirPicker, code, modifiers);
+
+        match action {
+            Some(Action::Cancel) => {
+                self.mode = Mode::Normal;
+            }
+            Some(Action::Confirm) => {
+                let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+                if let Mode::DirPicker {
+                    picker,
+                    col_idx,
+                    thread_idx,
+                } = old_mode
+                {
+                    let dir = picker.selection();
+                    let label = workdir::shorten_home(&dir);
+                    self.state
+                        .set_thread_working_dir(col_idx, thread_idx, Some(dir));
+                    self.save_state();
+                    self.set_flash(&format!("Directory set to {}", label));
+                }
+            }
+            Some(Action::ClearDirectory) => {
+                let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+                if let Mode::DirPicker {
+                    col_idx,
+                    thread_idx,
+                    ..
+                } = old_mode
+                {
+                    self.state.set_thread_working_dir(col_idx, thread_idx, None);
+                    self.save_state();
+                    self.set_flash("Directory cleared");
+                }
+            }
+            Some(Action::Complete) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.complete();
+                }
+            }
+            Some(Action::MoveDown) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.move_down();
+                }
+            }
+            Some(Action::MoveUp) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.move_up();
+                }
+            }
+            Some(Action::Backspace) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.backspace();
+                }
+            }
+            _ => {
+                if let KeyCode::Char(c) = code
+                    && let Mode::DirPicker { picker, .. } = &mut self.mode
+                {
+                    picker.push_char(c);
+                }
+            }
+        }
     }
 
     fn handle_finder_key(
@@ -1433,6 +1550,11 @@ impl App {
                     self.tree_state.open(vec![col_id]);
                     self.save_state();
                     self.set_flash("Thread added");
+                    // The thread exists before the picker opens, so cancelling
+                    // leaves a valid directory-less thread rather than
+                    // discarding the creation.
+                    let thread_idx = self.state.collections[collection_idx].threads.len() - 1;
+                    self.open_dir_picker(collection_idx, thread_idx);
                 }
                 InputPurpose::RenameCollection { idx } => {
                     // Collect old tmux session names before the rename changes the prefix.

@@ -156,7 +156,6 @@ impl AppState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_thread_working_dir(
         &mut self,
         col_idx: usize,

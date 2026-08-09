@@ -40,7 +40,6 @@ pub fn resolve_launch_dir(working_dir: Option<&Path>) -> (PathBuf, bool) {
 
 /// Browses one directory at a time. Never walks the tree, so opening is O(size
 /// of one directory) regardless of how large the filesystem is.
-#[allow(dead_code)]
 pub struct DirPicker {
     current: PathBuf,
     query: String,
@@ -53,7 +52,6 @@ pub struct DirPicker {
 }
 
 impl DirPicker {
-    #[allow(dead_code)]
     pub fn open(start: PathBuf) -> Self {
         let mut picker = Self {
             current: start,
@@ -85,26 +83,22 @@ impl DirPicker {
             .collect()
     }
 
-    #[allow(dead_code)]
     pub fn push_char(&mut self, c: char) {
         self.query.push(c);
         self.cursor = 0;
         self.refilter();
     }
 
-    #[allow(dead_code)]
     pub fn move_down(&mut self) {
         if !self.filtered.is_empty() {
             self.cursor = (self.cursor + 1).min(self.filtered.len() - 1);
         }
     }
 
-    #[allow(dead_code)]
     pub fn move_up(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
 
-    #[allow(dead_code)]
     fn reload(&mut self) {
         self.entries = list_subdirs(&self.current);
         self.query.clear();
@@ -112,7 +106,6 @@ impl DirPicker {
         self.refilter();
     }
 
-    #[allow(dead_code)]
     fn refilter(&mut self) {
         let q = self.query.to_lowercase();
         let show_hidden = self.query.starts_with('.');
@@ -128,7 +121,6 @@ impl DirPicker {
 
     /// Descends into the highlighted entry. The query is cleared by `reload`,
     /// since it described a match in the directory we just left.
-    #[allow(dead_code)]
     pub fn complete(&mut self) {
         let Some(name) = self.highlighted().map(str::to_string) else {
             return;
@@ -137,7 +129,6 @@ impl DirPicker {
         self.reload();
     }
 
-    #[allow(dead_code)]
     pub fn ascend(&mut self) {
         let Some(parent) = self.current.parent().map(Path::to_path_buf) else {
             return;
@@ -148,7 +139,6 @@ impl DirPicker {
 
     /// Editing the query takes priority; only an already-empty query walks up a
     /// level, so backspace never skips characters the user typed.
-    #[allow(dead_code)]
     pub fn backspace(&mut self) {
         if self.query.pop().is_some() {
             self.cursor = 0;
@@ -160,7 +150,6 @@ impl DirPicker {
 
     /// Falls back to `current` when nothing is highlighted, so confirming in a
     /// leaf directory or after a non-matching query still selects a directory.
-    #[allow(dead_code)]
     pub fn selection(&self) -> PathBuf {
         match self.highlighted() {
             Some(name) => self.current.join(name),
@@ -168,7 +157,6 @@ impl DirPicker {
         }
     }
 
-    #[allow(dead_code)]
     fn highlighted(&self) -> Option<&str> {
         let idx = *self.filtered.get(self.cursor)?;
         Some(self.entries[idx].as_str())
@@ -178,7 +166,6 @@ impl DirPicker {
 /// An unreadable or missing directory yields an empty list rather than an
 /// error: navigation must survive permission denials and directories deleted
 /// mid-browse.
-#[allow(dead_code)]
 fn list_subdirs(dir: &Path) -> Vec<String> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();

@@ -20,6 +20,7 @@ pub enum StatusContext {
     Confirm,
     Finder,
     ThreadPicker,
+    DirPicker,
     AgentsView,
     /// Slot-assign mode: agents view is waiting for a digit to assign a slot to an agent.
     /// Carries the human-readable path of the target agent for display.
@@ -85,6 +86,10 @@ pub fn render(
             ),
             (keymap.key_hint(KeyMode::Normal, Action::Add), "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename), "rename"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::SetDirectory),
+                "set dir",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Delete), "delete"),
             (
                 keymap.key_hint(KeyMode::Normal, Action::KillSession),
@@ -140,6 +145,12 @@ pub fn render(
                 keymap.key_hint_pair(KeyMode::Finder, Action::MoveUp, Action::MoveDown),
                 "navigate",
             ),
+        ],
+        StatusContext::DirPicker => vec![
+            ("Tab".to_string(), "enter dir"),
+            ("Enter".to_string(), "select"),
+            ("^x".to_string(), "clear"),
+            ("Esc".to_string(), "cancel"),
         ],
         StatusContext::ThreadPicker => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm), "move"),

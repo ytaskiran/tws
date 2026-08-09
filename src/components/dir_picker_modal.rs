@@ -10,7 +10,6 @@ use crate::theme::Theme;
 
 const MAX_VISIBLE: usize = 10;
 
-#[allow(dead_code)]
 pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Rect, theme: &Theme) {
     let names = picker.filtered_names();
     let visible_count = names.len().min(MAX_VISIBLE);
