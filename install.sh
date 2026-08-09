@@ -415,6 +415,10 @@ configure_agent_hooks() {
 
 FORK_BINDING='bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"'
 FORK_MARKER='# tws fork binding'
+# Matches a bind-key line that targets the plain key F, e.g. "bind-key F ..."
+# or "bind-key -T prefix F ...". Anchored on bind-key, so a commented-out
+# line ("# bind-key F ...") never matches.
+FORK_KEY_PATTERN='^[[:space:]]*bind-key[[:space:]]+(-T[[:space:]]+[^[:space:]]+[[:space:]]+)?F([[:space:]]|$)'
 
 configure_fork_binding() {
     local conf="$HOME/.tmux.conf"
@@ -432,7 +436,19 @@ configure_fork_binding() {
         return
     fi
 
-    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-T prefix[[:space:]]+)?F[[:space:]]' \
+    # A conflict can come from the live tmux server (already-loaded config)
+    # or from the file text itself (added by hand but not yet sourced).
+    # Either source counts. Our own previously written marker+binding lines
+    # are excluded from the file check, so re-runs stay idempotent.
+    local live_conflict=0 file_conflict=0
+    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-T prefix[[:space:]]+)?F[[:space:]]'; then
+        live_conflict=1
+    fi
+    if grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" | grep -qE "$FORK_KEY_PATTERN"; then
+        file_conflict=1
+    fi
+
+    if { [ "$live_conflict" -eq 1 ] || [ "$file_conflict" -eq 1 ]; } \
         && ! grep -qF "$FORK_MARKER" "$conf"; then
         warn "prefix+F is already bound to something else — not overwriting"
         info "Add this manually under a different key if you want it:"

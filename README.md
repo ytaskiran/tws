@@ -32,17 +32,17 @@ Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) r
 
 ### Session fork (experimental)
 
-Press `prefix+F` in a Claude Code pane to open a **forked** copy of that session
-in a tmux popup. The fork inherits the whole conversation but writes to a new
-session id, so the parent transcript is untouched — ask a throwaway question,
-close the popup, and nothing is left behind.
+Press `prefix+F` in a Claude Code pane to open a **forked** copy of that
+session in a tmux popup. The fork inherits the whole conversation. It writes
+to a new session id. The parent transcript stays untouched. Ask a throwaway
+question, close the popup, and nothing is left behind.
 
 Requires the tws agent hooks (installed by `install.sh`) and the binding:
 
     bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"
 
-Claude Code only. `codex resume` appends to the parent session rather than
-forking it, so Codex and Pi panes report that forking is unsupported.
+This feature works with Claude Code only. Codex and Pi panes do not support
+forking. `codex resume` appends to the parent session instead of forking it.
 
 ### Notes
 
