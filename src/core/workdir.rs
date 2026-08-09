@@ -114,6 +114,49 @@ impl DirPicker {
             self.cursor = self.filtered.len().saturating_sub(1);
         }
     }
+
+    /// Descends into the highlighted entry. The query is cleared by `reload`,
+    /// since it described a match in the directory we just left.
+    pub fn complete(&mut self) {
+        let Some(name) = self.highlighted().map(str::to_string) else {
+            return;
+        };
+        self.current = self.current.join(name);
+        self.reload();
+    }
+
+    pub fn ascend(&mut self) {
+        let Some(parent) = self.current.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        self.current = parent;
+        self.reload();
+    }
+
+    /// Editing the query takes priority; only an already-empty query walks up a
+    /// level, so backspace never skips characters the user typed.
+    pub fn backspace(&mut self) {
+        if self.query.pop().is_some() {
+            self.cursor = 0;
+            self.refilter();
+        } else {
+            self.ascend();
+        }
+    }
+
+    /// Falls back to `current` when nothing is highlighted, so confirming in a
+    /// leaf directory or after a non-matching query still selects a directory.
+    pub fn selection(&self) -> PathBuf {
+        match self.highlighted() {
+            Some(name) => self.current.join(name),
+            None => self.current.clone(),
+        }
+    }
+
+    fn highlighted(&self) -> Option<&str> {
+        let idx = *self.filtered.get(self.cursor)?;
+        Some(self.entries[idx].as_str())
+    }
 }
 
 /// An unreadable or missing directory yields an empty list rather than an
@@ -290,6 +333,92 @@ mod tests {
         let mut picker = DirPicker::open(root.clone());
         picker.move_up();
         assert_eq!(picker.cursor(), 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn selection_joins_highlighted_entry() {
+        let root = fixture(&["alpha", "beta"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        picker.move_down();
+        assert_eq!(picker.selection(), root.join("beta"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn selection_falls_back_to_current_when_nothing_matches() {
+        let root = fixture(&["alpha"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('z');
+        assert!(picker.filtered_names().is_empty());
+        assert_eq!(picker.selection(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn selection_is_current_when_directory_has_no_subdirs() {
+        let root = fixture(&[], &["only-a-file.txt"]);
+        let picker = DirPicker::open(root.clone());
+        assert_eq!(picker.selection(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn complete_descends_and_clears_query() {
+        let root = fixture(&["projects"], &[]);
+        fs::create_dir_all(root.join("projects").join("tws")).unwrap();
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('p');
+        picker.complete();
+        assert_eq!(picker.current(), root.join("projects"));
+        assert_eq!(picker.query(), "");
+        assert_eq!(picker.filtered_names(), vec!["tws"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn complete_is_a_noop_when_nothing_is_highlighted() {
+        let root = fixture(&["alpha"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('z');
+        picker.complete();
+        assert_eq!(picker.current(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ascend_moves_to_parent() {
+        let root = fixture(&["projects"], &[]);
+        let mut picker = DirPicker::open(root.join("projects"));
+        picker.ascend();
+        assert_eq!(picker.current(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ascend_at_filesystem_root_is_a_noop() {
+        let mut picker = DirPicker::open(PathBuf::from("/"));
+        picker.ascend();
+        assert_eq!(picker.current(), Path::new("/"));
+    }
+
+    #[test]
+    fn backspace_deletes_a_query_char_before_ascending() {
+        let root = fixture(&["alpha"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('a');
+        picker.backspace();
+        assert_eq!(picker.query(), "");
+        assert_eq!(picker.current(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn backspace_on_empty_query_ascends() {
+        let root = fixture(&["projects"], &[]);
+        let mut picker = DirPicker::open(root.join("projects"));
+        picker.backspace();
+        assert_eq!(picker.current(), root);
         fs::remove_dir_all(&root).unwrap();
     }
 }
