@@ -3,6 +3,7 @@ mod components;
 mod config;
 mod core;
 mod event;
+mod fork;
 mod import;
 mod theme;
 mod tmux;
