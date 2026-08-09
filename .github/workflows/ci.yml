@@ -42,6 +42,16 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets --locked
 
+  hooks:
+    name: Agent hook protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The hook state machine lives in install.sh, so cargo test cannot reach
+      # it. This job drives the generated commands and asserts the status words.
+      - name: Verify agent status hooks
+        run: bash scripts/verify-agent-hooks.sh
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
