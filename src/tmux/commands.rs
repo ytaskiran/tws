@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 pub fn list_sessions() -> Vec<String> {
@@ -46,10 +47,13 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     }
 }
 
-pub fn new_session(name: &str) -> std::io::Result<bool> {
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name])
-        .status()?;
+pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["new-session", "-d", "-s", name]);
+    if let Some(dir) = cwd {
+        cmd.arg("-c").arg(dir);
+    }
+    let status = cmd.status()?;
     Ok(status.success())
 }
 

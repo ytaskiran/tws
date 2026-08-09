@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 /// navigation degrades to the filesystem root instead of panicking. Unlike
 /// `persistence::config_dir`, this runs inside the render loop where a panic
 /// would tear down the terminal mid-frame.
-#[allow(dead_code)]
 pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -26,6 +25,17 @@ pub fn shorten_home(path: &Path) -> String {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => path.display().to_string(),
+    }
+}
+
+/// Resolves where a new session should start. The bool is true when the thread
+/// had a directory configured but it no longer exists — the caller warns, but a
+/// stale path never blocks a launch.
+pub fn resolve_launch_dir(working_dir: Option<&Path>) -> (PathBuf, bool) {
+    match working_dir {
+        Some(dir) if dir.is_dir() => (dir.to_path_buf(), false),
+        Some(_) => (home_dir(), true),
+        None => (home_dir(), false),
     }
 }
 
@@ -416,6 +426,39 @@ mod tests {
         let mut picker = DirPicker::open(root.join("projects"));
         picker.backspace();
         assert_eq!(picker.current(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolve_launch_dir_uses_existing_directory() {
+        let root = fixture(&[], &[]);
+        let (dir, missing) = resolve_launch_dir(Some(root.as_path()));
+        assert_eq!(dir, root);
+        assert!(!missing);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolve_launch_dir_falls_back_when_directory_is_gone() {
+        let gone = std::env::temp_dir().join("tws_gone_4c7a");
+        let (dir, missing) = resolve_launch_dir(Some(gone.as_path()));
+        assert_eq!(dir, home_dir());
+        assert!(missing);
+    }
+
+    #[test]
+    fn resolve_launch_dir_falls_back_when_unset() {
+        let (dir, missing) = resolve_launch_dir(None);
+        assert_eq!(dir, home_dir());
+        assert!(!missing);
+    }
+
+    #[test]
+    fn resolve_launch_dir_flags_a_file_as_missing() {
+        let root = fixture(&[], &["notes.txt"]);
+        let (dir, missing) = resolve_launch_dir(Some(root.join("notes.txt").as_path()));
+        assert_eq!(dir, home_dir());
+        assert!(missing);
         fs::remove_dir_all(&root).unwrap();
     }
 }

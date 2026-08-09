@@ -20,6 +20,7 @@ use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::core::status::AgentTrigger;
+use crate::core::workdir;
 use crate::event;
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
@@ -1496,8 +1497,7 @@ impl App {
                         self.state.make_session_name(col_idx, thread_idx, &trimmed)
                     {
                         self.save_state();
-                        self.launch_session(&session_name, terminal)?;
-                        self.set_flash("Session launched");
+                        self.launch_session(&session_name, col_idx, thread_idx, terminal)?;
                     }
                 }
                 InputPurpose::RenameSession {
@@ -1659,8 +1659,26 @@ impl App {
         }
     }
 
-    fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        tmux::new_session(session_name)?;
+    fn launch_session(
+        &mut self,
+        session_name: &str,
+        col_idx: usize,
+        thread_idx: usize,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let configured = self
+            .state
+            .collections
+            .get(col_idx)
+            .and_then(|c| c.threads.get(thread_idx))
+            .and_then(|t| t.working_dir.clone());
+        let (dir, missing) = workdir::resolve_launch_dir(configured.as_deref());
+        tmux::new_session(session_name, Some(&dir))?;
+        if missing {
+            self.set_flash("Directory no longer exists — started in ~");
+        } else {
+            self.set_flash("Session launched");
+        }
         self.attach_to_session(session_name, terminal)
     }
 
