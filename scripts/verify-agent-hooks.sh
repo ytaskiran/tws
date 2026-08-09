@@ -40,6 +40,17 @@ turn_end()        { fire review "" ; }
 
 reset() { rm -rf "$HOME/.config/tws"; }
 
+# GNU form first: BSD stat rejects -c outright, while GNU stat *accepts* -f as
+# "filesystem status" and prints a block report instead of failing over.
+mtime() {
+    local t
+    t="$(stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null)"
+    case "$t" in
+        ''|*[!0-9]*) printf 'cannot read mtime of %s\n' "$1" >&2; exit 1 ;;
+        *) printf '%s' "$t" ;;
+    esac
+}
+
 expect() {
     local want="$1" name="$2" got
     got="$(cat "$STATUS_FILE" 2>/dev/null || echo '<absent>')"
@@ -78,10 +89,10 @@ notification;   expect review  "idle_prompt must not downgrade review"
 printf '\nliveness\n'
 reset
 tool_call;      expect working "an empty file is claimed by the first tool call"
-before="$(stat -f '%m' "$STATUS_FILE" 2>/dev/null || stat -c '%Y' "$STATUS_FILE")"
+before="$(mtime "$STATUS_FILE")"
 sleep 1.1
 tool_call
-after="$(stat -f '%m' "$STATUS_FILE" 2>/dev/null || stat -c '%Y' "$STATUS_FILE")"
+after="$(mtime "$STATUS_FILE")"
 if [ "$after" -gt "$before" ]; then
     printf '  ok   the heartbeat refreshes mtime\n'
 else
