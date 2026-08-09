@@ -5,10 +5,7 @@ REPO="ytaskiran/tws"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 tmpdir=""
-# Set to 1 by configure_claude_hooks on success. The fork binding is useless
-# without the SessionStart hook that records the pane's session pointer, so
-# configure_fork_binding checks this before offering prefix+F.
-CLAUDE_HOOKS_CONFIGURED=0
+hooks_configured=0
 
 # --- Helpers ---
 
@@ -153,11 +150,14 @@ configure_path() {
 # --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
-# Writes the word to ~/.config/tws/agents/$TMUX_PANE only when it changes
-# (keeps the file mtime = state-entry time), then touches agent.trigger.
+# A third argument makes the unchanged case refresh mtime, which tws reads as a
+# liveness heartbeat. agent.trigger stays guarded either way — ringing it per
+# tool call would force a full tmux+ps rescan. The refresh is `touch -c` because
+# `>` truncates before writing, exposing an empty file to concurrent readers.
 status_hook_entry() {
     local word="$1"
-    local matcher="$2"   # "" for match-all
+    local matcher="$2"      # "" for match-all
+    local heartbeat="${3:-}"
     local cmd
     # A fork's own hooks resolve to the PARENT pane (tmux popups report the
     # originating pane, not the popup), so a fork must not write any status.
@@ -165,7 +165,11 @@ status_hook_entry() {
     cmd+='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
-    cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
+    if [ -n "$heartbeat" ]; then
+        cmd+="if [ \"\$cur\" != $word ]; then printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; else touch -c \"\$f\"; fi; :"
+    else
+        cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
+    fi
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -222,13 +226,19 @@ configure_claude_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_prompt e_pretool e_question e_notify e_stop e_end
+    local e_prompt e_pretool e_question e_posttool e_notify e_stop e_compact e_fail e_end
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*")
+    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
+    # The "turn resumed" signal. Without it, leaving `waiting` waits for the
+    # model to reach its next tool call — unbounded. See AGENTS.md.
+    e_posttool=$(status_hook_entry working "")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
+    # Compaction and API errors end a turn without firing Stop.
+    e_compact=$(status_hook_entry review "manual|auto")
+    e_fail=$(status_hook_entry review "")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
     local e_sessionstart e_sessionrm
     e_sessionstart=$(session_hook_entry)
@@ -238,8 +248,11 @@ configure_claude_hooks() {
         --argjson prompt "$e_prompt" \
         --argjson pretool "$e_pretool" \
         --argjson question "$e_question" \
+        --argjson posttool "$e_posttool" \
         --argjson notify "$e_notify" \
         --argjson stop "$e_stop" \
+        --argjson compact "$e_compact" \
+        --argjson fail "$e_fail" \
         --argjson end "$e_end" \
         --argjson sessionstart "$e_sessionstart" \
         --argjson sessionrm "$e_sessionrm" '
@@ -252,15 +265,18 @@ configure_claude_hooks() {
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
+        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SessionStart     = ((.hooks.SessionStart // []) + $sessionstart) |
+        .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
+        .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $sessionrm) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
-    CLAUDE_HOOKS_CONFIGURED=1
     ok "Configured Claude Code agent status hooks"
+    hooks_configured=1
 }
 
 configure_codex_feature_flag() {
@@ -310,31 +326,38 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_wait e_review e_end
+    local e_work e_pretool e_wait e_review e_compact e_end
     e_work=$(status_hook_entry working "")
+    e_pretool=$(status_hook_entry working "" heartbeat)
     e_wait=$(status_hook_entry waiting "")
     e_review=$(status_hook_entry review "")
+    # Codex has no API-error event, so stale expiry is the only backstop there.
+    e_compact=$(status_hook_entry review "manual|auto")
     e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
-        --argjson work "$e_work" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson end "$e_end" '
-        # A tws hook entry is identified by the config/tws/agents marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | contains("config/tws/agents"));
+        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
+        --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" '
+        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
         .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
-        .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $work) |
+        .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
+        # PermissionRequest enters waiting; this is its only bounded exit.
+        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $work) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
+        .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
     ok "Configured Codex agent status hooks"
+    hooks_configured=1
 
     configure_codex_feature_flag
 }
@@ -361,7 +384,7 @@ configure_pi_hooks() {
     # idempotent since tws owns it outright (unlike the Claude/Codex configs,
     # which are shared JSON we must merge into carefully).
     cat > "$ext_file" <<'PI_EXT_EOF'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
@@ -379,25 +402,49 @@ async function panePath(pi: any): Promise<string | undefined> {
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
 }
 
-// Only writes when the word actually changes, so the file's mtime reflects
-// state-entry time (tws reads mtime as status_since).
-function writeWord(path: string, word: string) {
-  let cur: string | undefined;
+function readWord(path: string): string | undefined {
   try {
-    cur = readFileSync(path, "utf8");
+    return readFileSync(path, "utf8");
   } catch {
-    cur = undefined;
+    return undefined;
   }
-  if (cur === word) return;
+}
+
+// TRIGGER stays quiet during a run: tws does a full tmux+ps rescan when rung.
+function writeWord(path: string, word: string) {
+  if (readWord(path) === word) return;
   mkdirSync(AGENTS_DIR, { recursive: true });
   writeFileSync(path, word);
   writeFileSync(TRIGGER, "");
+}
+
+// Refreshing mtime is how a pane proves liveness to tws. Never creates the file;
+// a missing one is restored by the next writeWord.
+function beat(path: string) {
+  const now = new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {
+    // Pane file not there yet — the next state change writes it.
+  }
 }
 
 export default function (pi: any) {
   pi.on("turn_start", async () => {
     const path = await panePath(pi);
     if (path) writeWord(path, "working");
+  });
+  // Pi's only per-tool-call event, and so the only place a heartbeat can live.
+  pi.on("tool_execution_start", async () => {
+    const path = await panePath(pi);
+    if (!path) return;
+    if (readWord(path) === "working") beat(path);
+    else writeWord(path, "working");
+  });
+  // Compaction can end a turn without agent_settled firing.
+  pi.on("session_compact", async () => {
+    const path = await panePath(pi);
+    if (path) writeWord(path, "review");
   });
   pi.on("agent_settled", async () => {
     const path = await panePath(pi);
@@ -414,12 +461,23 @@ export default function (pi: any) {
 PI_EXT_EOF
 
     ok "Configured Pi agent status hooks"
+    hooks_configured=1
 }
 
 configure_agent_hooks() {
     configure_claude_hooks
     configure_codex_hooks
     configure_pi_hooks
+
+    # Agents snapshot hook config at session start, so a file already stuck at
+    # `working` would outlive this upgrade. Live panes rewrite theirs on the next
+    # hook fire.
+    if [ "$hooks_configured" -eq 1 ]; then
+        rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
+        mkdir -p "$HOME/.config/tws"
+        touch "$HOME/.config/tws/agent.trigger"
+        info "Cleared stale agent status files"
+    fi
 }
 
 # --- 5. Optional: tmux fork binding (experimental) ---
@@ -444,7 +502,12 @@ configure_fork_binding() {
         return
     fi
 
-    if [ "$CLAUDE_HOOKS_CONFIGURED" -ne 1 ]; then
+    # hooks_configured turns 1 when any agent's hooks install succeeds, but the
+    # SessionStart hook that prefix+F needs comes only from configure_claude_hooks.
+    # We accept that looseness here: it matches how the rest of the installer
+    # already reads this shared flag, and a false positive just offers a binding
+    # that finds no session to fork, which is harmless.
+    if [ "$hooks_configured" -ne 1 ]; then
         info "Claude Code agent hooks are not configured — prefix+F needs them to find a session to fork"
         info "Skipping fork binding. Re-run install and accept the Claude Code hooks step, then add it manually with:"
         printf '  %s\n' "$FORK_BINDING"

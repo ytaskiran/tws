@@ -19,6 +19,7 @@ use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
+use crate::core::status::AgentTrigger;
 use crate::event;
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
@@ -146,7 +147,7 @@ pub struct App {
     note_editor: NoteEditor,
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
-    last_agent_trigger_mtime: Option<SystemTime>,
+    agent_trigger: AgentTrigger,
     flash: Option<(String, Instant)>,
     preview_content: Option<Text<'static>>,
     preview_pane_id: Option<String>,
@@ -185,7 +186,7 @@ impl App {
             note_editor: NoteEditor::new(),
             md_renderer: MarkdownRenderer::new(note_stylesheet),
             last_refresh: Instant::now(),
-            last_agent_trigger_mtime: None,
+            agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
             flash: None,
             preview_content: None,
             preview_pane_id: None,
@@ -229,8 +230,11 @@ impl App {
                 self.do_refresh_sessions();
             }
 
-            if self.check_agent_trigger() {
-                self.do_agent_scan();
+            // Refreshes sessions, not just agents: scans filter by the known
+            // session list, so a session created since the last periodic
+            // refresh would hide its agents until the 30s timer came round.
+            if self.agent_trigger.is_pending() {
+                self.do_refresh_sessions();
             }
 
             let selected = self.resolve_current_selected();
@@ -1718,21 +1722,15 @@ impl App {
         self.do_agent_scan();
     }
 
-    fn check_agent_trigger(&self) -> bool {
-        let path = persistence::config_dir().join("agent.trigger");
-        let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(_) => return false,
-        };
-        match self.last_agent_trigger_mtime {
-            Some(last) => mtime > last,
-            None => true,
-        }
-    }
-
     fn do_agent_scan(&mut self) {
+        // Snapshot before reading any status file, so a hook firing mid-scan
+        // stays pending for the next poll.
+        let observed_trigger = self.agent_trigger.mtime();
+        let scan_started_at = SystemTime::now();
+
         if self.state.active_sessions.is_empty() {
             self.state.agent_sessions.clear();
+            self.agent_trigger.acknowledge(observed_trigger);
             return;
         }
 
@@ -1777,6 +1775,26 @@ impl App {
             }
         }
 
+        let live_panes: std::collections::HashSet<String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| a.pane_id.clone())
+            .collect();
+        crate::core::status::prune_stale_files(
+            &crate::core::status::agents_dir(),
+            &live_panes,
+            scan_started_at,
+        );
+
+        // After prune so no write lands on a doomed file, before the load so a
+        // flip shows this frame.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        crate::core::status::expire_stale_working(&crate::core::status::agents_dir(), now);
+
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
 
@@ -1794,20 +1812,7 @@ impl App {
             }
         }
 
-        // Race: a just-spawned agent that writes its status file after this scan's
-        // pane snapshot but before prune runs can have that fresh file deleted,
-        // showing Unknown until its next status change re-writes the file. This
-        // self-heals on the next trigger-driven rescan, so it's left as-is.
-        let live_panes: std::collections::HashSet<String> = self
-            .state
-            .agent_sessions
-            .iter()
-            .map(|a| a.pane_id.clone())
-            .collect();
-        crate::core::status::prune_stale_files(&crate::core::status::agents_dir(), &live_panes);
-
-        let path = persistence::config_dir().join("agent.trigger");
-        self.last_agent_trigger_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        self.agent_trigger.acknowledge(observed_trigger);
     }
 
     fn toggle_expand_all(&mut self) {
