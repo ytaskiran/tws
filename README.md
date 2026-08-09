@@ -35,7 +35,7 @@ Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) r
 Press `prefix+F` in a Claude Code pane to open a **forked** copy of that
 session in a tmux popup. The fork inherits the whole conversation. It writes
 to a new session id. The parent transcript stays untouched. Ask a throwaway
-question, close the popup, and nothing is left behind.
+question. Close the popup. The fork leaves nothing behind.
 
 Requires the tws agent hooks (installed by `install.sh`) and the binding:
 
