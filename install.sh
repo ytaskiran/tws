@@ -5,6 +5,10 @@ REPO="ytaskiran/tws"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 tmpdir=""
+# Set to 1 by configure_claude_hooks on success. The fork binding is useless
+# without the SessionStart hook that records the pane's session pointer, so
+# configure_fork_binding checks this before offering prefix+F.
+CLAUDE_HOOKS_CONFIGURED=0
 
 # --- Helpers ---
 
@@ -155,7 +159,10 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"   # "" for match-all
     local cmd
-    cmd='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
+    # A fork's own hooks resolve to the PARENT pane (tmux popups report the
+    # originating pane, not the popup), so a fork must not write any status.
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
@@ -184,7 +191,10 @@ session_hook_entry() {
 
 session_end_entry() {
     local cmd
-    cmd='rm -f "$HOME/.config/tws/sessions/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; :'
+    # Guard for the same reason as session_hook_entry: without it, a fork's
+    # SessionEnd hook deletes the PARENT pane's session pointer.
+    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd+='rm -f "$HOME/.config/tws/sessions/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -219,7 +229,7 @@ configure_claude_hooks() {
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
     e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
     e_stop=$(status_hook_entry review "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
     local e_sessionstart e_sessionrm
     e_sessionstart=$(session_hook_entry)
     e_sessionrm=$(session_end_entry)
@@ -249,6 +259,7 @@ configure_claude_hooks() {
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
+    CLAUDE_HOOKS_CONFIGURED=1
     ok "Configured Claude Code agent status hooks"
 }
 
@@ -303,7 +314,7 @@ configure_codex_hooks() {
     e_work=$(status_hook_entry working "")
     e_wait=$(status_hook_entry waiting "")
     e_review=$(status_hook_entry review "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
 
     jq \
         --argjson work "$e_work" --argjson wait "$e_wait" \
@@ -415,16 +426,28 @@ configure_agent_hooks() {
 
 FORK_BINDING='bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"'
 FORK_MARKER='# tws fork binding'
-# Matches a bind-key line that targets the plain key F, e.g. "bind-key F ..."
-# or "bind-key -T prefix F ...". Anchored on bind-key, so a commented-out
-# line ("# bind-key F ...") never matches.
-FORK_KEY_PATTERN='^[[:space:]]*bind-key[[:space:]]+(-T[[:space:]]+[^[:space:]]+[[:space:]]+)?F([[:space:]]|$)'
+# Matches a bind or bind-key line that targets the plain key F, with any
+# number of leading flags (e.g. "bind F ...", "bind-key -r F ...",
+# "bind-key -r -T prefix F ..."). Anchored at the start of the line (after
+# optional leading whitespace), so a commented-out line never matches.
+FORK_KEY_PATTERN='^[[:space:]]*bind(-key)?[[:space:]]+(-[[:alnum:]]+[[:space:]]+|-T[[:space:]]+[^[:space:]]+[[:space:]]+)*F([[:space:]]|$)'
+# A bind with -n, or with -T root, targets the ROOT key table, not the
+# prefix table, so it can never collide with prefix+F. Lines that match
+# FORK_KEY_PATTERN but also match this are excluded from the conflict check.
+FORK_ROOT_TABLE_PATTERN='(^|[[:space:]])-n([[:space:]]|$)|-T[[:space:]]+root([[:space:]]|$)'
 
 configure_fork_binding() {
     local conf="$HOME/.tmux.conf"
 
     if [ ! -f "$conf" ]; then
         info "No ~/.tmux.conf — skipping fork binding"
+        return
+    fi
+
+    if [ "$CLAUDE_HOOKS_CONFIGURED" -ne 1 ]; then
+        info "Claude Code agent hooks are not configured — prefix+F needs them to find a session to fork"
+        info "Skipping fork binding. Re-run install and accept the Claude Code hooks step, then add it manually with:"
+        printf '  %s\n' "$FORK_BINDING"
         return
     fi
 
@@ -441,10 +464,14 @@ configure_fork_binding() {
     # Either source counts. Our own previously written marker+binding lines
     # are excluded from the file check, so re-runs stay idempotent.
     local live_conflict=0 file_conflict=0
-    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-T prefix[[:space:]]+)?F[[:space:]]'; then
+    # `list-keys -T prefix` only ever lists prefix-table bindings, so a -n /
+    # -T root exclusion isn't needed here — those never show up in this table.
+    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)'; then
         live_conflict=1
     fi
-    if grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" | grep -qE "$FORK_KEY_PATTERN"; then
+    if grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" \
+        | grep -vE "$FORK_ROOT_TABLE_PATTERN" \
+        | grep -qE "$FORK_KEY_PATTERN"; then
         file_conflict=1
     fi
 
@@ -460,7 +487,10 @@ configure_fork_binding() {
     if grep -qF "$FORK_MARKER" "$conf"; then
         local tmp
         tmp="$(mktemp)"
-        grep -vF -e "$FORK_MARKER" -e "tws fork-pane" "$conf" > "$tmp" && mv "$tmp" "$conf"
+        # grep exits 1 (no error) when the filter matches nothing, which
+        # would abort the script under set -o pipefail if chained with &&.
+        grep -vF -e "$FORK_MARKER" -e "tws fork-pane" "$conf" > "$tmp" || true
+        mv "$tmp" "$conf"
     fi
 
     printf '\n%s\n%s\n' "$FORK_MARKER" "$FORK_BINDING" >> "$conf"
