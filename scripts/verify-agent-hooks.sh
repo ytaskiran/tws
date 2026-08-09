@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^status_hook_entry()/,/^}/p' "$INSTALL_SH")"
+eval "$(sed -n '/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p' "$INSTALL_SH")"
 
 export HOME
 HOME="$(mktemp -d)"
@@ -28,6 +28,36 @@ fire() {
     local entry
     entry="$(status_hook_entry "$@")"
     sh -c "$(printf '%s' "$entry" | jq -r '.[0].hooks[0].command')"
+}
+
+# A tmux that answers the pane query with a pane the caller does not own — the
+# real one answers for the current client's active pane, which is the same
+# thing from the hook's point of view.
+FAKE_BIN="$HOME/fake-bin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/sh\necho "%%99"\n' > "$FAKE_BIN/tmux"
+chmod +x "$FAKE_BIN/tmux"
+
+# Fires a command the way a pane-less agent would: no TMUX_PANE to inherit, and
+# a tmux standing by to answer if the command asks.
+fire_pane_less() {
+    local entry
+    entry="$(status_hook_entry "$@")"
+    env -u TMUX_PANE -u TMUX "PATH=$FAKE_BIN:$PATH" \
+        sh -c "$(printf '%s' "$entry" | jq -r '.[0].hooks[0].command')"
+}
+
+session_end() {
+    local entry
+    entry="$(session_end_hook_entry)"
+    sh -c "$(printf '%s' "$entry" | jq -r '.[0].hooks[0].command')"
+}
+
+session_end_pane_less() {
+    local entry
+    entry="$(session_end_hook_entry)"
+    env -u TMUX_PANE -u TMUX "PATH=$FAKE_BIN:$PATH" \
+        sh -c "$(printf '%s' "$entry" | jq -r '.[0].hooks[0].command')"
 }
 
 # The events, named as the state machine names them.
@@ -58,6 +88,21 @@ expect() {
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — want %s, got %s\n' "$name" "$want" "$got"
+        failures=$((failures + 1))
+    fi
+}
+
+panes_written() {
+    ls -A "$HOME/.config/tws/agents" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+expect_panes() {
+    local want="$1" name="$2" got
+    got="$(panes_written || true)"
+    if [ "$got" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want [%s], got [%s]\n' "$name" "$want" "$got"
         failures=$((failures + 1))
     fi
 }
@@ -97,6 +142,47 @@ if [ "$after" -gt "$before" ]; then
     printf '  ok   the heartbeat refreshes mtime\n'
 else
     printf '  FAIL the heartbeat refreshes mtime — %s did not advance past %s\n' "$after" "$before"
+    failures=$((failures + 1))
+fi
+
+printf '\npane identity\n'
+# $TMUX_PANE is the only pane identity a hook has, and the file name it picks is
+# the only sender identity tws sees — so a wrong name is a forged write nothing
+# downstream can detect. A pane-id query cannot answer "who is calling": tmux
+# replies for the current client's active pane, which is the pane the user is
+# looking at. Every check below therefore asserts on *which* file moved.
+reset
+fire_pane_less working ""
+expect_panes "" "a hook with no TMUX_PANE writes nothing"
+reset
+fire_pane_less working "^(?!AskUserQuestion$).*" live
+expect_panes "" "nor does the liveness variant"
+reset
+prompt_submit
+expect_panes "%7" "a hook with TMUX_PANE writes only its own pane"
+
+# Revisions older than this check have no such helper. Report that as a failure
+# rather than dying mid-run, so pointing the harness at one still tells you
+# which checks the revision fails.
+if declare -F session_end_hook_entry >/dev/null; then
+    reset
+    prompt_submit
+    session_end_pane_less
+    expect_panes "%7" "a session end with no TMUX_PANE deletes nobody's status"
+    session_end
+    expect_panes "" "a session end with TMUX_PANE drops its own"
+else
+    printf '  FAIL %s has no session_end_hook_entry to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+reset
+guesses="$(grep -c 'display-message' "$INSTALL_SH" || true)"
+if [ "$guesses" = "0" ]; then
+    printf '  ok   no hook resolves its pane by asking tmux\n'
+else
+    printf '  FAIL no hook resolves its pane by asking tmux — %s occurrence(s) in %s\n' \
+        "$guesses" "$INSTALL_SH"
     failures=$((failures + 1))
 fi
 
