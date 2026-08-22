@@ -37,6 +37,10 @@ pub struct Theme {
     pub collection: Style,
     pub thread: Style,
     pub thread_dim: Style,
+    /// Working-directory suffix on a thread row that is not selected. Dimmer
+    /// than `thread_dim` so the path stays legible without competing with the
+    /// thread name.
+    pub thread_path_dim: Style,
     pub session: Style,
     pub highlight: Style,
     pub highlight_unfocused: Style,
@@ -101,6 +105,7 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             thread: Style::new().fg(p.accent),
             thread_dim: Style::new().fg(darken_toward(p.accent, p.border, 0.5)),
+            thread_path_dim: Style::new().fg(darken_toward(p.accent, p.border, 0.75)),
             session: Style::new().fg(p.green),
             highlight: Style::new()
                 .fg(p.bg)

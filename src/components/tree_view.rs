@@ -95,11 +95,16 @@ fn build_thread_item<'a>(
 
     let session_count = session_children.len();
 
-    let dir_suffix = thread
-        .working_dir
-        .as_ref()
-        .filter(|_| selected_thread == Some(thread.id))
-        .map(|d| Span::styled(format!("  {}", shorten_home(d)), theme.thread_dim));
+    // Always shown so the path does not appear and vanish as the cursor moves;
+    // selection only changes how brightly it reads.
+    let dir_suffix = thread.working_dir.as_ref().map(|d| {
+        let style = if selected_thread == Some(thread.id) {
+            theme.thread_dim
+        } else {
+            theme.thread_path_dim
+        };
+        Span::styled(format!("  {}", shorten_home(d)), style)
+    });
 
     let mut spans: Vec<Span> = if session_count > 0 {
         vec![
