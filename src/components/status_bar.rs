@@ -28,6 +28,42 @@ pub enum StatusContext {
     },
 }
 
+fn right_group(counts: &StatusCounts, session_count: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
+    // distinct in the model; see status_glyph), so their counts merge here.
+    let review = counts.waiting + counts.review;
+    if review > 0 {
+        spans.push(Span::styled(format!("◐ {} ", review), theme.status_waiting));
+    }
+    if counts.working > 0 {
+        spans.push(Span::styled(
+            format!("● {} ", counts.working),
+            theme.status_working,
+        ));
+    }
+    if session_count == 0 {
+        spans.push(Span::styled("tws ", theme.statusbar_desc));
+        return spans;
+    }
+    // The agent counts and the session count measure different things. Set
+    // side by side they read as a single "N of M" phrase, so they need a rule
+    // between them — but only when there is an agent count to separate from.
+    if !spans.is_empty() {
+        spans.push(Span::styled(" │  ", theme.separator));
+    }
+    let noun = if session_count == 1 {
+        "session"
+    } else {
+        "sessions"
+    };
+    spans.push(Span::styled(
+        format!("{} {} ", session_count, noun),
+        theme.statusbar_desc,
+    ));
+    spans
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
@@ -185,25 +221,7 @@ pub fn render(
         }
     }
 
-    let mut right_spans: Vec<Span> = Vec::new();
-    // Waiting and Review share the ◐ "your turn" dot in the UI (they stay
-    // distinct in the model; see status_glyph), so their counts merge here.
-    let review = counts.waiting + counts.review;
-    if review > 0 {
-        right_spans.push(Span::styled(format!("◐ {} ", review), theme.status_waiting));
-    }
-    if counts.working > 0 {
-        right_spans.push(Span::styled(
-            format!("● {} ", counts.working),
-            theme.status_working,
-        ));
-    }
-    let tail = if active_session_count > 0 {
-        format!("{} active ", active_session_count)
-    } else {
-        "tws ".to_string()
-    };
-    right_spans.push(Span::styled(tail, theme.statusbar_desc));
+    let right_spans = right_group(&counts, active_session_count, theme);
 
     let right_width: u16 = right_spans
         .iter()
@@ -219,4 +237,92 @@ pub fn render(
         Paragraph::new(right_line).alignment(Alignment::Right),
         chunks[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::palette::Palette;
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn theme() -> Theme {
+        Theme::build(&Palette::default())
+    }
+
+    fn counts(working: usize, waiting: usize, review: usize) -> StatusCounts {
+        StatusCounts {
+            working,
+            waiting,
+            review,
+            idle: 0,
+        }
+    }
+
+    // These tests pass session_count = 0 with nonzero agent counts, an unreachable
+    // state in production. They verify that the session_count == 0 path appends
+    // "tws " after agent spans rather than replacing them.
+    #[test]
+    fn review_and_waiting_agents_merge_into_one_count() {
+        let spans = right_group(&counts(0, 1, 2), 0, &theme());
+        assert!(text_of(&spans).contains("◐ 3"));
+    }
+
+    #[test]
+    fn working_agents_render_their_own_count() {
+        let spans = right_group(&counts(4, 0, 0), 0, &theme());
+        assert!(text_of(&spans).contains("● 4"));
+    }
+
+    #[test]
+    fn all_three_counts_render_with_a_divider() {
+        let text = text_of(&right_group(&counts(4, 1, 2), 6, &theme()));
+        assert_eq!(text, "◐ 3 ● 4  │  6 sessions ");
+    }
+
+    #[test]
+    fn divider_appears_with_only_working_agents() {
+        let text = text_of(&right_group(&counts(4, 0, 0), 6, &theme()));
+        assert_eq!(text, "● 4  │  6 sessions ");
+    }
+
+    #[test]
+    fn divider_appears_with_only_review_agents() {
+        let text = text_of(&right_group(&counts(0, 0, 2), 6, &theme()));
+        assert_eq!(text, "◐ 2  │  6 sessions ");
+    }
+
+    #[test]
+    fn no_agents_means_no_divider() {
+        let text = text_of(&right_group(&counts(0, 0, 0), 6, &theme()));
+        assert_eq!(text, "6 sessions ");
+        assert!(!text.contains('│'));
+    }
+
+    #[test]
+    fn one_session_is_singular() {
+        let text = text_of(&right_group(&counts(0, 0, 0), 1, &theme()));
+        assert_eq!(text, "1 session ");
+    }
+
+    #[test]
+    fn tail_falls_back_to_the_app_name() {
+        // Agents run inside sessions, so zero sessions implies zero agents.
+        // The fallback must never collide with an agent count.
+        let spans = right_group(&counts(0, 0, 0), 0, &theme());
+        assert_eq!(text_of(&spans), "tws ");
+    }
+
+    #[test]
+    fn divider_uses_the_separator_style() {
+        let t = theme();
+        let spans = right_group(&counts(4, 0, 0), 6, &t);
+        let divider = spans
+            .iter()
+            .find(|s| s.content.contains('│'))
+            .expect("a divider span");
+        assert_eq!(divider.style, t.separator);
+    }
 }
