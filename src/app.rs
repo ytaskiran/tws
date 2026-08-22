@@ -1224,6 +1224,19 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Some(Action::Confirm) => {
+                // Enter confirms only on row 0; on a subdirectory row it walks
+                // into that row, so Enter never picks a directory you have not
+                // navigated to deliberately.
+                let descend = match &self.mode {
+                    Mode::DirPicker { picker, .. } => !picker.is_current_row(),
+                    _ => false,
+                };
+                if descend {
+                    if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                        picker.complete();
+                    }
+                    return;
+                }
                 let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
                 if let Mode::DirPicker {
                     picker,
@@ -1237,19 +1250,6 @@ impl App {
                         .set_thread_working_dir(col_idx, thread_idx, Some(dir));
                     self.save_state();
                     self.set_flash(&format!("Directory set to {}", label));
-                }
-            }
-            Some(Action::ClearDirectory) => {
-                let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-                if let Mode::DirPicker {
-                    col_idx,
-                    thread_idx,
-                    ..
-                } = old_mode
-                {
-                    self.state.set_thread_working_dir(col_idx, thread_idx, None);
-                    self.save_state();
-                    self.set_flash("Directory cleared");
                 }
             }
             Some(Action::Complete) => {

@@ -28,10 +28,15 @@ The main view. The thread/session tree on the left, a notes panel on the right. 
 A thread can have a default working directory. Sessions launched from it start
 there; threads without one start in your home directory.
 
-Press `c` on a thread to open the directory picker. Type to filter, `Tab` to
-enter a directory, `Backspace` to go back up, `Enter` to select, `Ctrl+x` to
-clear it, `Esc` to cancel. New threads prompt for a directory right after you
-name them.
+Press `c` on a thread to open the directory picker. The top row is always the
+directory you are browsing — `Enter` there accepts it. Type to filter, `Tab` to
+enter the first match, or move down to a subdirectory and press `Enter` to go
+into it. `Backspace` deletes a filter character, or goes up a level when the
+filter is empty. `Esc` cancels. New threads prompt for a directory right after
+you name them.
+
+To point a thread back at your home directory, `Backspace` up to `~` and press
+`Enter`.
 
 If a thread's directory is deleted, sessions still launch — they start in your
 home directory with a warning in the status bar (tmux's status line, if tws
@@ -196,8 +201,7 @@ scroll_down = "j"
 scroll_up   = "k"
 
 [keys.dir_picker]
-complete        = "tab"
-clear_directory = "ctrl+x"
+complete = "tab"
 ```
 
 **Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`, `dir_picker`.

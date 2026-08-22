@@ -156,10 +156,6 @@ pub fn render(
                 "select",
             ),
             (
-                keymap.key_hint(KeyMode::DirPicker, Action::ClearDirectory),
-                "clear",
-            ),
-            (
                 keymap.key_hint(KeyMode::DirPicker, Action::Cancel),
                 "cancel",
             ),

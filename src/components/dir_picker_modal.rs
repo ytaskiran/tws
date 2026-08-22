@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
@@ -12,8 +12,9 @@ const MAX_VISIBLE: usize = 10;
 
 pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Rect, theme: &Theme) {
     let names = picker.filtered_names();
-    let visible_count = names.len().min(MAX_VISIBLE);
-    let height = (visible_count.max(1) + 5) as u16;
+    // +1 for the "use this directory" row, which always precedes the listing.
+    let visible_count = (names.len() + 1).min(MAX_VISIBLE);
+    let height = (visible_count + 5) as u16;
     let popup = centered_rect(60, height, area);
     frame.render_widget(Clear, popup);
 
@@ -52,12 +53,6 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
         chunks[1],
     );
 
-    if names.is_empty() {
-        let empty = Line::from(Span::styled("No subdirectories", theme.modal_muted));
-        frame.render_widget(Paragraph::new(empty), chunks[2]);
-        return;
-    }
-
     let max_rows = chunks[2].height as usize;
     let cursor = picker.cursor();
     let scroll_offset = if cursor >= max_rows {
@@ -66,25 +61,42 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
         0
     };
 
-    let lines: Vec<Line> = names
-        .iter()
-        .enumerate()
+    // Row 0 is the "use this directory" row and always exists; the
+    // subdirectories follow it, offset by one.
+    let row_style = |selected: bool| {
+        if selected {
+            theme.highlight
+        } else {
+            Style::new().fg(theme.dim_text)
+        }
+    };
+    let prefix = |selected: bool| if selected { " \u{203A} " } else { "   " };
+
+    let mut rows: Vec<Line> = Vec::with_capacity(names.len() + 1);
+
+    let current_selected = cursor == 0;
+    let style = row_style(current_selected);
+    rows.push(Line::from(vec![
+        Span::styled(prefix(current_selected), style),
+        Span::styled(
+            format!("use {}", shorten_home(picker.current())),
+            style.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    for (i, name) in names.iter().enumerate() {
+        let selected = i + 1 == cursor;
+        let style = row_style(selected);
+        rows.push(Line::from(vec![
+            Span::styled(prefix(selected), style),
+            Span::styled(format!("{}/", name), style),
+        ]));
+    }
+
+    let visible: Vec<Line> = rows
+        .into_iter()
         .skip(scroll_offset)
         .take(max_rows)
-        .map(|(i, name)| {
-            let is_selected = i == cursor;
-            let style = if is_selected {
-                theme.highlight
-            } else {
-                Style::new().fg(theme.dim_text)
-            };
-            let prefix = if is_selected { " \u{203A} " } else { "   " };
-            Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(format!("{}/", name), style),
-            ])
-        })
         .collect();
-
-    frame.render_widget(Paragraph::new(lines), chunks[2]);
+    frame.render_widget(Paragraph::new(visible), chunks[2]);
 }

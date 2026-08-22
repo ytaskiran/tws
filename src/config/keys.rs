@@ -36,7 +36,6 @@ pub enum Action {
     PinAgentSlot,
     SetDirectory,
     Complete,
-    ClearDirectory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,7 +141,6 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
         "set_directory" => Ok(Action::SetDirectory),
         "complete" => Ok(Action::Complete),
-        "clear_directory" => Ok(Action::ClearDirectory),
         _ => Err(format!("unknown action: {:?}", s)),
     }
 }
@@ -409,12 +407,6 @@ impl Keymap {
             KeyCode::Backspace,
             KeyModifiers::NONE,
             A::Backspace
-        );
-        bind!(
-            M::DirPicker,
-            KeyCode::Char('x'),
-            KeyModifiers::CONTROL,
-            A::ClearDirectory
         );
 
         Self { map }
@@ -698,14 +690,6 @@ mod tests {
         assert_eq!(
             km.resolve(
                 KeyMode::DirPicker,
-                KeyCode::Char('x'),
-                KeyModifiers::CONTROL
-            ),
-            Some(Action::ClearDirectory)
-        );
-        assert_eq!(
-            km.resolve(
-                KeyMode::DirPicker,
                 KeyCode::Char('j'),
                 KeyModifiers::CONTROL
             ),
@@ -725,9 +709,5 @@ mod tests {
     fn parse_action_accepts_new_names() {
         assert_eq!(parse_action("set_directory").unwrap(), Action::SetDirectory);
         assert_eq!(parse_action("complete").unwrap(), Action::Complete);
-        assert_eq!(
-            parse_action("clear_directory").unwrap(),
-            Action::ClearDirectory
-        );
     }
 }

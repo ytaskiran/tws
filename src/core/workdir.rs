@@ -79,9 +79,7 @@ impl DirPicker {
     }
 
     pub fn move_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.cursor = (self.cursor + 1).min(self.filtered.len() - 1);
-        }
+        self.cursor = (self.cursor + 1).min(self.filtered.len());
     }
 
     pub fn move_up(&mut self) {
@@ -108,10 +106,16 @@ impl DirPicker {
             .collect();
     }
 
-    /// Descends into the highlighted entry. The query is cleared by `reload`,
+    /// Descends one level. From row 0 this completes into the first match, so
+    /// typing a segment then tabbing walks downward the way a shell does; from
+    /// a subdirectory row it enters that row. The query is cleared by `reload`,
     /// since it described a match in the directory we just left.
     pub fn complete(&mut self) {
-        let Some(name) = self.highlighted().map(str::to_string) else {
+        let target = match self.cursor {
+            0 => self.filtered.first().map(|&i| self.entries[i].clone()),
+            _ => self.highlighted().map(str::to_string),
+        };
+        let Some(name) = target else {
             return;
         };
         self.current = self.current.join(name);
@@ -137,8 +141,8 @@ impl DirPicker {
         }
     }
 
-    /// Falls back to `current` when nothing is highlighted, so confirming in a
-    /// leaf directory or after a non-matching query still selects a directory.
+    /// Row 0 is the directory being browsed, so confirming there always yields
+    /// `current` — a partial filter is a transient search, not part of the path.
     pub fn selection(&self) -> PathBuf {
         match self.highlighted() {
             Some(name) => self.current.join(name),
@@ -146,8 +150,15 @@ impl DirPicker {
         }
     }
 
+    /// True when the cursor sits on row 0, the "use this directory" row.
+    pub fn is_current_row(&self) -> bool {
+        self.cursor == 0
+    }
+
+    /// Row 0 has no entry behind it; rows below are offset by one.
     fn highlighted(&self) -> Option<&str> {
-        let idx = *self.filtered.get(self.cursor)?;
+        let row = self.cursor.checked_sub(1)?;
+        let idx = *self.filtered.get(row)?;
         Some(self.entries[idx].as_str())
     }
 }
@@ -289,7 +300,8 @@ mod tests {
         picker.move_down();
         picker.move_down();
         picker.move_down();
-        assert_eq!(picker.cursor(), 1);
+        // Rows are: 0 = current directory, 1 = "one", 2 = "two".
+        assert_eq!(picker.cursor(), 2);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -307,12 +319,14 @@ mod tests {
         let root = fixture(&["alpha", "beta"], &[]);
         let mut picker = DirPicker::open(root.clone());
         picker.move_down();
+        assert_eq!(picker.selection(), root.join("alpha"));
+        picker.move_down();
         assert_eq!(picker.selection(), root.join("beta"));
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn selection_falls_back_to_current_when_nothing_matches() {
+    fn selection_at_row_zero_is_current_even_when_nothing_matches() {
         let root = fixture(&["alpha"], &[]);
         let mut picker = DirPicker::open(root.clone());
         picker.push_char('z');
@@ -322,10 +336,86 @@ mod tests {
     }
 
     #[test]
-    fn selection_is_current_when_directory_has_no_subdirs() {
+    fn selection_at_row_zero_is_current_with_no_subdirs() {
         let root = fixture(&[], &["only-a-file.txt"]);
         let picker = DirPicker::open(root.clone());
         assert_eq!(picker.selection(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn cursor_starts_on_the_current_directory_row() {
+        let root = fixture(&["alpha", "beta"], &[]);
+        let picker = DirPicker::open(root.clone());
+        assert_eq!(picker.cursor(), 0);
+        assert!(picker.is_current_row());
+        assert_eq!(picker.selection(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn is_current_row_only_at_cursor_zero() {
+        let root = fixture(&["alpha"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        assert!(picker.is_current_row());
+        picker.move_down();
+        assert!(!picker.is_current_row());
+        picker.move_up();
+        assert!(picker.is_current_row());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Enter on row 0 confirms where you are standing, discarding a partial
+    /// filter: row 0 means one thing regardless of what has been typed.
+    #[test]
+    fn selection_at_row_zero_ignores_a_partial_filter() {
+        let root = fixture(&["edge-pipeline"], &[]);
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('e');
+        picker.push_char('d');
+        assert_eq!(picker.filtered_names(), vec!["edge-pipeline"]);
+        assert!(picker.is_current_row());
+        assert_eq!(picker.selection(), root);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Tab on row 0 acts as shell-style completion into the first match, so
+    /// typing a path segment then tabbing walks downward.
+    #[test]
+    fn complete_from_row_zero_descends_into_the_first_match() {
+        let root = fixture(&["alpha", "beta"], &[]);
+        fs::create_dir_all(root.join("beta").join("inner")).unwrap();
+        let mut picker = DirPicker::open(root.clone());
+        picker.push_char('b');
+        assert!(picker.is_current_row());
+        picker.complete();
+        assert_eq!(picker.current(), root.join("beta"));
+        assert_eq!(picker.filtered_names(), vec!["inner"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn complete_from_a_subdirectory_row_descends_into_that_row() {
+        let root = fixture(&["alpha", "beta"], &[]);
+        fs::create_dir_all(root.join("beta").join("inner")).unwrap();
+        let mut picker = DirPicker::open(root.clone());
+        picker.move_down();
+        picker.move_down();
+        picker.complete();
+        assert_eq!(picker.current(), root.join("beta"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn descending_returns_the_cursor_to_row_zero() {
+        let root = fixture(&["alpha"], &[]);
+        fs::create_dir_all(root.join("alpha").join("inner")).unwrap();
+        let mut picker = DirPicker::open(root.clone());
+        picker.move_down();
+        picker.complete();
+        assert_eq!(picker.cursor(), 0);
+        assert!(picker.is_current_row());
+        assert_eq!(picker.selection(), root.join("alpha"));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -343,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_is_a_noop_when_nothing_is_highlighted() {
+    fn complete_is_a_noop_when_no_entry_matches() {
         let root = fixture(&["alpha"], &[]);
         let mut picker = DirPicker::open(root.clone());
         picker.push_char('z');
