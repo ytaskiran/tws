@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
@@ -12,9 +12,8 @@ const MAX_VISIBLE: usize = 10;
 
 pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Rect, theme: &Theme) {
     let names = picker.filtered_names();
-    // +1 for the "use this directory" row, which always precedes the listing.
-    let visible_count = (names.len() + 1).min(MAX_VISIBLE);
-    let height = (visible_count + 5) as u16;
+    let visible_count = names.len().min(MAX_VISIBLE);
+    let height = (visible_count.max(1) + 5) as u16;
     let popup = centered_rect(60, height, area);
     frame.render_widget(Clear, popup);
 
@@ -36,33 +35,9 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
     ])
     .split(inner);
 
-    let mut base = shorten_home(picker.current());
-    if !base.ends_with('/') {
-        base.push('/');
-    }
-    let path_line = Line::from(vec![
-        Span::styled(base, theme.modal_muted),
-        Span::raw(picker.query().to_string()),
-        Span::styled("\u{2588}", theme.cursor),
-    ]);
-    frame.render_widget(Paragraph::new(path_line), chunks[0]);
-
-    let sep = "\u{2500}".repeat(chunks[1].width as usize);
-    frame.render_widget(
-        Paragraph::new(Line::styled(sep, theme.separator)),
-        chunks[1],
-    );
-
-    let max_rows = chunks[2].height as usize;
     let cursor = picker.cursor();
-    let scroll_offset = if cursor >= max_rows {
-        cursor - max_rows + 1
-    } else {
-        0
-    };
+    let on_path = picker.is_current_row();
 
-    // Row 0 is the "use this directory" row and always exists; the
-    // subdirectories follow it, offset by one.
     let row_style = |selected: bool| {
         if selected {
             theme.highlight
@@ -72,31 +47,59 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
     };
     let prefix = |selected: bool| if selected { " \u{203A} " } else { "   " };
 
-    let mut rows: Vec<Line> = Vec::with_capacity(names.len() + 1);
+    // The path line is row 0 of a single navigable column: it carries the same
+    // prefix column and highlight as the entries below, so the marker moves
+    // between them without any text shifting.
+    let mut base = shorten_home(picker.current());
+    if !base.ends_with('/') {
+        base.push('/');
+    }
+    let mut path_spans = vec![Span::styled(prefix(on_path), row_style(on_path))];
+    if on_path {
+        path_spans.push(Span::styled(base, theme.highlight));
+        path_spans.push(Span::styled(picker.query(), theme.highlight));
+        path_spans.push(Span::styled("\u{2588}", theme.cursor));
+    } else {
+        path_spans.push(Span::styled(base, theme.modal_muted));
+        path_spans.push(Span::styled(picker.query(), row_style(false)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(path_spans)), chunks[0]);
 
-    let current_selected = cursor == 0;
-    let style = row_style(current_selected);
-    rows.push(Line::from(vec![
-        Span::styled(prefix(current_selected), style),
-        Span::styled(
-            format!("use {}", shorten_home(picker.current())),
-            style.add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    let sep = "\u{2500}".repeat(chunks[1].width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::styled(sep, theme.separator)),
+        chunks[1],
+    );
 
-    for (i, name) in names.iter().enumerate() {
-        let selected = i + 1 == cursor;
-        let style = row_style(selected);
-        rows.push(Line::from(vec![
-            Span::styled(prefix(selected), style),
-            Span::styled(format!("{}/", name), style),
-        ]));
+    if names.is_empty() {
+        let empty = Line::from(Span::styled("   No subdirectories", theme.modal_muted));
+        frame.render_widget(Paragraph::new(empty), chunks[2]);
+        return;
     }
 
-    let visible: Vec<Line> = rows
-        .into_iter()
+    // Cursor 0 is the path line, so entry `i` is selected at cursor `i + 1`.
+    let max_rows = chunks[2].height as usize;
+    let entry_row = cursor.saturating_sub(1);
+    let scroll_offset = if entry_row >= max_rows {
+        entry_row - max_rows + 1
+    } else {
+        0
+    };
+
+    let rows: Vec<Line> = names
+        .iter()
+        .enumerate()
         .skip(scroll_offset)
         .take(max_rows)
+        .map(|(i, name)| {
+            let selected = i + 1 == cursor;
+            let style = row_style(selected);
+            Line::from(vec![
+                Span::styled(prefix(selected), style),
+                Span::styled(format!("{}/", name), style),
+            ])
+        })
         .collect();
-    frame.render_widget(Paragraph::new(visible), chunks[2]);
+
+    frame.render_widget(Paragraph::new(rows), chunks[2]);
 }
