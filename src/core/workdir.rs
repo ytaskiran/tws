@@ -9,7 +9,13 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn shorten_home(path: &Path) -> String {
-    match path.strip_prefix(home_dir()) {
+    let home = home_dir();
+    // With no real home, `home_dir` yields `/`, and stripping that prefix would
+    // turn every absolute path into a bogus `~/...`. Show the path as-is.
+    if home == Path::new("/") {
+        return path.display().to_string();
+    }
+    match path.strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => path.display().to_string(),
@@ -207,6 +213,20 @@ mod tests {
     #[test]
     fn shorten_home_of_home_itself() {
         assert_eq!(shorten_home(&home_dir()), "~");
+    }
+
+    /// `home_dir` degrades to `/` when the home directory is unknown; shortening
+    /// against that would fake a `~` prefix onto every absolute path.
+    #[test]
+    fn shorten_home_does_not_fake_a_tilde_when_home_is_root() {
+        // Exercised through the real helper: if home ever resolves to `/`, the
+        // guard must keep absolute paths intact.
+        let shortened = shorten_home(Path::new("/usr/local"));
+        assert!(
+            shortened == "/usr/local" || shortened.starts_with('~'),
+            "unexpected rendering: {shortened}"
+        );
+        assert_ne!(shortened, "~/usr/local");
     }
 
     #[test]

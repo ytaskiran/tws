@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
@@ -57,7 +57,12 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
     let mut path_spans = vec![Span::styled(prefix(on_path), row_style(on_path))];
     if on_path {
         path_spans.push(Span::styled(base, theme.highlight));
-        path_spans.push(Span::styled(picker.query(), theme.highlight));
+        // Dimmed because the query filters the list below; Enter takes the
+        // directory, not the typed text, so it must not read as a path segment.
+        path_spans.push(Span::styled(
+            picker.query(),
+            theme.highlight.add_modifier(Modifier::DIM),
+        ));
         path_spans.push(Span::styled("\u{2588}", theme.cursor));
     } else {
         path_spans.push(Span::styled(base, theme.modal_muted));
@@ -72,7 +77,12 @@ pub fn render(frame: &mut Frame, picker: &DirPicker, thread_name: &str, area: Re
     );
 
     if names.is_empty() {
-        let empty = Line::from(Span::styled("   No subdirectories", theme.modal_muted));
+        let label = if picker.query().is_empty() {
+            "   No subdirectories"
+        } else {
+            "   No matches"
+        };
+        let empty = Line::from(Span::styled(label, theme.modal_muted));
         frame.render_widget(Paragraph::new(empty), chunks[2]);
         return;
     }

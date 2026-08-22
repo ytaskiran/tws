@@ -1189,7 +1189,8 @@ impl App {
             .and_then(|c| c.threads.get(thread_idx))
             .and_then(|t| t.working_dir.clone())
             .filter(|d| d.is_dir())
-            .or_else(|| std::env::current_dir().ok())
+            // An unset thread launches sessions in home, so the picker starts
+            // there too rather than at wherever tws happened to be launched.
             .unwrap_or_else(workdir::home_dir);
 
         self.mode = Mode::DirPicker {
@@ -1246,8 +1247,7 @@ impl App {
                 {
                     let dir = picker.selection();
                     let label = workdir::shorten_home(&dir);
-                    self.state
-                        .set_thread_working_dir(col_idx, thread_idx, Some(dir));
+                    self.state.set_thread_working_dir(col_idx, thread_idx, dir);
                     self.save_state();
                     self.set_flash(&format!("Directory set to {}", label));
                 }
@@ -1804,7 +1804,13 @@ impl App {
             .and_then(|c| c.threads.get(thread_idx))
             .and_then(|t| t.working_dir.clone());
         let (dir, missing) = workdir::resolve_launch_dir(configured.as_deref());
-        tmux::new_session(session_name, Some(&dir))?;
+        // `?` only covers a failure to spawn tmux; tmux refusing the request
+        // returns false. Attaching after that would switch-client to a session
+        // that does not exist and exit with nothing shown.
+        if !tmux::new_session(session_name, Some(&dir))? {
+            self.set_flash("Could not create the session — tmux refused it");
+            return Ok(());
+        }
         if missing {
             // Inside tmux the app exits via switch-client before another frame is
             // drawn, so a flash would never be painted; the tmux status line is the

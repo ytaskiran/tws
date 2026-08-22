@@ -160,12 +160,12 @@ impl AppState {
         &mut self,
         col_idx: usize,
         thread_idx: usize,
-        dir: Option<std::path::PathBuf>,
+        dir: std::path::PathBuf,
     ) {
         if let Some(col) = self.collections.get_mut(col_idx)
             && let Some(thread) = col.threads.get_mut(thread_idx)
         {
-            thread.working_dir = dir;
+            thread.working_dir = Some(dir);
         }
     }
 
@@ -1156,17 +1156,18 @@ mod tests {
     }
 
     #[test]
-    fn set_and_clear_thread_working_dir() {
+    fn set_thread_working_dir_overwrites_a_previous_value() {
         let mut state = AppState::new();
         state.add_collection("Work".into());
         state.add_thread(0, "Pipeline".into());
 
-        let dir = std::path::PathBuf::from("/tmp/pipeline");
-        state.set_thread_working_dir(0, 0, Some(dir.clone()));
-        assert_eq!(state.collections[0].threads[0].working_dir, Some(dir));
+        let first = std::path::PathBuf::from("/tmp/pipeline");
+        state.set_thread_working_dir(0, 0, first.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(first));
 
-        state.set_thread_working_dir(0, 0, None);
-        assert!(state.collections[0].threads[0].working_dir.is_none());
+        let second = std::path::PathBuf::from("/tmp/other");
+        state.set_thread_working_dir(0, 0, second.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(second));
     }
 
     #[test]
@@ -1174,7 +1175,7 @@ mod tests {
         let mut state = AppState::new();
         state.add_collection("Work".into());
         state.add_thread(0, "Pipeline".into());
-        state.set_thread_working_dir(9, 9, Some(std::path::PathBuf::from("/tmp")));
+        state.set_thread_working_dir(9, 9, std::path::PathBuf::from("/tmp"));
         assert!(state.collections[0].threads[0].working_dir.is_none());
     }
 }

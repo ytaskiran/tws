@@ -153,8 +153,9 @@ pub fn render(
             ),
             (
                 keymap.key_hint(KeyMode::DirPicker, Action::Confirm),
-                "select",
+                "use / open",
             ),
+            (keymap.key_hint(KeyMode::DirPicker, Action::Backspace), "up"),
             (
                 keymap.key_hint(KeyMode::DirPicker, Action::Cancel),
                 "cancel",
