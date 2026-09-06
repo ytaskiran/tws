@@ -156,6 +156,19 @@ impl AppState {
         }
     }
 
+    pub fn set_thread_working_dir(
+        &mut self,
+        col_idx: usize,
+        thread_idx: usize,
+        dir: std::path::PathBuf,
+    ) {
+        if let Some(col) = self.collections.get_mut(col_idx)
+            && let Some(thread) = col.threads.get_mut(thread_idx)
+        {
+            thread.working_dir = Some(dir);
+        }
+    }
+
     pub fn delete_collection(&mut self, idx: usize) {
         if idx < self.collections.len() {
             self.collections.remove(idx);
@@ -1140,5 +1153,29 @@ mod tests {
         }
 
         assert_eq!(state.agent_sessions[0].pin_slot, Some(2));
+    }
+
+    #[test]
+    fn set_thread_working_dir_overwrites_a_previous_value() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "Pipeline".into());
+
+        let first = std::path::PathBuf::from("/tmp/pipeline");
+        state.set_thread_working_dir(0, 0, first.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(first));
+
+        let second = std::path::PathBuf::from("/tmp/other");
+        state.set_thread_working_dir(0, 0, second.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(second));
+    }
+
+    #[test]
+    fn set_thread_working_dir_ignores_out_of_range_indices() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "Pipeline".into());
+        state.set_thread_working_dir(9, 9, std::path::PathBuf::from("/tmp"));
+        assert!(state.collections[0].threads[0].working_dir.is_none());
     }
 }

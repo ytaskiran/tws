@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -15,6 +17,10 @@ pub struct Thread {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    /// Absolute path sessions launched from this thread start in. `None` means
+    /// the home directory. Stored absolute; the `~` form is display-only.
+    #[serde(default)]
+    pub working_dir: Option<PathBuf>,
 }
 
 /// Runtime-only, never serialized. Represents a live tmux session.
@@ -113,6 +119,7 @@ impl Thread {
             id: Uuid::new_v4(),
             name: name.into(),
             description: None,
+            working_dir: None,
         }
     }
 }
@@ -285,5 +292,35 @@ mod tests {
             tmux_session_prefix("Derin Notlar Podcast", "Episode 13 - Planning"),
             "tws_derin-notlar-podcast_episode-13-planning"
         );
+    }
+
+    #[test]
+    fn thread_working_dir_defaults_to_none() {
+        let t = Thread::new("Test");
+        assert!(t.working_dir.is_none());
+    }
+
+    #[test]
+    fn thread_round_trips_with_working_dir() {
+        let mut t = Thread::new("Edge Pipeline");
+        t.working_dir = Some(std::path::PathBuf::from("/Users/x/projects/edge"));
+        let json = serde_json::to_string(&t).unwrap();
+        let loaded: Thread = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            loaded.working_dir,
+            Some(std::path::PathBuf::from("/Users/x/projects/edge"))
+        );
+    }
+
+    #[test]
+    fn deserialize_without_working_dir_defaults_to_none() {
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000002",
+            "name": "Legacy Thread",
+            "description": null
+        }"#;
+        let t: Thread = serde_json::from_str(json).unwrap();
+        assert_eq!(t.name, "Legacy Thread");
+        assert!(t.working_dir.is_none());
     }
 }

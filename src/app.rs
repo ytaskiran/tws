@@ -11,8 +11,8 @@ use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{
-    agent_preview, agents_view, confirm_modal, finder_modal, input_modal, notes_sidebar,
-    recent_bar, tree_view,
+    agent_preview, agents_view, confirm_modal, dir_picker_modal, finder_modal, input_modal,
+    notes_sidebar, recent_bar, tree_view,
 };
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::core::markdown::MarkdownRenderer;
@@ -20,6 +20,7 @@ use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::core::status::AgentTrigger;
+use crate::core::workdir::{self, DirPicker};
 use crate::event;
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
@@ -134,6 +135,11 @@ enum Mode {
         state: FinderState,
         session_name: String,
         session_label: String,
+    },
+    DirPicker {
+        picker: DirPicker,
+        col_idx: usize,
+        thread_idx: usize,
     },
 }
 
@@ -260,6 +266,9 @@ impl App {
                     }
                     Mode::ThreadPicker { .. } => {
                         self.handle_thread_picker_key(key.code, key.modifiers)?
+                    }
+                    Mode::DirPicker { .. } => {
+                        self.handle_dir_picker_key(key.code, key.modifiers);
                     }
                 }
             }
@@ -398,7 +407,16 @@ impl App {
                 );
             } else {
                 let block = Block::default();
-                let items = tree_view::build_tree_items(&self.state, &self.theme);
+                let selected_thread = match selected_item {
+                    SelectedItem::Thread(c, t) => self
+                        .state
+                        .collections
+                        .get(c)
+                        .and_then(|col| col.threads.get(t))
+                        .map(|thread| thread.id),
+                    _ => None,
+                };
+                let items = tree_view::build_tree_items(&self.state, &self.theme, selected_thread);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
@@ -562,6 +580,20 @@ impl App {
                         &self.theme,
                     );
                 }
+                Mode::DirPicker {
+                    picker,
+                    col_idx,
+                    thread_idx,
+                } => {
+                    let thread_name = self
+                        .state
+                        .collections
+                        .get(*col_idx)
+                        .and_then(|c| c.threads.get(*thread_idx))
+                        .map(|t| t.name.as_str())
+                        .unwrap_or("thread");
+                    dir_picker_modal::render(frame, picker, thread_name, area, &self.theme);
+                }
             }
         })?;
         Ok(())
@@ -573,6 +605,7 @@ impl App {
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
+            Mode::DirPicker { .. } => StatusContext::DirPicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents) {
                     if let Some(pending) = &self.pin_assign_pending {
@@ -721,6 +754,13 @@ impl App {
             Action::RecentSession4 => self.attach_recent(3, terminal)?,
             Action::RecentSession5 => self.attach_recent(4, terminal)?,
             Action::ExpandAll => self.toggle_expand_all(),
+            Action::SetDirectory => {
+                if let SelectedItem::Thread(col_idx, thread_idx) =
+                    self.state.resolve_selection(self.tree_state.selected())
+                {
+                    self.open_dir_picker(col_idx, thread_idx);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1138,6 +1178,28 @@ impl App {
         Ok(())
     }
 
+    /// Opens the picker on the selected thread. Starts at the thread's current
+    /// directory when it still exists, then the directory tws was launched
+    /// from, then home.
+    fn open_dir_picker(&mut self, col_idx: usize, thread_idx: usize) {
+        let start = self
+            .state
+            .collections
+            .get(col_idx)
+            .and_then(|c| c.threads.get(thread_idx))
+            .and_then(|t| t.working_dir.clone())
+            .filter(|d| d.is_dir())
+            // An unset thread launches sessions in home, so the picker starts
+            // there too rather than at wherever tws happened to be launched.
+            .unwrap_or_else(workdir::home_dir);
+
+        self.mode = Mode::DirPicker {
+            picker: DirPicker::open(start),
+            col_idx,
+            thread_idx,
+        };
+    }
+
     fn start_finder(&mut self) {
         let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_attached));
@@ -1153,6 +1215,71 @@ impl App {
         self.mode = Mode::Finder {
             state: FinderState::new(entries),
         };
+    }
+
+    fn handle_dir_picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let action = self.keymap.resolve(KeyMode::DirPicker, code, modifiers);
+
+        match action {
+            Some(Action::Cancel) => {
+                self.mode = Mode::Normal;
+            }
+            Some(Action::Confirm) => {
+                // Enter confirms only on row 0; on a subdirectory row it walks
+                // into that row, so Enter never picks a directory you have not
+                // navigated to deliberately.
+                let descend = match &self.mode {
+                    Mode::DirPicker { picker, .. } => !picker.is_current_row(),
+                    _ => false,
+                };
+                if descend {
+                    if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                        picker.complete();
+                    }
+                    return;
+                }
+                let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
+                if let Mode::DirPicker {
+                    picker,
+                    col_idx,
+                    thread_idx,
+                } = old_mode
+                {
+                    let dir = picker.selection();
+                    let label = workdir::shorten_home(&dir);
+                    self.state.set_thread_working_dir(col_idx, thread_idx, dir);
+                    self.save_state();
+                    self.set_flash(&format!("Directory set to {}", label));
+                }
+            }
+            Some(Action::Complete) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.complete();
+                }
+            }
+            Some(Action::MoveDown) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.move_down();
+                }
+            }
+            Some(Action::MoveUp) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.move_up();
+                }
+            }
+            Some(Action::Backspace) => {
+                if let Mode::DirPicker { picker, .. } = &mut self.mode {
+                    picker.backspace();
+                }
+            }
+            _ => {
+                if let KeyCode::Char(c) = code
+                    && let Mode::DirPicker { picker, .. } = &mut self.mode
+                {
+                    picker.push_char(c);
+                }
+            }
+        }
     }
 
     fn handle_finder_key(
@@ -1432,6 +1559,11 @@ impl App {
                     self.tree_state.open(vec![col_id]);
                     self.save_state();
                     self.set_flash("Thread added");
+                    // The thread exists before the picker opens, so cancelling
+                    // leaves a valid directory-less thread rather than
+                    // discarding the creation.
+                    let thread_idx = self.state.collections[collection_idx].threads.len() - 1;
+                    self.open_dir_picker(collection_idx, thread_idx);
                 }
                 InputPurpose::RenameCollection { idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
@@ -1496,8 +1628,7 @@ impl App {
                         self.state.make_session_name(col_idx, thread_idx, &trimmed)
                     {
                         self.save_state();
-                        self.launch_session(&session_name, terminal)?;
-                        self.set_flash("Session launched");
+                        self.launch_session(&session_name, col_idx, thread_idx, terminal)?;
                     }
                 }
                 InputPurpose::RenameSession {
@@ -1659,8 +1790,39 @@ impl App {
         }
     }
 
-    fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        tmux::new_session(session_name)?;
+    fn launch_session(
+        &mut self,
+        session_name: &str,
+        col_idx: usize,
+        thread_idx: usize,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let configured = self
+            .state
+            .collections
+            .get(col_idx)
+            .and_then(|c| c.threads.get(thread_idx))
+            .and_then(|t| t.working_dir.clone());
+        let (dir, missing) = workdir::resolve_launch_dir(configured.as_deref());
+        // `?` only covers a failure to spawn tmux; tmux refusing the request
+        // returns false. Attaching after that would switch-client to a session
+        // that does not exist and exit with nothing shown.
+        if !tmux::new_session(session_name, Some(&dir))? {
+            self.set_flash("Could not create the session — tmux refused it");
+            return Ok(());
+        }
+        if missing {
+            // Inside tmux the app exits via switch-client before another frame is
+            // drawn, so a flash would never be painted; the tmux status line is the
+            // only surface the user still sees.
+            if tmux::is_inside_tmux() {
+                let _ = tmux::display_message("tws: thread directory is missing — started in ~");
+            } else {
+                self.set_flash("Directory no longer exists — started in ~");
+            }
+        } else {
+            self.set_flash("Session launched");
+        }
         self.attach_to_session(session_name, terminal)
     }
 

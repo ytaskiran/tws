@@ -1,15 +1,21 @@
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 use tui_tree_widget::TreeItem;
+use uuid::Uuid;
 
 use crate::core::model::Thread;
 use crate::core::state::AppState;
+use crate::core::workdir::shorten_home;
 use crate::theme::Theme;
 
 /// Converts the app state into TreeItems for rendering.
 /// Collections -> Threads -> Sessions (3-level hierarchy).
 /// Root threads (from the root collection) render at root level, not nested under a collection node.
-pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<'a, String>> {
+pub fn build_tree_items<'a>(
+    state: &'a AppState,
+    theme: &Theme,
+    selected_thread: Option<Uuid>,
+) -> Vec<TreeItem<'a, String>> {
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
     for col in &state.collections {
@@ -19,7 +25,7 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
         let children: Vec<TreeItem<'a, String>> = col
             .threads
             .iter()
-            .map(|thread| build_thread_item(state, thread, theme))
+            .map(|thread| build_thread_item(state, thread, theme, selected_thread))
             .collect();
 
         items.push(
@@ -37,7 +43,7 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
             continue;
         }
         for thread in &col.threads {
-            items.push(build_thread_item(state, thread, theme));
+            items.push(build_thread_item(state, thread, theme, selected_thread));
         }
     }
 
@@ -49,6 +55,7 @@ fn build_thread_item<'a>(
     state: &'a AppState,
     thread: &'a Thread,
     theme: &Theme,
+    selected_thread: Option<Uuid>,
 ) -> TreeItem<'a, String> {
     let session_children: Vec<TreeItem<'a, String>> = state
         .active_sessions
@@ -88,15 +95,29 @@ fn build_thread_item<'a>(
 
     let session_count = session_children.len();
 
-    let thread_text = if session_count > 0 {
-        Text::from(Line::from(vec![
+    // Always shown so the path does not appear and vanish as the cursor moves;
+    // selection only changes how brightly it reads.
+    let dir_suffix = thread.working_dir.as_ref().map(|d| {
+        let style = if selected_thread == Some(thread.id) {
+            theme.thread_dim
+        } else {
+            theme.thread_path_dim
+        };
+        Span::styled(format!("  {}", shorten_home(d)), style)
+    });
+
+    let mut spans: Vec<Span> = if session_count > 0 {
+        vec![
             Span::styled(thread.name.as_str(), theme.thread),
             Span::styled(" \u{25CF} ", theme.badge_dot),
             Span::styled(session_count.to_string(), theme.badge_count),
-        ]))
+        ]
     } else {
-        Text::styled(thread.name.as_str(), theme.thread_dim)
+        vec![Span::styled(thread.name.as_str(), theme.thread_dim)]
     };
+    spans.extend(dir_suffix);
+
+    let thread_text = Text::from(Line::from(spans));
 
     if session_children.is_empty() {
         TreeItem::new_leaf(thread.id.to_string(), thread_text)
