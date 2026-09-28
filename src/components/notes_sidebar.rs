@@ -16,6 +16,20 @@ pub struct SidebarState<'a> {
     pub focused: bool,
 }
 
+/// One rule on the left instead of a box. The label sits on the first row,
+/// and the content starts one blank row below it.
+fn frame_block() -> Block<'static> {
+    Block::new()
+        .borders(Borders::LEFT)
+        .padding(Padding::new(2, 1, 0, 0))
+}
+
+/// Width available to note text in a pane `pane_width` columns wide. Wrap the
+/// markdown to this width so that no column is cut off.
+pub fn text_width(pane_width: u16) -> u16 {
+    frame_block().inner(Rect::new(0, 0, pane_width, 1)).width
+}
+
 /// Render the notes sidebar as a read-only markdown preview.
 pub fn render(frame: &mut Frame, state: &SidebarState<'_>, area: Rect, theme: &Theme) {
     let (border_style, title_style) = if state.focused {
@@ -24,12 +38,7 @@ pub fn render(frame: &mut Frame, state: &SidebarState<'_>, area: Rect, theme: &T
         (theme.notes_border_unfocused, theme.notes_title_unfocused)
     };
 
-    // One rule on the left instead of a box. The label sits on the first row,
-    // and the content starts one blank row below it.
-    let block = Block::new()
-        .borders(Borders::LEFT)
-        .border_style(border_style)
-        .padding(Padding::new(2, 1, 0, 0));
+    let block = frame_block().border_style(border_style);
     let padded = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
@@ -72,5 +81,43 @@ pub fn render(frame: &mut Frame, state: &SidebarState<'_>, area: Rect, theme: &T
                 .track_style(theme.scrollbar_track);
             frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::palette::Palette;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// A note line exactly `text_width` wide must show in full.
+    #[test]
+    fn a_line_as_wide_as_text_width_is_not_cut() {
+        let pane = 40;
+        let width = text_width(pane) as usize;
+        let line = format!("{}Z", "x".repeat(width - 1));
+        let text = Text::from(line);
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(pane, 6)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &SidebarState {
+                        rendered: Some(&text),
+                        scroll_offset: 0,
+                        is_empty: false,
+                        title: "notes · t",
+                        focused: false,
+                    },
+                    f.area(),
+                    &theme,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..pane).map(|x| buf[(x, 2)].symbol()).collect();
+        assert!(row.contains('Z'), "last column cut off: {row:?}");
     }
 }

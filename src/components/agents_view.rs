@@ -84,5 +84,62 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), area);
+    let scroll = super::scroll_to_keep_visible(cursor, area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::palette::Palette;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn agent(n: usize) -> FlatAgent {
+        FlatAgent {
+            col_idx: 0,
+            thread_idx: 0,
+            thread_name: "t".into(),
+            sess_idx: 0,
+            session_display_name: "s".into(),
+            agent_idx: n,
+            agent_display_name: format!("agent-{n:02}"),
+            tmux_session_name: "s".into(),
+            window_index: 0,
+            pane_id: format!("%{n}"),
+            pin_slot: None,
+            status: AgentStatus::Working,
+        }
+    }
+
+    fn screen(agents: &[FlatAgent], cursor: usize, height: u16) -> String {
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
+        terminal
+            .draw(|f| render(f, agents, cursor, f.area(), &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn selected_agent_stays_visible_past_the_bottom_edge() {
+        let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
+        let out = screen(&agents, 9, 3);
+        assert!(out.contains("agent-09"), "cursor row scrolled off:\n{out}");
+    }
+
+    #[test]
+    fn list_starts_at_the_top_when_the_cursor_fits() {
+        let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
+        let out = screen(&agents, 1, 3);
+        assert!(out.contains("agent-00"), "list scrolled too early:\n{out}");
+    }
 }

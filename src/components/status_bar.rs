@@ -97,17 +97,9 @@ pub fn render(
                 "add collection",
             ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder), "find"),
-            (
-                keymap.key_hint(KeyMode::Normal, Action::ExpandAll),
-                "toggle all",
-            ),
         ],
         StatusContext::NormalCollection => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit), "quit"),
-            (
-                keymap.key_hint(KeyMode::Normal, Action::ToggleSelect),
-                "toggle",
-            ),
             (keymap.key_hint(KeyMode::Normal, Action::Add), "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename), "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete), "delete"),
@@ -218,7 +210,7 @@ pub fn render(
             ),
             (
                 keymap.key_hint(KeyMode::Normal, Action::ToggleView),
-                "tree view",
+                "sessions",
             ),
             (keymap.key_hint(KeyMode::Agents, Action::Quit), "quit"),
         ],
