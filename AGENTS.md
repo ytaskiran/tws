@@ -107,18 +107,19 @@ Agents report state through the filesystem. A hook writes one word (`working` / 
 
 A hook writes only when the word *changes*, so mtime is the state-entry time that `status_since` displays. `PreToolUse` is the exception: it refreshes mtime on every tool call even when the word is unchanged, giving `expire_stale_working()` a liveness heartbeat. For `working` panes, then, mtime means last-activity rather than state-entry.
 
-`status_hook_entry` emits one of six command shapes, and picking the wrong one is how this protocol breaks:
+`status_hook_entry` emits one of seven command shapes, and picking the wrong one is how this protocol breaks:
 
 | mode | writes | used by |
 |---|---|---|
 | `set` | unconditionally, when the word differs | `UserPromptSubmit`, `PreToolUse ^AskUserQuestion$`, `PostToolUse ^AskUserQuestion$`, `PostCompact` |
-| `stop` | `working` while a fresh subagent marker exists, else `review` | `Stop`, `StopFailure` |
+| `stop` | `working` while a fresh subagent marker exists, else `idle` if the pane is in view, else `review` | `Stop`, `StopFailure` |
+| `settle` | `idle` if the pane is in view, else `review`. It has no subagent guard. | `PostCompact` |
 | `tool` | reads the payload. A main-thread call resumes `working` over `review`, `idle`, or an empty file. A subagent call acts as `live`. | Claude `PreToolUse` (every tool but the question) |
 | `live` | refreshes `working`, or claims an empty file — never overwrites a resting state | Codex `PreToolUse` |
 | `alert` | raises `waiting` over `working` or an empty file only | `Notification permission_prompt`, Codex `PermissionRequest` |
 | `idle_alert` | the same as `alert`, but skipped while a fresh subagent marker exists | `Notification idle_prompt` |
 
-Five further properties keep this correct, and all five are easy to break:
+Six further properties keep this correct, and all six are easy to break:
 
 **A pane has more than one writer.** Hooks are keyed on `$TMUX_PANE`, but a background subagent runs in the same pane as the main loop and fires the same tool hooks. A Claude tool hook payload carries `agent_id` only inside a subagent. So `tool` mode tells the two apart with one `jq` call. A subagent call cannot start a turn, so it behaves as `live`. A main-thread call can, because the main loop only calls a tool when its turn is live. Only `waiting` survives a main-thread call, because a background subagent can hold the pane there for its permission prompt. Before this rule, `Stop` set `review` and the subagent's next tool call repainted the pane `working` three seconds later, hiding exactly the pane that needed you. Run `bash scripts/verify-agent-hooks.sh` after touching any of this; it drives the generated commands and asserts the words.
 
@@ -126,7 +127,9 @@ Five further properties keep this correct, and all five are easy to break:
 
 **Every state needs an exit event.** tws can only be as fresh as the hooks that fire. `working` is asserted by `UserPromptSubmit` and — for the question case only — `PostToolUse`; Pi's extension gets the same signal from `turn_start`. `PostToolUse ^AskUserQuestion$` is the "turn resumed" event, and it is the one that is easy to forget. Without it, leaving `waiting` waits on the model reaching its *next* tool call, which is unbounded: measured at 8s in a busy session and 18 hours against an idle one. A permission grant has no such event, so that pane rests at `waiting` until the turn ends — a visible false alarm, chosen over a false `working` that would hide it. `Notification` `idle_prompt` is the backstop: Claude sends it 60s after the main loop goes quiet, and it heals any pane still claiming `working` — unless a fresh subagent marker shows that work goes on. When adding a state, ask what event returns the agent *out* of it, and whether that event is bounded by something other than the model's own choice to act.
 
-**`$TMUX_PANE` is the only pane identity, and a hook without one must stay silent.** The file name *is* the sender's identity, so a wrong name is an undetectable forged write. Never fall back to `tmux display-message -p "#{pane_id}"`: that answers for the current client's *active* pane, not the caller's, so an agent outside a pane stamps whichever pane the user is watching — and that pane, being idle, fires no hook of its own to correct it. Agents do run without `TMUX_PANE`: Claude Code's background sessions (`claude daemon run` → `bg-pty-host` → `bg-spare`) carry neither `TMUX` nor `TMUX_PANE`. tws tracks only agents inside panes, so a pane-less agent has nothing to report and must write nothing.
+**A turn that ends in the visible pane is read.** Every turn-end `review` write asks tmux about the caller's own pane first: `tmux display-message -p -t "$TMUX_PANE" '#{pane_active}#{window_active}#{session_attached}'`. The pane is in view when the answer starts with `11` and the last flag is 1 or more. The hook then writes `idle` and not `review`, so the user does not need to leave and attach again to clear it. This covers Claude `Stop`, `StopFailure`, and `PostCompact`, Codex `Stop` and `PostCompact`, and Pi `agent_settled` and `session_compact`. Any tmux failure (no server, no binary, an odd answer) means `review`. A live subagent marker is checked first, so a pane with live subagents stays `working` even when it is in view. Known limit: tmux does not know if the terminal window has focus. A pane that is in view in a background terminal counts as read.
+
+**`$TMUX_PANE` is the only pane identity, and a hook without one must stay silent.** The file name *is* the sender's identity, so a wrong name is an undetectable forged write. A query scoped with `-t "$TMUX_PANE"` reads facts *about* the caller's own pane, and it is allowed. Never fall back to an unscoped `tmux display-message -p "#{pane_id}"`: that answers for the current client's *active* pane, not the caller's, so an agent outside a pane stamps whichever pane the user is watching — and that pane, being idle, fires no hook of its own to correct it. Agents do run without `TMUX_PANE`: Claude Code's background sessions (`claude daemon run` → `bg-pty-host` → `bg-spare`) carry neither `TMUX` nor `TMUX_PANE`. tws tracks only agents inside panes, so a pane-less agent has nothing to report and must write nothing.
 
 **Scans snapshot the trigger before reading statuses.** `do_agent_scan()` reads the trigger mtime up front and acknowledges *that* value at the end. Reading it fresh at the end instead would mark a hook that fired mid-scan as seen while its status went unread, stranding the agent until its next hook. `prune_stale_files()` has the mirror-image guard: it keeps files written since the scan began, since an agent that spawned mid-scan is missing from the pane snapshot but is very much running.
 
@@ -136,7 +139,7 @@ Hook wiring lives in `install.sh` (`status_hook_entry`, `subagent_hook_entry`, `
 
 All Rust tests are in-file `#[cfg(test)]` modules. Coverage focuses on model construction, persistence round-trips, CRUD operations, selection resolution, and agent scan parsing. tmux command wrappers are not unit-tested (side-effectful).
 
-The hook commands are shell, not Rust, so `cargo test` cannot reach them. `scripts/verify-agent-hooks.sh` runs each generated command against a throwaway `HOME`, with a JSON payload on stdin as Claude sends it, and checks three things: the status words a sequence of events produces, which pane file each command touches, and that a hook runs `jq` at most once. The pane checks supply a fake `tmux` that answers with a pane the caller does not own, so a re-introduced fallback writes somewhere visible instead of failing silently. CI runs the script as the `hooks` job.
+The hook commands are shell, not Rust, so `cargo test` cannot reach them. `scripts/verify-agent-hooks.sh` runs each generated command against a throwaway `HOME`, with a JSON payload on stdin as Claude sends it, and checks three things: the status words a sequence of events produces, which pane file each command touches, and that a hook runs `jq` at most once. The pane checks supply a fake `tmux` that answers a bare pane query with a pane the caller does not own, so a re-introduced fallback writes somewhere visible instead of failing silently. The same fake answers a query scoped to `%7` with the flags in `FAKE_TMUX_STATE` (`111` in view, `101` window not active, `011` pane not active, `110` no client, `fail` for a failing tmux). The script also fails on any `display-message` call that lacks `-t "$TMUX_PANE"`. CI runs the script as the `hooks` job.
 
 ## CLI
 

@@ -172,8 +172,15 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
-#   stop   turn end. Writes `working` while a fresh subagent marker exists, else
-#          the word. Also deletes stale markers.
+#   stop   turn end. Writes `working` while a fresh subagent marker exists. Else
+#          it writes the word, or `idle` if the pane is in view (see `settle`).
+#          Also deletes stale markers.
+#   settle turn end with no subagent guard (compaction). Writes the word, or
+#          `idle` if the user is looking at the pane. tmux answers with three
+#          flags: pane_active, window_active and session_attached. The pane is in
+#          view when the first two are 1 and the third is 1 or more. If the query
+#          fails, the answer is the word. tmux does not know if the terminal has
+#          focus, so a pane in a background terminal counts as in view.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 status_hook_entry() {
     local word="$1"
@@ -187,6 +194,9 @@ status_hook_entry() {
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
+    # Only the -t "$TMUX_PANE" form is allowed: it asks about the caller's own pane.
+    local seen='v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}#{window_active}#{session_attached}" 2>/dev/null); '
+    seen+='case "$v" in 11[1-9]*) w=idle ;; esac; '
     case "$mode" in
         tool)
             # A failed jq (missing, bad JSON) cannot prove this is the main loop,
@@ -201,7 +211,11 @@ status_hook_entry() {
             ;;
         stop)
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; fi; "
+            cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
+            cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
+            ;;
+        settle)
+            cmd+="w=$word; $seen"
             cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
             ;;
         idle_alert)
@@ -322,7 +336,7 @@ configure_claude_hooks() {
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
     e_stop=$(status_hook_entry review "" stop)
     # Compaction and API errors end a turn without firing Stop.
-    e_compact=$(status_hook_entry review "manual|auto")
+    e_compact=$(status_hook_entry review "manual|auto" settle)
     e_fail=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
@@ -426,7 +440,7 @@ configure_codex_hooks() {
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     # Codex has no API-error event, so stale expiry is the only backstop there.
-    e_compact=$(status_hook_entry review "manual|auto")
+    e_compact=$(status_hook_entry review "manual|auto" settle)
     e_end=$(session_end_hook_entry)
 
     jq \
@@ -481,6 +495,7 @@ configure_pi_hooks() {
     # idempotent since tws owns it outright (unlike the Claude/Codex configs,
     # which are shared JSON we must merge into carefully).
     cat > "$ext_file" <<'PI_EXT_EOF'
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
@@ -492,6 +507,31 @@ const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 function panePath(): string | undefined {
   const pane = process.env.TMUX_PANE;
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
+}
+
+// A turn that ends in the pane the user is looking at is already read. tmux
+// answers three flags for the pane: pane_active, window_active and
+// session_attached. Any failure means the pane is not known to be in view. The
+// query names the pane with -t, so it reads this pane and not the active one.
+// tmux does not know if the terminal has focus: a pane in a background terminal
+// counts as in view.
+function turnEndWord(pane: string): string {
+  try {
+    const seen = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}#{window_active}#{session_attached}"], {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return /^11[1-9]/.test(seen.trim()) ? "idle" : "review";
+  } catch {
+    return "review";
+  }
+}
+
+function settle() {
+  const pane = process.env.TMUX_PANE;
+  const path = panePath();
+  if (pane && path) writeWord(path, turnEndWord(pane));
 }
 
 function readWord(path: string): string | undefined {
@@ -538,12 +578,10 @@ export default function (pi: any) {
   });
   // Compaction can end a turn without agent_settled firing.
   pi.on("session_compact", async () => {
-    const path = panePath();
-    if (path) writeWord(path, "review");
+    settle();
   });
   pi.on("agent_settled", async () => {
-    const path = panePath();
-    if (path) writeWord(path, "review");
+    settle();
   });
   pi.on("session_shutdown", async () => {
     const path = panePath();

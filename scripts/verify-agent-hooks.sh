@@ -23,12 +23,30 @@ trap 'rm -rf "$HOME"' EXIT
 
 failures=0
 
-# A tmux that answers the pane query with a pane the caller does not own — the
+# A tmux that answers a bare pane query with a pane the caller does not own — the
 # real one answers for the current client's active pane, which is the same
-# thing from the hook's point of view.
+# thing from the hook's point of view. A query scoped with -t to the caller's
+# pane (%7) answers with FAKE_TMUX_STATE, the three flags a hook reads:
+# pane_active, window_active and session_attached. "fail" (the default) makes
+# the query fail, as it does when no server answers. A query scoped to any other
+# pane fails too, so a hook that asks about the wrong pane cannot pass.
 FAKE_BIN="$HOME/fake-bin"
 mkdir -p "$FAKE_BIN"
-printf '#!/bin/sh\necho "%%99"\n' > "$FAKE_BIN/tmux"
+cat > "$FAKE_BIN/tmux" <<'FAKE_TMUX_EOF'
+#!/bin/sh
+target=""
+while [ $# -gt 0 ]; do
+    if [ "$1" = -t ]; then target="${2:-}"; shift; fi
+    shift
+done
+if [ -z "$target" ]; then
+    echo "%99"
+elif [ "$target" = "%7" ] && [ "${FAKE_TMUX_STATE:-fail}" != fail ]; then
+    echo "$FAKE_TMUX_STATE"
+else
+    exit 1
+fi
+FAKE_TMUX_EOF
 chmod +x "$FAKE_BIN/tmux"
 
 # A jq that counts its calls, so a check can assert a hook runs it once at most.
@@ -47,14 +65,16 @@ chmod +x "$BROKEN_BIN/jq"
 
 # Runs a hook command with a JSON payload on stdin, as Claude Code does. With
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
-# inherit, and a tmux standing by to answer if the command asks.
+# inherit. The fake tmux is on the PATH either way, so the real server is never
+# asked. Set FAKE_TMUX_STATE to choose what the fake tmux says about the pane.
 run_command() {
     local json="$1" command="$2" broken=""
     [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
+    local state="FAKE_TMUX_STATE=${FAKE_TMUX_STATE:-fail}"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
     else
-        printf '%s' "$json" | env "PATH=$broken$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
     fi
 }
 
@@ -105,6 +125,11 @@ sub_stop()         { subagent_event stop '{"agent_id":"a1","agent_type":"general
 claude_stop()      { fire review "" stop ; }
 permission_prompt() { fire waiting "permission_prompt" alert ; }
 idle_prompt()      { fire waiting "idle_prompt" idle_alert ; }
+compact_done()     { fire review "manual|auto" settle ; }
+
+# What tmux says about the pane: the visible pane of an attached session, and
+# the four ways to be out of sight.
+VISIBLE=111
 
 MARKER="$HOME/.config/tws/subagents/%7/a1"
 OLD_TIME=200001010000
@@ -303,6 +328,65 @@ fi
 expect working "and changes no status"
 expect_marker present "and leaves the other markers alone"
 
+printf '\na turn that ends in the visible pane is read\n'
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "Stop in the visible pane marks it read"
+reset
+prompt_submit
+FAKE_TMUX_STATE=112 claude_stop
+expect idle "two attached clients still count as in view"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE fire review "" stop
+expect idle "StopFailure shares the visibility check"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE compact_done
+expect idle "a manual compaction that ends in the visible pane is read"
+reset
+prompt_submit
+compact_done
+expect review "a compaction in a pane out of sight stays review"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE turn_end
+expect review "a plain set-mode write never asks tmux"
+
+for state in 101 011 110 001 000 fail; do
+    case "$state" in
+        101) why="the window is not the active window" ;;
+        011) why="the pane is not the active pane" ;;
+        110) why="no client is attached" ;;
+        001) why="only a client is attached" ;;
+        000) why="nothing is active" ;;
+        fail) why="the tmux query fails" ;;
+    esac
+    reset
+    prompt_submit
+    FAKE_TMUX_STATE=$state claude_stop
+    expect review "Stop stays review when $why"
+done
+reset
+prompt_submit
+FAKE_TMUX_STATE=garbage claude_stop
+expect review "and when tmux answers with something else"
+
+reset
+prompt_submit; sub_start
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect working "a live subagent keeps a visible pane working"
+reset
+prompt_submit; sub_start; backdate "$MARKER"
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a stale marker does not hold a visible pane"
+reset
+prompt_submit; sub_start
+sub_stop
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a visible pane is read once the subagents are done"
+
 printf '\neach hook runs jq at most once\n'
 reset
 for call in main_tool_call sub_tool_call sub_start sub_stop; do
@@ -344,6 +428,8 @@ PANE_LESS=1 fire_in "$MAIN_JSON" working "$TOOL_MATCHER" tool
 PANE_LESS=1 fire_in "$SUB_JSON" working "$TOOL_MATCHER" tool
 fire_pane_less review "" stop
 fire_pane_less waiting "idle_prompt" idle_alert
+FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "" stop
+FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual|auto" settle
 files="$(find "$HOME/.config/tws" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
 if [ "${files:-0}" = 1 ] && [ -e "$MARKER" ]; then
     printf '  ok   the subagent commands with no TMUX_PANE write nothing\n'
@@ -373,8 +459,34 @@ else
     failures=$((failures + 1))
 fi
 
+# A query scoped with -t to $TMUX_PANE reads facts about the caller's own pane,
+# and it is allowed. Any other display-message call is a pane-identity guess.
+unscoped_queries() {
+    grep 'display-message' | grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true
+}
+
 reset
-guesses="$(grep -c 'display-message' "$INSTALL_SH" || true)"
+sample='tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"
+execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])'
+if [ -z "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
+    printf '  ok   the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
+else
+    printf '  FAIL the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
+    failures=$((failures + 1))
+fi
+for sample in \
+    'tmux display-message -p "#{pane_id}"' \
+    'tmux display-message -p -t "$OTHER" "#{pane_id}"' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"])'; do
+    if [ -n "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
+        printf '  ok   the pane-identity check rejects: %s\n' "$sample"
+    else
+        printf '  FAIL the pane-identity check rejects: %s\n' "$sample"
+        failures=$((failures + 1))
+    fi
+done
+
+guesses="$(unscoped_queries < "$INSTALL_SH" | wc -l | tr -d ' ')"
 if [ "$guesses" = "0" ]; then
     printf '  ok   no hook resolves its pane by asking tmux\n'
 else
