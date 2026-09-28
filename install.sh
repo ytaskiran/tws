@@ -587,6 +587,64 @@ configure_fork_binding() {
     info "Run: tmux source-file ~/.tmux.conf"
 }
 
+# --- 5b. Optional: tmux ack hooks ---
+
+ACK_MARKER='# tws ack hooks'
+
+# Prints the marked block. run-shell does not use your shell PATH, so the hook
+# names the binary by its absolute path. The -ga flags append to any hook you
+# already set. tmux expands #{pane_id} before the shell runs, so tws learns the
+# pane that the client lands on.
+ack_hook_block() {
+    local cmd="run-shell -b \"$INSTALL_DIR/$BINARY_NAME ack-pane #{pane_id}\""
+    printf '%s\n' "$ACK_MARKER"
+    printf "set-hook -ga after-select-pane '%s'\n" "$cmd"
+    printf "set-hook -ga after-select-window '%s'\n" "$cmd"
+    printf "set-hook -ga client-session-changed '%s'\n" "$cmd"
+}
+
+# Idempotent: drop any earlier marked block, then append the current one.
+write_ack_hooks() {
+    local conf="$1"
+    if grep -qF "$ACK_MARKER" "$conf"; then
+        local tmp
+        tmp="$(mktemp)"
+        # grep exits 1 (no error) when the filter matches nothing, which
+        # would abort the script under set -o pipefail if chained with &&.
+        grep -vF -e "$ACK_MARKER" -e "tws ack-pane" "$conf" > "$tmp" || true
+        mv "$tmp" "$conf"
+    fi
+    { printf '\n'; ack_hook_block; } >> "$conf"
+}
+
+configure_ack_hooks() {
+    local conf="$HOME/.tmux.conf"
+
+    if [ ! -f "$conf" ]; then
+        info "No ~/.tmux.conf — skipping ack hooks"
+        return
+    fi
+
+    if [ "$hooks_configured" -ne 1 ]; then
+        info "Agent hooks are not configured — the ack hooks have no status to clear"
+        info "Skipping ack hooks. Re-run install and accept the agent hooks step, then add them manually with:"
+        ack_hook_block | sed 's/^/  /'
+        return
+    fi
+
+    printf '%s' "Mark a pane as read when you move into it with tmux, and add ack hooks to ~/.tmux.conf? [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped ack hooks — add them manually with:"
+        ack_hook_block | sed 's/^/  /'
+        return
+    fi
+
+    write_ack_hooks "$conf"
+    ok "Added ack hooks to ~/.tmux.conf"
+    info "Run: tmux source-file ~/.tmux.conf"
+}
+
 # --- 6. Optional: glow (rich markdown rendering) ---
 
 configure_glow() {
@@ -631,6 +689,7 @@ main() {
     install_binary "$target"
     configure_agent_hooks
     configure_fork_binding
+    configure_ack_hooks
     configure_glow
 
     echo ""

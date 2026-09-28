@@ -64,6 +64,26 @@ the fork pane.
 This feature works with Claude Code only. Codex and Pi panes do not support
 forking. `codex resume` appends to the parent session instead of forking it.
 
+### Read a pane by moving into it
+
+An agent pane in the review state means that the agent finished and you did not
+look yet. When you attach through tws, tws clears the state. When you move into
+the pane with plain tmux, tws cannot see the move. The tmux hooks below close
+that gap. They call `tws ack-pane` for the pane you land on. The command clears
+the review state of that pane and changes nothing else.
+
+`install.sh` adds the hooks if you accept. The hooks use the absolute path of the
+binary, because `run-shell` does not read your shell `PATH`:
+
+    # tws ack hooks
+    set-hook -ga after-select-pane 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -ga after-select-window 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -ga client-session-changed 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+
+Write the full path of your own binary in `~/.tmux.conf`. Do not use `~`. Reload with
+`tmux source-file ~/.tmux.conf`. Each reload adds the hooks a second time to the
+running server. This is harmless, but restart tmux to clear the copies.
+
 ### Notes
 
 Each thread and session has its own markdown note, stored as a plain `.md` file under `~/.config/tws/notes/`. Press `Tab` to focus the notes panel, `Enter` to open the current note in `$EDITOR`. Renders with [glow](https://github.com/charmbracelet/glow) if installed, falls back to basic markdown otherwise. Handy for per-workstream scratch notes, todo lists, and command snippets.
@@ -128,6 +148,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/tws
 ```sh
 tws          # launch the TUI
 tws import   # interactively import existing unmanaged tmux sessions
+tws ack-pane [PANE_ID]   # mark a pane as read (used by the tmux hooks)
 ```
 
 The status bar shows context-aware key hints for whatever is selected. The essentials:
