@@ -73,7 +73,9 @@ Mode::Normal → Mode::Input { purpose, buffer } → confirm → back to Normal
 
 ### Selection resolution
 
-The tree widget (`tui-tree-widget`) uses UUID strings as node identifiers. `state.rs::resolve_selection()` maps a `&[String]` tree path into `SelectedItem` — an enum with variants `None | Collection(idx) | Thread(col, thread) | Session(col, thread, sess) | Agent(col, thread, sess, agent)`. This is the bridge between the tree widget and the domain model.
+Selection is a `&[String]` path of identifiers (collection/thread UUIDs, tmux session names, pane IDs), stored in a `tui_tree_widget::TreeState`. `state.rs::resolve_selection()` maps that path into `SelectedItem` — an enum with variants `None | Collection(idx) | Thread(col, thread) | Session(col, thread, sess) | Agent(col, thread, sess, agent)`. This is the bridge between the UI and the domain model.
+
+The sessions view (`components/sessions_view.rs`) draws its own rows and does not render the `Tree` widget. `TreeState` only learns the row order from a `Tree` render, so its `key_down`/`key_up` do not work here. Navigation uses `sessions_view::row_paths()` and `sessions_view::step()` instead. Keep the row order in `rows()` only, so the screen and the cursor cannot disagree.
 
 ### Key modules
 
@@ -86,7 +88,7 @@ The tree widget (`tui-tree-widget`) uses UUID strings as node identifiers. `stat
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command` |
 | `tmux/agent_scan.rs` | Detect AI agents by `tmux list-panes` + `ps -e`, match child process names |
-| `components/` | Stateless render functions: tree_view, input_modal, confirm_modal, finder_modal, notes_sidebar, status_bar, recent_bar |
+| `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
 | `theme.rs` | All `Style` constants — warm palette (orange collections, tan threads, sage green sessions) |
 
 ### Rendering

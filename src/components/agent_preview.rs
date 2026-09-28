@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
 use crate::theme::Theme;
@@ -16,14 +16,22 @@ pub struct PreviewState<'a> {
 
 /// Render the agent pane preview as a read-only panel pinned to the bottom.
 pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect, theme: &Theme) {
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(format!(" {} ", state.title))
-        .title_style(theme.preview_title)
-        .border_style(theme.preview_border);
-
-    let inner = block.inner(area);
+    // Same frame as the notes pane: one left rule and a label row.
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_style(theme.preview_border)
+        .padding(Padding::new(2, 1, 0, 0));
+    let padded = block.inner(area);
     frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(state.title, theme.preview_title))),
+        padded,
+    );
+    let inner = Rect {
+        y: padded.y + 2,
+        height: padded.height.saturating_sub(2),
+        ..padded
+    };
 
     if inner.width == 0 || inner.height == 0 {
         return;
