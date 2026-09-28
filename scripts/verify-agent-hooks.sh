@@ -141,7 +141,8 @@ sub_stop()         { subagent_event stop '{"agent_id":"a1","agent_type":"general
 claude_stop()      { fire review "" stop ; }
 permission_prompt() { fire waiting "permission_prompt" alert ; }
 idle_prompt()      { fire waiting "idle_prompt" idle_alert ; }
-compact_done()     { fire review "manual|auto" settle ; }
+compact_start()    { fire working "manual" ; }
+compact_end()      { fire review "manual" stop ; }
 claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 
@@ -540,11 +541,11 @@ FAKE_TMUX_STATE=$VISIBLE fire review "" stop
 expect idle "StopFailure shares the visibility check"
 reset
 prompt_submit
-FAKE_TMUX_STATE=$VISIBLE compact_done
+FAKE_TMUX_STATE=$VISIBLE compact_end
 expect idle "a manual compaction that ends in the visible pane is read"
 reset
 prompt_submit
-compact_done
+compact_end
 expect review "a compaction in a pane out of sight stays review"
 reset
 prompt_submit
@@ -682,10 +683,11 @@ printf '\nthe SessionStart wiring\n'
 # second run change nothing.
 wire_home="$HOME/wiring"
 rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
-printf '%s' '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}' \
-    > "$wire_home/.claude/settings.json"
-printf '%s' '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}' \
-    > "$wire_home/.codex/hooks.json"
+# The seed also holds a user's PostCompact hook and an old tws one (the auto
+# matcher), which the first run must replace.
+seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}]}}'
+printf '%s' "$seed" > "$wire_home/.claude/settings.json"
+printf '%s' "$seed" > "$wire_home/.codex/hooks.json"
 wire() (
     HOME="$wire_home"
     read() { answer=y; }
@@ -814,7 +816,8 @@ fire_pane_less waiting "idle_prompt" idle_alert
 fire_pane_less idle "startup|resume|clear" reset
 fire_pane_less idle "startup|resume|clear" rest
 FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "" stop
-FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual|auto" settle
+FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual" stop
+fire_pane_less working "manual"
 files="$(find "$HOME/.config/tws" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
 if [ "${files:-0}" = 1 ] && [ -e "$MARKER" ]; then
     printf '  ok   the subagent commands with no TMUX_PANE write nothing\n'
@@ -904,7 +907,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert settle reset rest permit granted; do
+for mode in set live alert tool stop idle_alert reset rest permit granted; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -957,8 +960,10 @@ prompt_submit
 idle_prompt;    expect_rename "idle_alert mode writes through a rename" waiting
 expect_no_temp "and leaves no temp file"
 reset
-prompt_submit
-compact_done;   expect_rename "settle mode writes through a rename" review
+prompt_submit; turn_end
+compact_start;  expect_rename "PreCompact writes through a rename" working
+expect_no_temp "and leaves no temp file"
+compact_end;    expect_rename "PostCompact writes through a rename" review
 expect_no_temp "and leaves no temp file"
 reset
 prompt_submit
@@ -985,6 +990,120 @@ if [ ! -s "$MV_CALLS" ]; then
     printf '  ok   the heartbeat touches the file and does not rename\n'
 else
     printf '  FAIL the heartbeat touches the file and does not rename\n'
+    failures=$((failures + 1))
+fi
+
+printf '\ncompaction\n'
+# A manual /compact fires PreCompact, SubagentStop, SessionStart(compact) and
+# PostCompact, and no UserPromptSubmit or Stop. An auto compaction happens in a
+# turn, and that turn's Stop ends it, so it must have no hook. These checks run
+# the wired entries, the way an agent picks them by event and trigger.
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    # wired_fire FILE EVENT TRIGGER: runs each entry of EVENT whose matcher matches
+    # TRIGGER. An empty matcher matches everything; any other is a whole-string regex.
+    wired_fire() {
+        local file="$1" event="$2" trigger="$3" command
+        while IFS= read -r command; do
+            if [ -n "$command" ]; then run_command '{}' "$command"; fi
+        done < <(jq -r --arg t "$trigger" ".hooks.$event // [] | .[]
+            | select(.matcher as \$m | \$m == \"\" or (\$t | test(\"^(\" + \$m + \")\$\")))
+            | .hooks[0].command" "$file")
+    }
+    for agent in claude codex; do
+        case "$agent" in
+            claude) file="$wire_home/.claude/settings.json" ;;
+            codex)  file="$wire_home/.codex/hooks.json" ;;
+        esac
+        reset
+        prompt_submit
+        turn_end
+        wired_fire "$file" PreCompact manual
+        expect working "$agent: PreCompact manual shows the compaction as work"
+        reset
+        wired_fire "$file" PreCompact manual
+        expect working "$agent: PreCompact manual over an empty file"
+        reset
+        prompt_submit
+        wired_fire "$file" PreCompact auto
+        expect working "$agent: PreCompact auto changes nothing"
+
+        reset
+        prompt_submit
+        wired_fire "$file" PostCompact auto
+        expect working "$agent: auto compaction in a turn does not end the turn"
+        reset
+        prompt_submit
+        turn_end
+        wired_fire "$file" PostCompact auto
+        expect review "$agent: and does not change review"
+
+        reset
+        prompt_submit
+        wired_fire "$file" PreCompact manual
+        wired_fire "$file" PostCompact manual
+        expect review "$agent: a manual compaction out of sight ends at review"
+        reset
+        prompt_submit
+        wired_fire "$file" PreCompact manual
+        FAKE_TMUX_STATE=$VISIBLE wired_fire "$file" PostCompact manual
+        expect idle "$agent: a manual compaction in the visible pane ends read"
+        reset
+        prompt_submit; sub_start
+        wired_fire "$file" PreCompact manual
+        FAKE_TMUX_STATE=$VISIBLE wired_fire "$file" PostCompact manual
+        expect working "$agent: a live subagent keeps the pane working after compaction"
+        reset
+        prompt_submit; seed_key
+        wired_fire "$file" PostCompact manual
+        expect_keys 0 "$agent: PostCompact manual clears the permission keys"
+
+        reset
+        PANE_LESS=1 wired_fire "$file" PreCompact manual
+        PANE_LESS=1 wired_fire "$file" PostCompact manual
+        expect_panes "" "$agent: the compaction hooks with no TMUX_PANE write nothing"
+
+        for event in PreCompact PostCompact; do
+            n="$(jq --arg e "$event" '[(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
+            m="$(jq -r --arg e "$event" '[(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/")) | .matcher] | join(",")' "$file")"
+            if [ "$n" = 1 ] && [ "$m" = manual ]; then
+                printf '  ok   %s: %s holds one tws entry with the matcher manual\n' "$agent" "$event"
+            else
+                printf '  FAIL %s: %s holds %s tws entries with matchers [%s], want one with manual\n' "$agent" "$event" "$n" "$m"
+                failures=$((failures + 1))
+            fi
+            if jq -r --arg e "$event" '(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/")) | .hooks[0].command' "$file" | has_direct_write; then
+                printf '  FAIL %s: %s redirects straight into "$f"\n' "$agent" "$event"
+                failures=$((failures + 1))
+            else
+                printf '  ok   %s: %s never redirects straight into "$f"\n' "$agent" "$event"
+            fi
+        done
+    done
+    n="$(jq '[.hooks.PostCompact[] | select(.hooks[0].command == "echo mine")] | length' "$wire_home/.claude/settings.json")"
+    if [ "$n" = 1 ]; then
+        printf '  ok   a user PostCompact hook survives two runs\n'
+    else
+        printf '  FAIL a user PostCompact hook survives two runs — %s left\n' "$n"
+        failures=$((failures + 1))
+    fi
+    if grep -q 'echo old' "$wire_home/.claude/settings.json" "$wire_home/.codex/hooks.json"; then
+        printf '  FAIL an old tws PostCompact entry survives the run\n'
+        failures=$((failures + 1))
+    else
+        printf '  ok   an old tws PostCompact entry is replaced\n'
+    fi
+else
+    printf '  FAIL the wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+# Pi names the kind of compaction in the event. Only "manual" is outside a turn.
+pi_ext="$(sed -n '/PI_EXT_EOF/,/^PI_EXT_EOF/p' "$INSTALL_SH")"
+if printf '%s' "$pi_ext" | grep -Eq 'session_compact", async \(event[^)]*\) => \{' \
+    && printf '%s' "$pi_ext" | grep -Fq 'if (event.reason === "manual") settle();'; then
+    printf '  ok   Pi ends a turn at session_compact only for a manual compaction\n'
+else
+    printf '  FAIL Pi ends a turn at session_compact only for a manual compaction\n'
     failures=$((failures + 1))
 fi
 
