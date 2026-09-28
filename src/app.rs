@@ -271,6 +271,9 @@ impl App {
                         self.handle_dir_picker_key(key.code, key.modifiers);
                     }
                 }
+                // Any mode can move the selection (the finder does on attach),
+                // so resync the notes pane after every key, not per handler.
+                self.sync_note_editor();
             }
         }
         self.save_ui_state();
@@ -729,10 +732,7 @@ impl App {
         }
 
         match self.focus {
-            Focus::Tree => {
-                self.handle_normal_key(code, modifiers, terminal)?;
-                self.sync_note_editor();
-            }
+            Focus::Tree => self.handle_normal_key(code, modifiers, terminal)?,
             Focus::Notes => self.handle_notes_key(code, modifiers, terminal)?,
         }
         Ok(())
