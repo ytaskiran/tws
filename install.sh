@@ -199,6 +199,13 @@ configure_path() {
 #          `working` if the pane waits and no other request is open. A payload with
 #          no key file changes nothing. A pane with no open request exits before
 #          it starts jq. A denied tool fires neither event: `stop` clears the keys.
+#   interrupt Codex Interrupt. An ESC interrupt fires no Stop, so this event ends the
+#          turn. It writes the word (`idle`) over any state, and rings the trigger
+#          only if the word changed. The turn gave no result, so there is nothing
+#          to review. It deletes the pane's permission keys, because a pending
+#          approval dies with the turn. It keeps the subagent markers: the docs do
+#          not say that an interrupt stops subagents. It starts no jq and no tmux,
+#          because the hook timeout is 1 s.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -257,6 +264,10 @@ status_hook_entry() {
             cmd+='[ -n "${k:-}" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
             cmd+='[ "$cur" = waiting ] && [ -z "$(ls -A "$pd" 2>/dev/null)" ] '
             cmd+="&& { put $word; $trig; }; :"
+            ;;
+        interrupt)
+            cmd+='rm -rf "$pd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)
             cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
@@ -496,27 +507,29 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart
+    local e_work e_pretool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart e_interrupt
     e_work=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "" live)
     e_wait=$(status_hook_entry waiting "" alert)
     e_review=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
-    # Codex has no API-error event, so stale expiry is the only backstop there.
+    # Interrupt covers an ESC. Codex has no API-error event, so stale expiry still
+    # covers an API error and a hard kill.
     # Compaction follows the Claude rule: a manual /compact has its own hooks, and
     # an auto compaction is ended by the Stop of its turn.
     e_precompact=$(status_hook_entry working "manual")
     e_compact=$(status_hook_entry review "manual" stop)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
+    e_interrupt=$(status_hook_entry idle "" interrupt)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson precompact "$e_precompact" \
         --argjson compact "$e_compact" --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
-        --argjson sessionstart "$e_sessionstart" '
+        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -537,6 +550,8 @@ configure_codex_hooks() {
         .hooks.PreCompact         = ((.hooks.PreCompact // []) + $precompact) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
+        # An ESC interrupt fires Interrupt and no Stop; Claude Code has no such hook.
+        .hooks.Interrupt          = ((.hooks.Interrupt // []) + $interrupt) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"

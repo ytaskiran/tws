@@ -34,6 +34,7 @@ FAKE_BIN="$HOME/fake-bin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/tmux" <<'FAKE_TMUX_EOF'
 #!/bin/sh
+echo x >> "$FAKE_TMUX_CALLS"
 target=""
 while [ $# -gt 0 ]; do
     if [ "$1" = -t ]; then target="${2:-}"; shift; fi
@@ -48,6 +49,8 @@ else
 fi
 FAKE_TMUX_EOF
 chmod +x "$FAKE_BIN/tmux"
+# The fake tmux counts its calls, so a check can assert a hook never starts tmux.
+export FAKE_TMUX_CALLS="$HOME/tmux-calls"
 
 # A jq that counts its calls, so a check can assert a hook runs it once at most.
 REAL_JQ="$(command -v jq)"
@@ -145,6 +148,7 @@ compact_start()    { fire working "manual" ; }
 compact_end()      { fire review "manual" stop ; }
 claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
+codex_interrupt()      { fire idle "" interrupt ; }
 
 # PermissionRequest and the tool-done events carry the same tool_name and
 # tool_input, but the rest of the payload differs, and so does the key order.
@@ -685,7 +689,7 @@ wire_home="$HOME/wiring"
 rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
 # The seed also holds a user's PostCompact hook and an old tws one (the auto
 # matcher), which the first run must replace.
-seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}]}}'
+seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}],"Interrupt":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}'
 printf '%s' "$seed" > "$wire_home/.claude/settings.json"
 printf '%s' "$seed" > "$wire_home/.codex/hooks.json"
 wire() (
@@ -818,6 +822,7 @@ fire_pane_less idle "startup|resume|clear" rest
 FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "" stop
 FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual" stop
 fire_pane_less working "manual"
+fire_pane_less idle "" interrupt
 files="$(find "$HOME/.config/tws" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
 if [ "${files:-0}" = 1 ] && [ -e "$MARKER" ]; then
     printf '  ok   the subagent commands with no TMUX_PANE write nothing\n'
@@ -907,7 +912,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert reset rest permit granted; do
+for mode in set live alert tool stop idle_alert reset rest permit granted interrupt; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -978,6 +983,10 @@ prompt_submit
 permit "$REQ_X" ;  expect_rename "permit mode raises waiting through a rename" waiting
 expect_no_temp "and leaves no temp file"
 tool_done "$DONE_X"; expect_rename "granted mode resumes the turn through a rename" working
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+codex_interrupt; expect_rename "interrupt mode writes through a rename" idle
 expect_no_temp "and leaves no temp file"
 reset
 prompt_submit; sub_start; sub_tool_call; sub_stop; session_end
@@ -1104,6 +1113,97 @@ if printf '%s' "$pi_ext" | grep -Eq 'session_compact", async \(event[^)]*\) => \
     printf '  ok   Pi ends a turn at session_compact only for a manual compaction\n'
 else
     printf '  FAIL Pi ends a turn at session_compact only for a manual compaction\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nCodex interrupt ends the turn\n'
+# An ESC interrupt fires Interrupt and no Stop. The turn gave no result, so the
+# pane rests at idle and not review. The command must finish inside the 1 s
+# timeout, so it starts neither jq nor tmux.
+reset
+prompt_submit
+codex_interrupt; expect idle "a working pane goes idle"
+reset
+prompt_submit; permission_prompt
+codex_interrupt; expect idle "a waiting pane goes idle"
+reset
+prompt_submit; rm -f "$TRIGGER"
+codex_interrupt
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   an interrupt that changes the word rings the trigger\n'
+else
+    printf '  FAIL an interrupt that changes the word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_session_start; rm -f "$TRIGGER"
+codex_interrupt; expect idle "an idle pane stays idle"
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   an interrupt that changes nothing leaves the trigger alone\n'
+else
+    printf '  FAIL an interrupt that changes nothing leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+codex_interrupt; expect idle "an interrupt over an empty pane still writes idle"
+reset
+prompt_submit; permit "$REQ_X"; seed_key
+expect_keys 2 "two open requests are in place"
+codex_interrupt
+expect_keys 0 "an interrupt clears the pane's open permission requests"
+reset
+prompt_submit; sub_start
+codex_interrupt
+expect_marker present "an interrupt keeps the subagent markers"
+expect idle "and still writes idle"
+reset
+prompt_submit; sub_start; seed_key
+FAKE_TMUX_STATE=$VISIBLE codex_interrupt
+expect idle "an interrupt in the visible pane writes idle too"
+reset
+prompt_submit
+PANE_LESS=1 codex_interrupt
+expect working "an interrupt with no TMUX_PANE changes nothing"
+reset
+prompt_submit; seed_key
+PANE_LESS=1 codex_interrupt
+expect_keys 1 "and deletes no permission key"
+reset
+prompt_submit
+rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+codex_interrupt
+calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+if [ "${calls:-0}" = 0 ]; then
+    printf '  ok   an interrupt starts no jq\n'
+else
+    printf '  FAIL an interrupt starts jq %s time(s)\n' "$calls"
+    failures=$((failures + 1))
+fi
+calls="$(wc -l < "$FAKE_TMUX_CALLS" 2>/dev/null | tr -d ' ' || true)"
+if [ "${calls:-0}" = 0 ]; then
+    printf '  ok   an interrupt starts no tmux\n'
+else
+    printf '  FAIL an interrupt starts tmux %s time(s)\n' "$calls"
+    failures=$((failures + 1))
+fi
+if [ -f "$wire_home/.codex/hooks.json" ] && [ -f "$wire_home/.claude/settings.json" ]; then
+    hooks="$wire_home/.codex/hooks.json"
+    settings="$wire_home/.claude/settings.json"
+    check_event "$hooks" Interrupt "$is_tws" 1 "Codex Interrupt holds exactly one tws entry after two runs"
+    check_event "$hooks" Interrupt "$is_tws and .matcher == \"\"" 1 "and it matches every interrupt"
+    check_event "$hooks" Interrupt "(.hooks[0].command == \"echo mine\")" 1 "and the user's own Interrupt hook survives two runs"
+    check_event "$settings" Interrupt "$is_tws" 0 "Claude has no Interrupt hook, so it gets no tws entry"
+    reset
+    prompt_submit; seed_key
+    wired_fire "$hooks" Interrupt ""
+    expect idle "the wired Interrupt entry ends a working turn"
+    expect_keys 0 "and clears the permission keys"
+    reset
+    prompt_submit
+    PANE_LESS=1 wired_fire "$hooks" Interrupt ""
+    expect working "the wired Interrupt entry with no TMUX_PANE writes nothing"
+else
+    printf '  FAIL the Interrupt wiring check made no settings to run\n'
     failures=$((failures + 1))
 fi
 

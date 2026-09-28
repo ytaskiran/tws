@@ -207,7 +207,8 @@ pub const STALE_WORKING_SECS: i64 = 15 * 60;
 
 /// Downgrade `working` files whose heartbeat stopped to `idle`.
 ///
-/// Backstop for turn-ends with no hook to fire — ESC interrupts, hard kills.
+/// Backstop for turn-ends with no hook to fire — hard kills, API errors in Codex,
+/// and an ESC interrupt in Claude Code (Codex has an `Interrupt` hook).
 /// `idle` rather than `review` because those panes finished nothing, so alerting
 /// on them is noise.
 pub fn expire_stale_working(dir: &Path, now: i64) {
