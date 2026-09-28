@@ -82,6 +82,9 @@ pub fn load_statuses_from(dir: &Path) -> HashMap<String, (AgentStatus, i64)> {
             Some(name) => name.to_string(),
             None => continue,
         };
+        if is_temp_name(&pane_id) {
+            continue;
+        }
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -144,6 +147,10 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     c
 }
 
+/// A hook writes a dot temp file and renames it in the same instant, so a dot
+/// file older than this belongs to a hook that died between the two steps.
+pub const TEMP_FILE_MAX_AGE_SECS: u64 = 60;
+
 /// Remove files and directories for panes that are no longer live.
 ///
 /// Entries written since `scan_started_at` are kept regardless: an agent that
@@ -159,6 +166,18 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_start
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        if is_temp_name(name) {
+            let abandoned = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > TEMP_FILE_MAX_AGE_SECS);
+            if abandoned {
+                std::fs::remove_file(&path).ok();
+            }
+            continue;
+        }
         if live_pane_ids.contains(name) {
             continue;
         }
@@ -192,6 +211,9 @@ pub fn expire_stale_working(dir: &Path, now: i64) {
         Err(_) => return,
     };
     for entry in entries.flatten() {
+        if is_temp_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
         let path = entry.path();
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
@@ -207,7 +229,7 @@ pub fn expire_stale_working(dir: &Path, now: i64) {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         if now - mtime > STALE_WORKING_SECS {
-            std::fs::write(&path, status_word(AgentStatus::Idle)).ok();
+            write_atomic(&path, status_word(AgentStatus::Idle)).ok();
         }
     }
 }
@@ -224,7 +246,24 @@ pub fn status_word(status: AgentStatus) -> &'static str {
 
 pub fn write_status_to(dir: &Path, pane_id: &str, status: AgentStatus) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join(pane_id), status_word(status))
+    write_atomic(&dir.join(pane_id), status_word(status))
+}
+
+/// Names that start with `.` are temp files from an atomic write, not panes.
+fn is_temp_name(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+/// Write beside `path` and rename over it. A plain write truncates first, and a
+/// reader that lands in that gap sees an empty file. The hook commands in
+/// `install.sh` use the same temp name shape, so `is_temp_name` covers both.
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        std::fs::remove_file(&tmp).ok();
+    })
 }
 
 /// Write to the real agents directory; failures do not interrupt attach.
@@ -741,6 +780,145 @@ mod tests {
             "a marker directory made during the scan must survive the prune"
         );
         assert!(!dir.join("%old").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn backdate(path: &Path, secs: u64) {
+        use std::fs::{File, FileTimes};
+        let old = SystemTime::now() - std::time::Duration::from_secs(secs);
+        let f = File::options().write(true).open(path).unwrap();
+        f.set_times(FileTimes::new().set_modified(old)).unwrap();
+    }
+
+    #[test]
+    fn load_skips_dot_temp_files() {
+        let dir = stale_dir("load-dot");
+        std::fs::write(dir.join("%1"), "working").unwrap();
+        std::fs::write(dir.join(".%1.4242"), "").unwrap();
+
+        let map = load_statuses_from(&dir);
+
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("%1"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expire_ignores_dot_temp_files() {
+        let dir = stale_dir("expire-dot");
+        std::fs::write(dir.join(".%1.4242"), "working").unwrap();
+        backdate(&dir.join(".%1.4242"), STALE_WORKING_SECS as u64 + 60);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        expire_stale_working(&dir, now);
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".%1.4242")).unwrap(),
+            "working"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expire_leaves_no_temp_file_behind() {
+        let dir = stale_dir("expire-atomic");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+        backdate(&dir.join("%1"), STALE_WORKING_SECS as u64 + 60);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        expire_stale_working(&dir, now);
+
+        assert_eq!(std::fs::read_to_string(dir.join("%1")).unwrap(), "idle");
+        assert_eq!(dir_names(&dir), vec!["%1".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn write_status_replaces_the_file_and_leaves_no_temp_file() {
+        let dir = stale_dir("write-atomic");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+        write_status_to(&dir, "%1", AgentStatus::Review).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dir.join("%1")).unwrap(), "review");
+        assert_eq!(dir_names(&dir), vec!["%1".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_status_replaces_a_file_through_a_rename() {
+        // A rename gives the path a new inode. A truncating write keeps the
+        // inode, and so keeps the empty-file gap that readers can see.
+        use std::os::unix::fs::MetadataExt;
+        let dir = stale_dir("write-inode");
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+        let before = std::fs::metadata(dir.join("%1")).unwrap().ino();
+
+        write_status_to(&dir, "%1", AgentStatus::Review).unwrap();
+
+        let after = std::fs::metadata(dir.join("%1")).unwrap().ino();
+        assert_ne!(before, after);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_removes_a_dot_file_older_than_a_minute() {
+        let dir = stale_dir("prune-dot-old");
+        std::fs::write(dir.join(".%1.4242"), "working").unwrap();
+        backdate(&dir.join(".%1.4242"), TEMP_FILE_MAX_AGE_SECS + 5);
+
+        prune_stale_files(&dir, &HashSet::new(), SystemTime::UNIX_EPOCH);
+
+        assert!(!dir.join(".%1.4242").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_keeps_a_fresh_dot_file() {
+        // A hook can be between its write and its rename right now.
+        let dir = stale_dir("prune-dot-fresh");
+        std::fs::write(dir.join(".%1.4242"), "working").unwrap();
+
+        prune_stale_files(&dir, &HashSet::new(), SystemTime::now());
+
+        assert!(dir.join(".%1.4242").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_never_treats_a_dot_file_as_a_pane() {
+        // Even a live-pane entry that matches a dot name does not protect it.
+        let dir = stale_dir("prune-dot-live");
+        std::fs::write(dir.join(".%1.4242"), "working").unwrap();
+        backdate(&dir.join(".%1.4242"), TEMP_FILE_MAX_AGE_SECS + 5);
+        let live: HashSet<String> = [".%1.4242".to_string()].into();
+
+        prune_stale_files(&dir, &live, SystemTime::now());
+
+        assert!(!dir.join(".%1.4242").exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }

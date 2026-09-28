@@ -57,6 +57,22 @@ mkdir -p "$SPY_BIN"
 printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_CALLS" "$REAL_JQ" > "$SPY_BIN/jq"
 chmod +x "$SPY_BIN/jq"
 
+# An mv that logs source, destination and the source's content, then does the
+# move. It shows that a status word reaches its file only by a rename.
+MV_CALLS="$HOME/mv-calls"
+cat > "$SPY_BIN/mv" <<'MV_EOF'
+#!/bin/sh
+src=""; dst=""
+for a in "$@"; do
+    case "$a" in -*) ;; *) src="$dst"; dst="$a" ;; esac
+done
+printf '%s\t%s\t%s\n' "$src" "$dst" "$(cat "$src" 2>/dev/null)" >> "$MV_CALLS_FILE"
+exec "$REAL_MV" "$@"
+MV_EOF
+chmod +x "$SPY_BIN/mv"
+export MV_CALLS_FILE="$MV_CALLS" REAL_MV
+REAL_MV="$(command -v mv)"
+
 # A jq that is not there, as sh reports it. Put first on PATH with JQ_BROKEN=1.
 BROKEN_BIN="$HOME/broken-bin"
 mkdir -p "$BROKEN_BIN"
@@ -492,6 +508,91 @@ if [ "$guesses" = "0" ]; then
 else
     printf '  FAIL no hook resolves its pane by asking tmux — %s occurrence(s) in %s\n' \
         "$guesses" "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+printf '\nstatus writes are atomic\n'
+# `printf word > "$f"` truncates first. A hook that reads in that gap sees an
+# empty file, and `live` mode claims an empty file as `working`. Every write goes
+# to a dot file in the same directory and renames into place.
+has_direct_write() { grep -Eq '>[[:space:]]*"\$f"'; }
+
+if printf 'printf x > "$f"' | has_direct_write \
+    && ! printf 'printf x > "$t" && mv -f "$t" "$f"' | has_direct_write; then
+    printf '  ok   the direct-write check tells the two shapes apart\n'
+else
+    printf '  FAIL the direct-write check tells the two shapes apart\n'
+    failures=$((failures + 1))
+fi
+
+# Claude and Codex both use status_hook_entry, so this covers both.
+for mode in set live alert tool stop idle_alert settle; do
+    cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
+    if printf '%s' "$cmd" | has_direct_write; then
+        printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
+        failures=$((failures + 1))
+    else
+        printf '  ok   %s mode never redirects straight into "$f"\n' "$mode"
+    fi
+done
+
+# expect_rename NAME WORD: the last mv moved a dot file holding WORD onto the status file.
+expect_rename() {
+    local name="$1" word="$2" line src="" dst="" content="" dot=0
+    line="$(tail -n 1 "$MV_CALLS" 2>/dev/null || true)"
+    IFS=$'\t' read -r src dst content <<< "$line" || true
+    case "$(basename "$src")" in .*) dot=1 ;; esac
+    if [ "$dst" = "$STATUS_FILE" ] && [ "$content" = "$word" ] \
+        && [ "$(dirname "$src")" = "$(dirname "$STATUS_FILE")" ] && [ "$dot" = 1 ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — last mv was [%s]\n' "$name" "$line"
+        failures=$((failures + 1))
+    fi
+}
+
+expect_no_temp() {
+    local name="$1" left
+    left="$(find "$HOME/.config/tws/agents" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -z "$left" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — left [%s]\n' "$name" "$left"
+        failures=$((failures + 1))
+    fi
+}
+
+reset; : > "$MV_CALLS"
+prompt_submit;  expect_rename "set mode writes through a rename" working
+expect_no_temp "and leaves no temp file"
+claude_stop;    expect_rename "stop mode writes through a rename" review
+expect_no_temp "and leaves no temp file"
+main_tool_call; expect_rename "tool mode resumes a turn through a rename" working
+expect_no_temp "and leaves no temp file"
+notification;   expect_rename "alert mode writes through a rename" waiting
+expect_no_temp "and leaves no temp file"
+reset
+tool_call;      expect_rename "live mode claims an empty file through a rename" working
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+idle_prompt;    expect_rename "idle_alert mode writes through a rename" waiting
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+compact_done;   expect_rename "settle mode writes through a rename" review
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit; sub_start; sub_tool_call; sub_stop; session_end
+expect_no_temp "the subagent and session-end hooks leave no temp file"
+reset
+prompt_submit
+: > "$MV_CALLS"
+tool_call
+if [ ! -s "$MV_CALLS" ]; then
+    printf '  ok   the heartbeat touches the file and does not rename\n'
+else
+    printf '  FAIL the heartbeat touches the file and does not rename\n'
     failures=$((failures + 1))
 fi
 

@@ -156,7 +156,10 @@ configure_path() {
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
 # agent.trigger stays guarded in every mode — ringing it per tool call would
 # force a full tmux+ps rescan. The mtime refresh is `touch -c` because `>`
-# truncates before writing, exposing an empty file to concurrent readers.
+# truncates before writing, exposing an empty file to concurrent readers. For the
+# same reason every status write goes through `put`: a dot temp file in the same
+# directory, then `mv -f`. A reader sees the old word or the new word, never an
+# empty file, and `live` mode cannot claim a file that is only mid-write.
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
@@ -191,6 +194,7 @@ status_hook_entry() {
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
+    cmd+='put() { t="$HOME/.config/tws/agents/.$TMUX_PANE.$$"; printf %s "$1" > "$t" && mv -f "$t" "$f" || rm -f "$t"; }; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
@@ -204,33 +208,33 @@ status_hook_entry() {
             cmd+='if ! aid=$(jq -r ".agent_id // empty" 2>/dev/null); then aid=.unknown; fi; '
             cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
             cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
-            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; "
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; "
             cmd+='else case "$cur" in '
             cmd+="$word) touch -c \"\$f\" ;; waiting) ;; "
-            cmd+="*) printf $word > \"\$f\"; $trig ;; esac; fi; :"
+            cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
-            cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
+            cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         settle)
             cmd+="w=$word; $seen"
-            cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
+            cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         idle_alert)
             cmd+="if $fresh; then :; "
-            cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         live)
             cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
-            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         alert)
-            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         *)
-            cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; $trig; }; :"
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
     esac
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
@@ -496,7 +500,8 @@ configure_pi_hooks() {
     # which are shared JSON we must merge into carefully).
     cat > "$ext_file" <<'PI_EXT_EOF'
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
@@ -546,7 +551,15 @@ function readWord(path: string): string | undefined {
 function writeWord(path: string, word: string) {
   if (readWord(path) === word) return;
   mkdirSync(AGENTS_DIR, { recursive: true });
-  writeFileSync(path, word);
+  // Truncate-then-write would expose an empty file to a reader in between.
+  const tmp = `${AGENTS_DIR}/.${basename(path)}.${process.pid}`;
+  try {
+    writeFileSync(tmp, word);
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
   writeFileSync(TRIGGER, "");
 }
 
