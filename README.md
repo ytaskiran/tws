@@ -3,7 +3,7 @@
 
 **tmux workspace manager** — organize your tmux sessions into threads.
 
-<img width="960" height="624" alt="tws-demo" src="https://github.com/user-attachments/assets/6546bd05-3305-4725-8558-2828d8ffca7f" />
+<img width="960" height="624" alt="tws-demo" src="https://github.com/user-attachments/assets/7b6d8503-5b65-4669-8593-e86ed77fa9e0" />
 
 tws is a terminal UI that adds a persistent organizational layer on top of tmux. tmux sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and attaches them for you.
 
@@ -45,7 +45,7 @@ is running inside tmux).
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="2940" height="1912" alt="tws-agents" src="https://github.com/user-attachments/assets/2a6fe568-20a1-47ec-afbc-efc1a4328f96" />
+<img width="2940" height="1912" alt="tws-agents" src="https://github.com/user-attachments/assets/79a2cd9e-7437-4539-a18e-cded8d3084bd" />
 
 ### Notes
 
