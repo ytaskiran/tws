@@ -5,6 +5,7 @@ use ratatui::layout::Alignment;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
+use super::agent_meta;
 use crate::core::model::AgentStatus;
 use crate::core::state::FlatAgent;
 use crate::core::status::status_glyph;
@@ -28,6 +29,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
     }
 
     let width = area.width as usize;
+    let now = agent_meta::now();
     let name_width = agents
         .iter()
         .map(|a| a.agent_display_name.chars().count())
@@ -70,6 +72,12 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                     theme.path_dim,
                 ),
             ];
+            // `kind · age` at the right edge, as in the sessions view.
+            let meta = agent_meta::label(a.agent_type, a.status_since, now);
+            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            let gap = width.saturating_sub(used + meta.chars().count() + 2).max(1);
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(meta, theme.meta));
             if selected {
                 let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
                 if width > used {
@@ -92,6 +100,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
 mod tests {
     use super::*;
     use crate::config::palette::Palette;
+    use crate::core::model::AgentType;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -109,6 +118,8 @@ mod tests {
             pane_id: format!("%{n}"),
             pin_slot: None,
             status: AgentStatus::Working,
+            agent_type: AgentType::ClaudeCode,
+            status_since: 0,
         }
     }
 
@@ -127,6 +138,19 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn rows_show_the_harness_and_the_time_in_state() {
+        let mut a = agent(0);
+        a.status_since = agent_meta::now() - 250;
+        let mut b = agent(1);
+        b.agent_type = AgentType::Codex;
+        let out = screen(&[a, b], 0, 3);
+        assert!(out.contains("claude · 4m"), "missing kind and age:\n{out}");
+        // No status time yet: the kind shows alone.
+        assert!(out.contains("codex"), "missing kind:\n{out}");
+        assert!(!out.contains("codex ·"), "age shown without a time:\n{out}");
     }
 
     #[test]
