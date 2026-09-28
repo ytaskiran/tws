@@ -162,9 +162,27 @@ fn fail(e: &ForkError) -> ! {
     eprintln!("{}", message(e));
     eprint!("\npress any key to close ");
     let _ = std::io::stderr().flush();
-    let mut buf = [0u8; 1];
-    let _ = std::io::stdin().read(&mut buf);
+    wait_for_key();
     std::process::exit(1);
+}
+
+/// The popup terminal is in line mode, where a plain stdin read waits for Enter.
+/// Raw mode lets a single key close the popup.
+fn wait_for_key() {
+    use crossterm::event::{Event, read};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+    if enable_raw_mode().is_err() {
+        let mut buf = [0u8; 1];
+        let _ = std::io::stdin().read(&mut buf);
+        return;
+    }
+    while let Ok(event) = read() {
+        if matches!(event, Event::Key(_)) {
+            break;
+        }
+    }
+    let _ = disable_raw_mode();
 }
 
 pub fn run(pane_id: Option<&str>) -> ! {
