@@ -166,8 +166,9 @@ configure_path() {
 #          tool calls repaint a finished or question-blocked pane as `working`.
 #   alert  raise `waiting`, but only over `working` or an empty file. Leaving
 #          `review` alone keeps attach-time acknowledgment working.
-#   tool   PreToolUse for Claude. Reads the payload: a call with an `agent_id` is a
-#          subagent and behaves as `live` (and refreshes its marker). A call
+#   tool   PreToolUse for Claude. Reads the payload: a call with an `agent_id`, or
+#          one whose payload cannot be read, is a subagent and behaves as `live`
+#          (and refreshes its marker). A call
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
@@ -188,7 +189,9 @@ status_hook_entry() {
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
     case "$mode" in
         tool)
-            cmd+='aid=$(jq -r ".agent_id // empty" 2>/dev/null); '
+            # A failed jq (missing, bad JSON) cannot prove this is the main loop,
+            # so it takes the conservative subagent path.
+            cmd+='if ! aid=$(jq -r ".agent_id // empty" 2>/dev/null); then aid=.unknown; fi; '
             cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
             cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
             cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; "

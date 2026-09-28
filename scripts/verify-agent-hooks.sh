@@ -39,15 +39,22 @@ mkdir -p "$SPY_BIN"
 printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_CALLS" "$REAL_JQ" > "$SPY_BIN/jq"
 chmod +x "$SPY_BIN/jq"
 
+# A jq that is not there, as sh reports it. Put first on PATH with JQ_BROKEN=1.
+BROKEN_BIN="$HOME/broken-bin"
+mkdir -p "$BROKEN_BIN"
+printf '#!/bin/sh\nexit 127\n' > "$BROKEN_BIN/jq"
+chmod +x "$BROKEN_BIN/jq"
+
 # Runs a hook command with a JSON payload on stdin, as Claude Code does. With
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
 # inherit, and a tmux standing by to answer if the command asks.
 run_command() {
-    local json="$1" command="$2"
+    local json="$1" command="$2" broken=""
+    [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "PATH=$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
     else
-        printf '%s' "$json" | env "PATH=$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env "PATH=$broken$SPY_BIN:$PATH" sh -c "$command"
     fi
 }
 
@@ -254,6 +261,23 @@ sub_tool_call; expect review "a subagent tool call after review changes nothing"
 reset
 prompt_submit; question_shown
 sub_tool_call; expect waiting "nor does it repaint a question"
+
+printf '\na failed jq never reads as the main loop\n'
+reset
+prompt_submit; claude_stop
+JQ_BROKEN=1 main_tool_call
+expect review "a tool call with no working jq leaves review"
+reset
+prompt_submit; claude_stop
+JQ_BROKEN=1 sub_tool_call
+expect review "and so does a subagent call"
+reset
+JQ_BROKEN=1 main_tool_call
+expect working "an empty file is still claimed"
+reset
+prompt_submit; claude_stop
+fire_in '{ not json' working "$TOOL_MATCHER" tool
+expect review "bad JSON leaves review"
 
 printf '\nidle_prompt yields to a live subagent\n'
 reset
