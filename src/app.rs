@@ -1996,6 +1996,11 @@ impl App {
             &live_panes,
             scan_started_at,
         );
+        crate::core::status::prune_stale_files(
+            &crate::core::status::permissions_dir(),
+            &live_panes,
+            scan_started_at,
+        );
 
         // After prune so no write lands on a doomed file, before the load so a
         // flip shows this frame.

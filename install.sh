@@ -191,6 +191,15 @@ configure_path() {
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
 #          pane's subagent markers. It rings the trigger only if the word changed.
+#   permit PermissionRequest (Claude). Records the request as a key file, then raises
+#          `waiting` with the `alert` rules. The key is a checksum of the tool name
+#          and input, because the request carries no tool_use_id. Claude gives the
+#          same name and input to PostToolUse when the tool runs after a grant.
+#   granted PostToolUse and PostToolUseFailure (Claude). The tool ran, so its
+#          request was answered. It removes the key of that call, and writes
+#          `working` if the pane waits and no other request is open. A payload with
+#          no key file changes nothing. A pane with no open request exits before
+#          it starts jq. A denied tool fires neither event: `stop` clears the keys.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -207,6 +216,11 @@ status_hook_entry() {
     cmd+='put() { t="$HOME/.config/tws/agents/.$TMUX_PANE.$$"; printf %s "$1" > "$t" && mv -f "$t" "$f" || rm -f "$t"; }; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
+    # One jq call gives the whole key input. cksum is POSIX, and shasum is not on
+    # every Linux. The size joins the checksum to make a collision less likely.
+    local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
+    keyof+='[ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
     # Only the -t "$TMUX_PANE" form is allowed: it asks about the caller's own pane.
     local seen='v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}#{window_active}#{session_attached}" 2>/dev/null); '
@@ -224,6 +238,7 @@ status_hook_entry() {
             cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
+            cmd+='rm -rf "$pd"; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
@@ -233,8 +248,20 @@ status_hook_entry() {
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
-            cmd+='rm -rf "$sd"; '
+            cmd+='rm -rf "$sd" "$pd"; '
             cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            ;;
+        permit)
+            cmd+="$keyof"
+            cmd+='if [ -n "${k:-}" ] && mkdir -p "$pd"; then : > "$pd/$k"; fi; '
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
+            ;;
+        granted)
+            cmd+='[ -n "$(ls -A "$pd" 2>/dev/null)" ] || exit 0; '
+            cmd+="$keyof"
+            cmd+='[ -n "${k:-}" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
+            cmd+='[ "$cur" = waiting ] && [ -z "$(ls -A "$pd" 2>/dev/null)" ] '
+            cmd+="&& { put $word; $trig; }; :"
             ;;
         rest)
             cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
@@ -283,6 +310,7 @@ session_end_hook_entry() {
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    cmd+='rm -rf "$HOME/.config/tws/permissions/$TMUX_PANE"; '
     cmd+='touch "$HOME/.config/tws/agent.trigger"'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
@@ -337,7 +365,7 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
-    local e_substart e_substop e_sessionstart
+    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "")
@@ -354,6 +382,13 @@ configure_claude_hooks() {
     # It yields to a live subagent marker: the main loop is quiet then, but work
     # goes on in the pane.
     e_notify=$(status_hook_entry waiting "permission_prompt" alert)
+    # A grant is the exit from the `waiting` that a permission request enters. The
+    # request has no tool_use_id, so a key from the tool name and input pairs the
+    # grant with its request. The Notification above stays as the backstop. The
+    # matcher is disjoint from the question entry: Claude runs matches in parallel.
+    e_permit=$(status_hook_entry waiting "" permit)
+    e_granted=$(status_hook_entry working "^(?!AskUserQuestion\$).*" granted)
+    e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
     e_stop=$(status_hook_entry review "" stop)
     # Compaction and API errors end a turn without firing Stop.
@@ -373,6 +408,9 @@ configure_claude_hooks() {
         --argjson question "$e_question" \
         --argjson posttool "$e_posttool" \
         --argjson notify "$e_notify" \
+        --argjson permit "$e_permit" \
+        --argjson granted "$e_granted" \
+        --argjson grantedfail "$e_granted_fail" \
         --argjson idle "$e_idle" \
         --argjson substart "$e_substart" \
         --argjson substop "$e_substop" \
@@ -392,7 +430,9 @@ configure_claude_hooks() {
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
-        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
+        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool + $granted) |
+        .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) + $grantedfail) |
+        .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + $permit) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify + $idle) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
@@ -650,6 +690,7 @@ configure_agent_hooks() {
     if [ "$hooks_configured" -eq 1 ]; then
         rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
         rm -rf "$HOME/.config/tws/subagents" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/permissions" 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
         touch "$HOME/.config/tws/agent.trigger"
         info "Cleared stale agent status files"

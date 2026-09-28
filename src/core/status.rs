@@ -14,6 +14,11 @@ pub fn subagents_dir() -> PathBuf {
     config_dir().join("subagents")
 }
 
+/// One directory per pane, one key file per open permission request.
+pub fn permissions_dir() -> PathBuf {
+    config_dir().join("permissions")
+}
+
 pub fn trigger_path() -> PathBuf {
     config_dir().join("agent.trigger")
 }
@@ -782,6 +787,52 @@ mod tests {
         assert!(!dir.join("%old").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_removes_permission_directories_without_live_pane() {
+        let dir = std::env::temp_dir().join(format!("tws-test-prune-perms-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("%1")).unwrap();
+        std::fs::create_dir_all(dir.join("%2")).unwrap();
+        std::fs::write(dir.join("%1").join("3735928559-42"), "").unwrap();
+        std::fs::write(dir.join("%2").join("3735928559-42"), "").unwrap();
+
+        let live: HashSet<String> = ["%1".to_string()].into();
+        prune_stale_files(&dir, &live, SystemTime::now());
+
+        assert!(dir.join("%1").join("3735928559-42").exists());
+        assert!(!dir.join("%2").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_keeps_a_permission_directory_made_after_the_scan_began() {
+        // A request raised mid-scan comes from a pane the snapshot missed.
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-prune-perms-race-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("%old")).unwrap();
+
+        let scan_started_at = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::create_dir_all(dir.join("%fresh")).unwrap();
+        std::fs::write(dir.join("%fresh").join("3735928559-42"), "").unwrap();
+
+        prune_stale_files(&dir, &HashSet::new(), scan_started_at);
+
+        assert!(dir.join("%fresh").join("3735928559-42").exists());
+        assert!(!dir.join("%old").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn permissions_dir_sits_beside_agents_dir() {
+        assert_eq!(permissions_dir().parent(), agents_dir().parent());
+        assert_ne!(permissions_dir(), agents_dir());
+        assert_ne!(permissions_dir(), subagents_dir());
     }
 
     fn backdate(path: &Path, secs: u64) {

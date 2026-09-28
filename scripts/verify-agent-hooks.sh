@@ -145,6 +145,21 @@ compact_done()     { fire review "manual|auto" settle ; }
 claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 
+# PermissionRequest and the tool-done events carry the same tool_name and
+# tool_input, but the rest of the payload differs, and so does the key order.
+POST_MATCHER='^(?!AskUserQuestion$).*'
+REQ_X='{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"description":"make x","command":"mkdir x"}}'
+REQ_Y='{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"description":"make y","command":"mkdir y"}}'
+DONE_X='{"tool_response":{"stdout":""},"tool_use_id":"t1","tool_input":{"command":"mkdir x","description":"make x"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+DONE_Y='{"tool_response":{"stdout":""},"tool_use_id":"t2","tool_input":{"command":"mkdir y","description":"make y"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+DONE_Z='{"tool_use_id":"t3","tool_input":{"command":"ls","description":"list"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+# An open request, planted directly, so a clearing check does not depend on permit.
+seed_key()    { mkdir -p "$PERM_DIR" && : > "$PERM_DIR/planted"; }
+permit()      { fire_in "$1" waiting "" permit ; }
+tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
+tool_failed() { fire_in "$1" working "" granted ; }
+PERM_DIR="$HOME/.config/tws/permissions/%7"
+
 # What tmux says about the pane: the visible pane of an attached session, and
 # the four ways to be out of sight.
 VISIBLE=111
@@ -185,6 +200,18 @@ expect_marker() {
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — want marker %s, got %s\n' "$name" "$want" "$got"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_keys N NAME: how many open permission requests the pane has.
+expect_keys() {
+    local want="$1" name="$2" got
+    got="$(find "$PERM_DIR" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
+    if [ "${got:-0}" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want %s key file(s), got %s\n' "$name" "$want" "${got:-0}"
         failures=$((failures + 1))
     fi
 }
@@ -321,6 +348,158 @@ reset
 prompt_submit; claude_stop
 fire_in '{ not json' working "$TOOL_MATCHER" tool
 expect review "bad JSON leaves review"
+
+
+TRIGGER="$HOME/.config/tws/agent.trigger"
+printf '\na permission grant resumes the turn\n'
+reset
+prompt_submit
+permit "$REQ_X"
+expect waiting "a permission request raises waiting"
+expect_keys 1 "and records one key file"
+tool_done "$DONE_X"
+expect working "the grant's PostToolUse resumes the turn"
+expect_keys 0 "and removes the key file"
+
+reset
+prompt_submit
+permit "$REQ_X"; permit "$REQ_Y"
+expect_keys 2 "two requests make two key files"
+tool_done "$DONE_X"
+expect waiting "one grant leaves the other request open"
+expect_keys 1 "and removes only its own key"
+tool_done "$DONE_Y"
+expect working "the last grant resumes the turn"
+
+reset
+prompt_submit
+permit "$REQ_X"
+tool_done "$DONE_Z"
+expect waiting "a tool that never asked leaves the request open"
+expect_keys 1 "and keeps its key"
+
+reset
+prompt_submit
+permit "$REQ_X"
+tool_failed "$DONE_X"
+expect working "PostToolUseFailure also resumes the turn"
+expect_keys 0 "and removes the key file"
+
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+expect_keys 2 "a request is open before the turn ends"
+claude_stop
+expect review "a denied tool ends the turn at review"
+expect_keys 0 "and Stop clears the request"
+if [ ! -e "$PERM_DIR" ]; then
+    printf '  ok   and the pane directory\n'
+else
+    printf '  FAIL and the pane directory\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a denied tool in the visible pane ends the turn read"
+expect_keys 0 "and Stop clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+fire review "" stop
+expect_keys 0 "StopFailure clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+claude_session_start
+expect_keys 0 "SessionStart clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+session_end
+expect_keys 0 "SessionEnd clears the request"
+
+reset
+prompt_submit; turn_end
+permit "$REQ_X"
+expect review "a permission request never downgrades review"
+reset
+permit "$REQ_X"
+expect waiting "a permission request over an empty file raises waiting"
+reset
+prompt_submit; question_shown
+tool_done "$DONE_X"
+expect waiting "a tool with no open request leaves a question alone"
+reset
+prompt_submit; turn_end
+permit "$REQ_X"
+tool_done "$DONE_X"
+expect review "a grant never overwrites review"
+reset
+prompt_submit
+permit "$REQ_X"
+notification
+tool_done "$DONE_X"
+expect working "the Notification backstop does not stop the grant resuming"
+reset
+prompt_submit
+permit "$REQ_X"; rm -f "$TRIGGER"
+tool_done "$DONE_X"
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a grant that resumes the turn rings the trigger\n'
+else
+    printf '  FAIL a grant that resumes the turn rings the trigger\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na tool with no open request runs no jq\n'
+reset
+prompt_submit
+rm -f "$JQ_CALLS"
+tool_done "$DONE_X"
+tool_failed "$DONE_X"
+if [ ! -e "$JQ_CALLS" ]; then
+    printf '  ok   no permissions directory: no jq call\n'
+else
+    printf '  FAIL no permissions directory: %s jq call(s)\n' "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+    failures=$((failures + 1))
+fi
+expect working "and the status stays as it was"
+mkdir -p "$PERM_DIR"
+rm -f "$JQ_CALLS"
+tool_done "$DONE_X"
+if [ ! -e "$JQ_CALLS" ]; then
+    printf '  ok   an empty permissions directory: no jq call\n'
+else
+    printf '  FAIL an empty permissions directory: %s jq call(s)\n' "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+    failures=$((failures + 1))
+fi
+
+printf '\na pane with no TMUX_PANE keeps out of the permission files\n'
+reset
+prompt_submit
+permit "$REQ_X"
+before="$(find "$HOME/.config/tws" -type f | sort | tr '\n' ' ')"
+PANE_LESS=1 permit "$REQ_Y"
+PANE_LESS=1 tool_done "$DONE_X"
+PANE_LESS=1 tool_failed "$DONE_X"
+after="$(find "$HOME/.config/tws" -type f | sort | tr '\n' ' ')"
+if [ "$before" = "$after" ]; then
+    printf '  ok   the permission commands with no TMUX_PANE write and remove nothing\n'
+else
+    printf '  FAIL the permission commands with no TMUX_PANE changed the files\n'
+    failures=$((failures + 1))
+fi
+expect waiting "and the status is unchanged"
+reset
+PANE_LESS=1 permit "$REQ_X"
+if [ ! -e "$HOME/.config/tws/permissions" ]; then
+    printf '  ok   a pane-less request makes no directory\n'
+else
+    printf '  FAIL a pane-less request makes no directory\n'
+    failures=$((failures + 1))
+fi
 
 printf '\nidle_prompt yields to a live subagent\n'
 reset
@@ -541,6 +720,39 @@ if declare -F configure_claude_hooks >/dev/null; then
     check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and it matches exactly startup|resume|clear"
     check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    # count_event FILE EVENT FILTER: how many entries of EVENT pass FILTER.
+    count_event() { jq "[(.hooks.$2 // [])[] | select($3)] | length" "$1"; }
+    check_event() {
+        local file="$1" event="$2" filter="$3" want="$4" name="$5" got
+        got="$(count_event "$file" "$event" "$filter")"
+        if [ "$got" = "$want" ]; then
+            printf '  ok   %s\n' "$name"
+        else
+            printf '  FAIL %s — want %s, got %s\n' "$name" "$want" "$got"
+            failures=$((failures + 1))
+        fi
+    }
+    printf '\nthe permission wiring\n'
+    check_event "$settings" PostToolUse "$is_tws" 2 "Claude PostToolUse holds exactly the two tws entries after two runs"
+    check_event "$settings" PostToolUse "$is_tws and .matcher == \"^AskUserQuestion\$\"" 1 \
+        "and one is the question entry"
+    check_event "$settings" PostToolUse "$is_tws and .matcher == \"^(?!AskUserQuestion\$).*\"" 1 \
+        "and the other is the permission entry"
+    for tool in AskUserQuestion Bash Agent Write; do
+        n="$(jq --arg t "$tool" '[.hooks.PostToolUse[] | select(.hooks[0].command | test("config/tws/")) | .matcher as $m | select($t | test($m))] | length' "$settings")"
+        want=1
+        if [ "$n" = "$want" ]; then
+            printf '  ok   PostToolUse matchers match %s exactly once\n' "$tool"
+        else
+            printf '  FAIL PostToolUse matchers match %s %s time(s)\n' "$tool" "$n"
+            failures=$((failures + 1))
+        fi
+    done
+    check_event "$settings" PermissionRequest "$is_tws" 1 "Claude PermissionRequest holds one tws entry"
+    check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure holds one tws entry"
+    check_event "$settings" PostToolUseFailure "$is_tws and .matcher == \"\"" 1 "and it matches every tool"
+    check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
+    check_event "$hooks" PermissionRequest "$is_tws" 1 "Codex PermissionRequest keeps its one tws entry"
     for source in compact fork; do
         if [[ "$source" =~ ^(startup|resume|clear)$ ]]; then
             printf '  FAIL the SessionStart matcher must not match %s\n' "$source"
@@ -556,8 +768,12 @@ fi
 
 printf '\neach hook runs jq at most once\n'
 reset
-for call in main_tool_call sub_tool_call sub_start sub_stop; do
+permit_x()    { permit "$REQ_X" ; }
+done_x()      { tool_done "$DONE_X" ; }
+failed_x()    { tool_failed "$DONE_X" ; }
+for call in main_tool_call sub_tool_call sub_start sub_stop permit_x done_x failed_x; do
     prompt_submit
+    case "$call" in done_x|failed_x) permit "$REQ_X" ;; esac
     rm -f "$JQ_CALLS"
     "$call"
     calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
@@ -664,6 +880,15 @@ else
     failures=$((failures + 1))
 fi
 
+printf '\nupgrade cleanup\n'
+cleanup="$(sed -n '/^configure_agent_hooks()/,/^}/p' "$INSTALL_SH")"
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/permissions"'; then
+    printf '  ok   the upgrade cleanup clears the permissions directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the permissions directory\n'
+    failures=$((failures + 1))
+fi
+
 printf '\nstatus writes are atomic\n'
 # `printf word > "$f"` truncates first. A hook that reads in that gap sees an
 # empty file, and `live` mode claims an empty file as `working`. Every write goes
@@ -679,7 +904,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert settle reset rest; do
+for mode in set live alert tool stop idle_alert settle reset rest permit granted; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -742,6 +967,12 @@ expect_no_temp "and leaves no temp file"
 reset
 prompt_submit; turn_end
 codex_session_start; expect_rename "rest mode writes through a rename" idle
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+permit "$REQ_X" ;  expect_rename "permit mode raises waiting through a rename" waiting
+expect_no_temp "and leaves no temp file"
+tool_done "$DONE_X"; expect_rename "granted mode resumes the turn through a rename" working
 expect_no_temp "and leaves no temp file"
 reset
 prompt_submit; sub_start; sub_tool_call; sub_stop; session_end
