@@ -107,7 +107,7 @@ Agents report state through the filesystem. A hook writes one word (`working` / 
 
 A hook writes only when the word *changes*, so mtime is the state-entry time that `status_since` displays. `PreToolUse` is the exception: it refreshes mtime on every tool call even when the word is unchanged, giving `expire_stale_working()` a liveness heartbeat. For `working` panes, then, mtime means last-activity rather than state-entry.
 
-`status_hook_entry` emits one of seven command shapes, and picking the wrong one is how this protocol breaks:
+`status_hook_entry` emits one of nine command shapes, and picking the wrong one is how this protocol breaks:
 
 | mode | writes | used by |
 |---|---|---|
@@ -118,6 +118,10 @@ A hook writes only when the word *changes*, so mtime is the state-entry time tha
 | `live` | refreshes `working`, or claims an empty file — never overwrites a resting state | Codex `PreToolUse` |
 | `alert` | raises `waiting` over `working` or an empty file only | `Notification permission_prompt`, Codex `PermissionRequest` |
 | `idle_alert` | the same as `alert`, but skipped while a fresh subagent marker exists | `Notification idle_prompt` |
+| `reset` | writes `idle` over any state, deletes the pane's subagent markers, rings the trigger only if the word changed | Claude `SessionStart` (`startup\|resume\|clear`) |
+| `rest` | changes `review` or an empty file to `idle`; leaves `working`, `waiting` and `idle`; keeps the markers | Codex `SessionStart` (`startup\|resume\|clear`) |
+
+A new agent session starts `idle`. Without this, a new agent in a pane inherits the status file of the last agent there, for example a stale `review`, until its first hook. `/clear` in a pane in `review` would keep `review`. Claude `SessionStart` uses `reset` mode with the matcher `startup|resume|clear`. Do not add `compact`, which fires in the middle of a session, or `fork`. Codex also fires `SessionStart` when a subagent starts, so its `rest` mode cannot overwrite `working` or `waiting`, and it cannot clear markers. The Pi extension writes `idle` on `session_start`, except for the reason `reload`. The fork pointer keeps its own `SessionStart` entry, next to the `reset` entry.
 
 Seven further properties keep this correct, and all seven are easy to break:
 

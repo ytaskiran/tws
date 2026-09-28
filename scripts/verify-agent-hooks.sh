@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p' "$INSTALL_SH")"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##')"
 
 export HOME
 HOME="$(mktemp -d)"
@@ -142,6 +142,8 @@ claude_stop()      { fire review "" stop ; }
 permission_prompt() { fire waiting "permission_prompt" alert ; }
 idle_prompt()      { fire waiting "idle_prompt" idle_alert ; }
 compact_done()     { fire review "manual|auto" settle ; }
+claude_session_start() { fire idle "startup|resume|clear" reset ; }
+codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 
 # What tmux says about the pane: the visible pane of an attached session, and
 # the four ways to be out of sight.
@@ -403,6 +405,155 @@ sub_stop
 FAKE_TMUX_STATE=$VISIBLE claude_stop
 expect idle "a visible pane is read once the subagents are done"
 
+printf '\na new Claude session starts idle\n'
+for stale in review working waiting idle; do
+    reset
+    prompt_submit
+    printf '%s' "$stale" > "$STATUS_FILE"
+    claude_session_start
+    expect idle "a stale $stale file becomes idle"
+done
+reset
+claude_session_start
+expect idle "a missing file becomes idle"
+reset
+mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
+claude_session_start
+expect idle "an empty file becomes idle"
+reset
+prompt_submit; sub_start
+expect_marker present "a marker is in place before the session starts"
+claude_session_start
+expect_marker absent "SessionStart removes the pane's subagent markers"
+if [ ! -e "$(dirname "$MARKER")" ]; then
+    printf '  ok   and the marker directory\n'
+else
+    printf '  FAIL and the marker directory\n'
+    failures=$((failures + 1))
+fi
+TRIGGER="$HOME/.config/tws/agent.trigger"
+reset
+prompt_submit; rm -f "$TRIGGER"
+claude_session_start
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a changed word rings the trigger\n'
+else
+    printf '  FAIL a changed word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_session_start; rm -f "$TRIGGER"
+claude_session_start
+expect idle "a second start keeps idle"
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   an unchanged word leaves the trigger alone\n'
+else
+    printf '  FAIL an unchanged word leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; sub_start; backdate "$MARKER"; claude_session_start
+prompt_submit; claude_stop
+expect review "a turn after the reset ends normally"
+
+printf '\na Codex session start never overwrites a live state\n'
+reset
+prompt_submit
+codex_session_start;  expect working "working stays working"
+reset
+prompt_submit; permission_prompt
+codex_session_start;  expect waiting "waiting stays waiting"
+reset
+prompt_submit; claude_session_start
+codex_session_start;  expect idle "idle stays idle"
+reset
+prompt_submit; turn_end
+codex_session_start;  expect idle "review becomes idle"
+reset
+codex_session_start;  expect idle "a missing file becomes idle"
+reset
+mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
+codex_session_start;  expect idle "an empty file becomes idle"
+reset
+prompt_submit; sub_start
+codex_session_start
+expect_marker present "a Codex session start leaves the subagent markers"
+reset
+prompt_submit; rm -f "$TRIGGER"
+codex_session_start
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   a Codex start that changes nothing leaves the trigger alone\n'
+else
+    printf '  FAIL a Codex start that changes nothing leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; turn_end; rm -f "$TRIGGER"
+codex_session_start
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a Codex start that changes the word rings the trigger\n'
+else
+    printf '  FAIL a Codex start that changes the word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe SessionStart wiring\n'
+# Runs the real configure_* functions against a throwaway HOME, twice. The fork
+# pointer entry stays; the reset entry is a second one; a user's own hook and a
+# second run change nothing.
+wire_home="$HOME/wiring"
+rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
+printf '%s' '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}' \
+    > "$wire_home/.claude/settings.json"
+printf '%s' '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}' \
+    > "$wire_home/.codex/hooks.json"
+wire() (
+    HOME="$wire_home"
+    read() { answer=y; }
+    info() { :; }; ok() { :; }; warn() { :; }
+    hooks_configured=0
+    configure_claude_hooks
+    configure_codex_hooks
+)
+if declare -F configure_claude_hooks >/dev/null; then
+    wire >/dev/null; wire >/dev/null
+    settings="$wire_home/.claude/settings.json"
+    hooks="$wire_home/.codex/hooks.json"
+    # count_where FILE FILTER: how many SessionStart entries pass FILTER.
+    count_where() { jq "[.hooks.SessionStart[] | select($2)] | length" "$1"; }
+    check_count() {
+        local file="$1" filter="$2" want="$3" name="$4" got
+        got="$(count_where "$file" "$filter")"
+        if [ "$got" = "$want" ]; then
+            printf '  ok   %s\n' "$name"
+        else
+            printf '  FAIL %s — want %s, got %s\n' "$name" "$want" "$got"
+            failures=$((failures + 1))
+        fi
+    }
+    is_tws='(.hooks[0].command | test("config/tws/"))'
+    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the fork pointer plus the reset entry"
+    check_count "$settings" "$is_tws and .matcher == \"\"" 1 "and the fork pointer entry keeps the empty matcher"
+    check_count "$settings" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
+        "and the reset entry matches exactly startup|resume|clear"
+    check_count "$settings" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    check_count "$hooks" "$is_tws" 1 "Codex SessionStart holds one tws entry"
+    check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
+        "and it matches exactly startup|resume|clear"
+    check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    for source in compact fork; do
+        if [[ "$source" =~ ^(startup|resume|clear)$ ]]; then
+            printf '  FAIL the SessionStart matcher must not match %s\n' "$source"
+            failures=$((failures + 1))
+        else
+            printf '  ok   the SessionStart matcher does not match %s\n' "$source"
+        fi
+    done
+else
+    printf '  FAIL %s has no configure_claude_hooks to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
 printf '\neach hook runs jq at most once\n'
 reset
 for call in main_tool_call sub_tool_call sub_start sub_stop; do
@@ -444,6 +595,8 @@ PANE_LESS=1 fire_in "$MAIN_JSON" working "$TOOL_MATCHER" tool
 PANE_LESS=1 fire_in "$SUB_JSON" working "$TOOL_MATCHER" tool
 fire_pane_less review "" stop
 fire_pane_less waiting "idle_prompt" idle_alert
+fire_pane_less idle "startup|resume|clear" reset
+fire_pane_less idle "startup|resume|clear" rest
 FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "" stop
 FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual|auto" settle
 files="$(find "$HOME/.config/tws" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
@@ -526,7 +679,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert settle; do
+for mode in set live alert tool stop idle_alert settle reset rest; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -581,6 +734,14 @@ expect_no_temp "and leaves no temp file"
 reset
 prompt_submit
 compact_done;   expect_rename "settle mode writes through a rename" review
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+claude_session_start; expect_rename "reset mode writes through a rename" idle
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit; turn_end
+codex_session_start; expect_rename "rest mode writes through a rename" idle
 expect_no_temp "and leaves no temp file"
 reset
 prompt_submit; sub_start; sub_tool_call; sub_stop; session_end

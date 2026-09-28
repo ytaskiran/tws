@@ -10,6 +10,9 @@ hooks_configured=0
 # src/core/status.rs: tws expires a silent `working` pane after that long, so an
 # older marker must not hold the pane working.
 SUBAGENT_FRESH_MINS=15
+# The SessionStart sources that begin a new conversation. `compact` fires in the
+# middle of a session, and `fork` does not start a new one, so neither may reset.
+SESSION_START_MATCHER='startup|resume|clear'
 
 # --- Helpers ---
 
@@ -185,6 +188,13 @@ configure_path() {
 #          fails, the answer is the word. tmux does not know if the terminal has
 #          focus, so a pane in a background terminal counts as in view.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
+#   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
+#          last one, so it writes the word (`idle`) over any state and deletes the
+#          pane's subagent markers. It rings the trigger only if the word changed.
+#   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
+#          must not end the turn of the main loop. It changes `review` or an empty
+#          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
+#          It keeps the markers.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
@@ -221,6 +231,13 @@ status_hook_entry() {
         settle)
             cmd+="w=$word; $seen"
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
+            ;;
+        reset)
+            cmd+='rm -rf "$sd"; '
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            ;;
+        rest)
+            cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
             ;;
         idle_alert)
             cmd+="if $fresh; then :; "
@@ -320,7 +337,7 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
-    local e_substart e_substop
+    local e_substart e_substop e_sessionstart
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "")
@@ -345,6 +362,7 @@ configure_claude_hooks() {
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     e_end=$(session_end_hook_entry)
+    e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" reset)
     local e_forkptr e_forkptr_end
     e_forkptr=$(fork_pointer_entry)
     e_forkptr_end=$(fork_pointer_end_entry)
@@ -362,6 +380,7 @@ configure_claude_hooks() {
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
+        --argjson sessionstart "$e_sessionstart" \
         --argjson forkptr "$e_forkptr" \
         --argjson forkptrend "$e_forkptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
@@ -378,7 +397,7 @@ configure_claude_hooks() {
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
-        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
@@ -436,7 +455,7 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_compact e_end e_substart e_substop
+    local e_work e_pretool e_wait e_review e_compact e_end e_substart e_substop e_sessionstart
     e_work=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "" live)
     e_wait=$(status_hook_entry waiting "" alert)
@@ -446,11 +465,13 @@ configure_codex_hooks() {
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto" settle)
     e_end=$(session_end_hook_entry)
+    e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" \
-        --argjson substart "$e_substart" --argjson substop "$e_substop" '
+        --argjson substart "$e_substart" --argjson substop "$e_substop" \
+        --argjson sessionstart "$e_sessionstart" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -466,6 +487,8 @@ configure_codex_hooks() {
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
+        # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
+        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
@@ -575,6 +598,12 @@ function beat(path: string) {
 }
 
 export default function (pi: any) {
+  // A new conversation in the pane owns nothing of the last one. `reload` keeps
+  // the same session, so it must not reset a pane that waits for the user.
+  pi.on("session_start", async (event: { reason: string }) => {
+    const path = panePath();
+    if (path && event.reason !== "reload") writeWord(path, "idle");
+  });
   pi.on("turn_start", async () => {
     const path = panePath();
     if (path) writeWord(path, "working");
