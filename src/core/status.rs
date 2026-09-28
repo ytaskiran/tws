@@ -19,6 +19,11 @@ pub fn permissions_dir() -> PathBuf {
     config_dir().join("permissions")
 }
 
+/// One directory per pane, one marker file per tool call in flight.
+pub fn inflight_dir() -> PathBuf {
+    config_dir().join("inflight")
+}
+
 pub fn trigger_path() -> PathBuf {
     config_dir().join("agent.trigger")
 }
@@ -205,13 +210,21 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_start
 /// `SUBAGENT_FRESH_MINS` in `install.sh` must equal this window.
 pub const STALE_WORKING_SECS: i64 = 15 * 60;
 
+/// A tool call has no heartbeat while it runs, and a build or a test run can
+/// last hours. A pane with an in-flight marker younger than this stays `working`.
+pub const MAX_TOOL_SECS: i64 = 4 * 60 * 60;
+const _: () = assert!(MAX_TOOL_SECS > STALE_WORKING_SECS);
+
 /// Downgrade `working` files whose heartbeat stopped to `idle`.
+///
+/// A pane is spared while `inflight_dir/<pane>` holds a marker younger than
+/// `MAX_TOOL_SECS`: a tool call is running, and it sends no heartbeat.
 ///
 /// Backstop for turn-ends with no hook to fire — hard kills, API errors in Codex,
 /// and an ESC interrupt in Claude Code (Codex has an `Interrupt` hook).
 /// `idle` rather than `review` because those panes finished nothing, so alerting
 /// on them is noise.
-pub fn expire_stale_working(dir: &Path, now: i64) {
+pub fn expire_stale_working(dir: &Path, inflight_dir: &Path, now: i64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -227,17 +240,34 @@ pub fn expire_stale_working(dir: &Path, now: i64) {
         if parse_status(&contents) != AgentStatus::Working {
             continue;
         }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        if now - mtime > STALE_WORKING_SECS {
+        let mtime = entry.metadata().ok().map(|m| mtime_secs(&m)).unwrap_or(0);
+        if now - mtime > STALE_WORKING_SECS
+            && !has_tool_in_flight(&inflight_dir.join(entry.file_name()), now)
+        {
             write_atomic(&path, status_word(AgentStatus::Idle)).ok();
         }
     }
+}
+
+fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// True when the pane's in-flight directory holds a marker younger than
+/// `MAX_TOOL_SECS`. The cap bounds the damage from a marker that outlives its
+/// call: an ESC in Claude Code fires no `PostToolUse`, and no `Stop` follows.
+fn has_tool_in_flight(pane_dir: &Path, now: i64) -> bool {
+    let Ok(entries) = std::fs::read_dir(pane_dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .any(|m| now - mtime_secs(&m) <= MAX_TOOL_SECS)
 }
 
 /// Convert a status to its on-disk representation; `Unknown` maps to `idle`.
@@ -512,13 +542,184 @@ mod tests {
         dir
     }
 
+    /// An in-flight directory that does not exist, for tests of the plain expiry.
+    fn no_inflight(dir: &Path) -> PathBuf {
+        dir.with_file_name(format!(
+            "{}-no-inflight",
+            dir.file_name().unwrap().to_string_lossy()
+        ))
+    }
+
+    fn now_secs() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    /// A `working` pane `%1` silent for longer than the stale window.
+    fn stale_working_pane(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = stale_dir(tag);
+        write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
+        backdate(&dir.join("%1"), STALE_WORKING_SECS as u64 + 60);
+        let inflight = stale_dir(&format!("{tag}-inflight"));
+        (dir, inflight)
+    }
+
+    fn status_of(dir: &Path, pane: &str) -> AgentStatus {
+        load_statuses_from(dir).get(pane).unwrap().0
+    }
+
+    #[test]
+    fn expire_keeps_a_stale_pane_with_a_fresh_in_flight_file() {
+        let (dir, inflight) = stale_working_pane("flight-fresh");
+        std::fs::create_dir_all(inflight.join("%1")).unwrap();
+        std::fs::write(inflight.join("%1").join("m.toolu_1"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn expire_keeps_a_pane_held_by_a_subagent_in_flight_file() {
+        let (dir, inflight) = stale_working_pane("flight-sub");
+        std::fs::create_dir_all(inflight.join("%1")).unwrap();
+        std::fs::write(inflight.join("%1").join("s.toolu_2"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn expire_ignores_an_in_flight_file_older_than_the_cap() {
+        let (dir, inflight) = stale_working_pane("flight-old");
+        std::fs::create_dir_all(inflight.join("%1")).unwrap();
+        let marker = inflight.join("%1").join("m.toolu_1");
+        std::fs::write(&marker, "").unwrap();
+        backdate(&marker, MAX_TOOL_SECS as u64 + 60);
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn expire_keeps_a_pane_when_only_one_of_its_in_flight_files_is_old() {
+        let (dir, inflight) = stale_working_pane("flight-mixed");
+        std::fs::create_dir_all(inflight.join("%1")).unwrap();
+        let old = inflight.join("%1").join("m.toolu_1");
+        std::fs::write(&old, "").unwrap();
+        backdate(&old, MAX_TOOL_SECS as u64 + 60);
+        std::fs::write(inflight.join("%1").join("s.toolu_2"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn expire_still_expires_a_pane_with_no_in_flight_directory() {
+        let (dir, inflight) = stale_working_pane("flight-none");
+        std::fs::remove_dir_all(&inflight).ok();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expire_still_expires_a_pane_with_an_empty_in_flight_directory() {
+        let (dir, inflight) = stale_working_pane("flight-empty");
+        std::fs::create_dir_all(inflight.join("%1")).unwrap();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn expire_ignores_the_in_flight_files_of_another_pane() {
+        let (dir, inflight) = stale_working_pane("flight-other");
+        std::fs::create_dir_all(inflight.join("%2")).unwrap();
+        std::fs::write(inflight.join("%2").join("m.toolu_1"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+    }
+
+    #[test]
+    fn prune_removes_in_flight_directories_without_live_pane() {
+        let dir = stale_dir("prune-flight");
+        std::fs::create_dir_all(dir.join("%1")).unwrap();
+        std::fs::create_dir_all(dir.join("%2")).unwrap();
+        std::fs::write(dir.join("%1").join("m.toolu_1"), "").unwrap();
+        std::fs::write(dir.join("%2").join("s.toolu_2"), "").unwrap();
+
+        let live: HashSet<String> = ["%1".to_string()].into();
+        prune_stale_files(&dir, &live, SystemTime::now());
+
+        assert!(dir.join("%1").join("m.toolu_1").exists());
+        assert!(!dir.join("%2").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_keeps_an_in_flight_directory_written_after_the_scan_began() {
+        let dir = stale_dir("prune-flight-race");
+        std::fs::create_dir_all(dir.join("%old")).unwrap();
+
+        let scan_started_at = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::create_dir_all(dir.join("%fresh")).unwrap();
+        std::fs::write(dir.join("%fresh").join("m.toolu_1"), "").unwrap();
+
+        prune_stale_files(&dir, &HashSet::new(), scan_started_at);
+
+        assert!(dir.join("%fresh").join("m.toolu_1").exists());
+        assert!(!dir.join("%old").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inflight_dir_sits_beside_agents_dir() {
+        assert_eq!(inflight_dir().parent(), agents_dir().parent());
+        assert_ne!(inflight_dir(), agents_dir());
+        assert_ne!(inflight_dir(), subagents_dir());
+        assert_ne!(inflight_dir(), permissions_dir());
+    }
+
     #[test]
     fn expires_working_past_the_threshold() {
         let dir = stale_dir("expire");
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -534,7 +735,7 @@ mod tests {
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS - 1;
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -553,7 +754,7 @@ mod tests {
         write_status_to(&dir, "%3", AgentStatus::Idle).unwrap();
 
         let base = load_statuses_from(&dir).get("%1").unwrap().1;
-        expire_stale_working(&dir, base + STALE_WORKING_SECS * 100);
+        expire_stale_working(&dir, &no_inflight(&dir), base + STALE_WORKING_SECS * 100);
 
         let map = load_statuses_from(&dir);
         assert_eq!(map.get("%1").unwrap().0, AgentStatus::Review);
@@ -570,9 +771,9 @@ mod tests {
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
         let after_first = load_statuses_from(&dir).get("%1").copied().unwrap();
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
         let after_second = load_statuses_from(&dir).get("%1").copied().unwrap();
 
         assert_eq!(after_first.0, AgentStatus::Idle);
@@ -585,7 +786,7 @@ mod tests {
     fn expire_on_missing_dir_is_a_noop() {
         let dir = std::env::temp_dir().join(format!("tws-test-noexist-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
-        expire_stale_working(&dir, 1_000_000);
+        expire_stale_working(&dir, &no_inflight(&dir), 1_000_000);
     }
 
     #[test]
@@ -607,7 +808,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -867,7 +1068,7 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
 
         assert_eq!(
             std::fs::read_to_string(dir.join(".%1.4242")).unwrap(),
@@ -887,7 +1088,7 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        expire_stale_working(&dir, now);
+        expire_stale_working(&dir, &no_inflight(&dir), now);
 
         assert_eq!(std::fs::read_to_string(dir.join("%1")).unwrap(), "idle");
         assert_eq!(dir_names(&dir), vec!["%1".to_string()]);

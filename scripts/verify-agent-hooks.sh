@@ -60,6 +60,11 @@ mkdir -p "$SPY_BIN"
 printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_CALLS" "$REAL_JQ" > "$SPY_BIN/jq"
 chmod +x "$SPY_BIN/jq"
 
+# A cksum that counts its calls, so a check can assert a hook skips the hash.
+CKSUM_CALLS="$HOME/cksum-calls"
+printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$CKSUM_CALLS" "$(command -v cksum)" > "$SPY_BIN/cksum"
+chmod +x "$SPY_BIN/cksum"
+
 # An mv that logs source, destination and the source's content, then does the
 # move. It shows that a status word reaches its file only by a rename.
 MV_CALLS="$HOME/mv-calls"
@@ -165,6 +170,12 @@ tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
 tool_failed() { fire_in "$1" working "" granted ; }
 PERM_DIR="$HOME/.config/tws/permissions/%7"
 
+# Codex tool hooks carry a tool_use_id too. PreToolUse records the call and
+# PostToolUse ends it.
+codex_pre_tool()  { fire_in "$1" working "" begin ; }
+codex_post_tool() { fire_in "$1" working "" done ; }
+INFLIGHT_DIR="$HOME/.config/tws/inflight/%7"
+
 # What tmux says about the pane: the visible pane of an attached session, and
 # the four ways to be out of sight.
 VISIBLE=111
@@ -217,6 +228,18 @@ expect_keys() {
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — want %s key file(s), got %s\n' "$name" "$want" "${got:-0}"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_inflight "NAMES" NAME: the marker files in the pane's in-flight directory.
+expect_inflight() {
+    local want="$1" name="$2" got
+    got="$(ls -A "$INFLIGHT_DIR" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//' || true)"
+    if [ "$got" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want [%s], got [%s]\n' "$name" "$want" "$got"
         failures=$((failures + 1))
     fi
 }
@@ -458,26 +481,48 @@ else
     failures=$((failures + 1))
 fi
 
-printf '\na tool with no open request runs no jq\n'
+printf '\na tool with no open request runs one jq and no cksum\n'
+# The tool_use_id needs one jq call, so the call is no longer skipped. The hash
+# and the key compare stay behind the "is a request open" test.
+count_lines() { wc -l < "$1" 2>/dev/null | tr -d ' ' || true; }
 reset
 prompt_submit
-rm -f "$JQ_CALLS"
+rm -f "$JQ_CALLS" "$CKSUM_CALLS"
 tool_done "$DONE_X"
 tool_failed "$DONE_X"
-if [ ! -e "$JQ_CALLS" ]; then
-    printf '  ok   no permissions directory: no jq call\n'
+calls="$(count_lines "$JQ_CALLS" 2>/dev/null || true)"
+if [ "${calls:-0}" = 2 ]; then
+    printf '  ok   no permissions directory: one jq call per hook\n'
 else
-    printf '  FAIL no permissions directory: %s jq call(s)\n' "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+    printf '  FAIL no permissions directory: %s jq call(s) for two hooks\n' "${calls:-0}"
+    failures=$((failures + 1))
+fi
+if [ ! -e "$CKSUM_CALLS" ]; then
+    printf '  ok   and no cksum call\n'
+else
+    printf '  FAIL and no cksum call\n'
     failures=$((failures + 1))
 fi
 expect working "and the status stays as it was"
 mkdir -p "$PERM_DIR"
-rm -f "$JQ_CALLS"
+rm -f "$JQ_CALLS" "$CKSUM_CALLS"
 tool_done "$DONE_X"
-if [ ! -e "$JQ_CALLS" ]; then
-    printf '  ok   an empty permissions directory: no jq call\n'
+calls="$(count_lines "$JQ_CALLS" 2>/dev/null || true)"
+if [ "${calls:-0}" = 1 ] && [ ! -e "$CKSUM_CALLS" ]; then
+    printf '  ok   an empty permissions directory: one jq call and no cksum\n'
 else
-    printf '  FAIL an empty permissions directory: %s jq call(s)\n' "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+    printf '  FAIL an empty permissions directory: %s jq call(s), cksum %s\n' "${calls:-0}" "$([ -e "$CKSUM_CALLS" ] && echo run || echo skipped)"
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+permit "$REQ_X"
+rm -f "$CKSUM_CALLS"
+tool_done "$DONE_X"
+if [ -e "$CKSUM_CALLS" ]; then
+    printf '  ok   a pane with an open request still hashes the call\n'
+else
+    printf '  FAIL a pane with an open request still hashes the call\n'
     failures=$((failures + 1))
 fi
 
@@ -912,7 +957,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert reset rest permit granted interrupt; do
+for mode in set live alert tool stop idle_alert reset rest permit granted interrupt begin done; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -1008,12 +1053,13 @@ printf '\ncompaction\n'
 # turn, and that turn's Stop ends it, so it must have no hook. These checks run
 # the wired entries, the way an agent picks them by event and trigger.
 if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
-    # wired_fire FILE EVENT TRIGGER: runs each entry of EVENT whose matcher matches
+    # wired_fire FILE EVENT TRIGGER [JSON]: runs each entry of EVENT whose matcher matches
     # TRIGGER. An empty matcher matches everything; any other is a whole-string regex.
     wired_fire() {
-        local file="$1" event="$2" trigger="$3" command
+        local file="$1" event="$2" trigger="$3" json='{}' command
+        [ -z "${4:-}" ] || json="$4"
         while IFS= read -r command; do
-            if [ -n "$command" ]; then run_command '{}' "$command"; fi
+            if [ -n "$command" ]; then run_command "$json" "$command"; fi
         done < <(jq -r --arg t "$trigger" ".hooks.$event // [] | .[]
             | select(.matcher as \$m | \$m == \"\" or (\$t | test(\"^(\" + \$m + \")\$\")))
             | .hooks[0].command" "$file")
@@ -1204,6 +1250,266 @@ if [ -f "$wire_home/.codex/hooks.json" ] && [ -f "$wire_home/.claude/settings.js
     expect working "the wired Interrupt entry with no TMUX_PANE writes nothing"
 else
     printf '  FAIL the Interrupt wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nlong tool calls leave an in-flight marker\n'
+# A tool call that runs longer than the stale window sends no heartbeat. Its
+# marker tells tws that the pane is busy. The prefix names the caller: m for the
+# main loop, s for a subagent. Stop drops m.* and keeps s.*, because background
+# subagents work on after the main loop ends its turn.
+POST_M='{"tool_use_id":"t2","tool_name":"Bash","tool_input":{}}'
+POST_S='{"agent_id":"a1","tool_use_id":"t1","tool_name":"Bash","tool_input":{}}'
+reset
+prompt_submit
+main_tool_call
+expect_inflight "m.t2" "a main-thread PreToolUse creates m.<id>"
+sub_tool_call
+expect_inflight "m.t2 s.t1" "a subagent PreToolUse creates s.<id>"
+tool_done "$POST_M"
+expect_inflight "s.t1" "PostToolUse removes the marker of its call"
+tool_done "$POST_S"
+expect_inflight "" "and the marker of a subagent call"
+reset
+prompt_submit
+main_tool_call
+tool_failed "$POST_M"
+expect_inflight "" "PostToolUseFailure removes the marker"
+reset
+prompt_submit
+main_tool_call
+tool_done '{"tool_use_id":"t9","tool_name":"Bash","tool_input":{}}'
+expect_inflight "m.t2" "a PostToolUse for another call leaves the marker"
+
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+claude_stop
+expect_inflight "s.t1" "Stop removes m.* and keeps s.*"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+fire review "" stop
+expect_inflight "s.t1" "StopFailure does the same"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+claude_session_start
+expect_inflight "" "SessionStart clears the whole directory"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+session_end
+expect_inflight "" "SessionEnd clears the whole directory"
+if [ ! -e "$INFLIGHT_DIR" ]; then
+    printf '  ok   and the directory itself\n'
+else
+    printf '  FAIL and the directory itself\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+codex_interrupt
+expect_inflight "" "Codex Interrupt clears the whole directory"
+reset
+prompt_submit
+main_tool_call
+fire review "manual" stop
+expect_inflight "" "a manual compaction end also drops m.*"
+
+printf '\na tool call in flight is a marker for the right pane only\n'
+reset
+prompt_submit
+main_tool_call
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 tool_done "$POST_M"
+PANE_LESS=1 tool_failed "$POST_M"
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+PANE_LESS=1 codex_post_tool "$POST_M"
+PANE_LESS=1 claude_stop
+PANE_LESS=1 claude_session_start
+PANE_LESS=1 codex_interrupt
+PANE_LESS=1 session_end
+expect_inflight "m.t2" "the commands with no TMUX_PANE write and remove nothing"
+reset
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a pane-less PreToolUse makes no directory\n'
+else
+    printf '  FAIL a pane-less PreToolUse makes no directory\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nan unsafe tool_use_id makes no marker\n'
+for id in '../x' '.x' '..' 'a/b' '' 'a\\b'; do
+    reset
+    prompt_submit
+    fire_in "{\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}" working "$TOOL_MATCHER" tool
+    fire_in "{\"agent_id\":\"a1\",\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}" working "$TOOL_MATCHER" tool
+    codex_pre_tool "{\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}"
+    left="$(find "$HOME/.config/tws/inflight" 2>/dev/null | wc -l | tr -d ' ' || true)"
+    if [ "${left:-0}" = 0 ]; then
+        printf '  ok   tool_use_id [%s] creates nothing\n' "$id"
+    else
+        printf '  FAIL tool_use_id [%s] created %s path(s)\n' "$id" "$left"
+        failures=$((failures + 1))
+    fi
+done
+reset
+prompt_submit
+fire_in '{"tool_name":"Bash"}' working "$TOOL_MATCHER" tool
+codex_pre_tool '{"tool_name":"Bash"}'
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a payload with no tool_use_id creates nothing\n'
+else
+    printf '  FAIL a payload with no tool_use_id creates nothing\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+JQ_BROKEN=1 main_tool_call
+JQ_BROKEN=1 sub_tool_call
+JQ_BROKEN=1 codex_pre_tool "$MAIN_JSON"
+fire_in '{ not json' working "$TOOL_MATCHER" tool
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a failed jq creates no marker\n'
+else
+    printf '  FAIL a failed jq creates no marker\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+main_tool_call
+JQ_BROKEN=1 tool_done "$POST_M"
+expect_inflight "m.t2" "and a failed jq removes none"
+
+printf '\nCodex tool calls leave the same marker\n'
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+expect_inflight "m.t2" "Codex PreToolUse creates m.<id>"
+expect working "and the pane stays working"
+codex_post_tool "$POST_M"
+expect_inflight "" "Codex PostToolUse removes it"
+expect working "and the pane stays working"
+reset
+prompt_submit; turn_end
+codex_pre_tool "$MAIN_JSON"
+expect review "Codex PreToolUse still never resumes review"
+codex_post_tool "$POST_M"
+expect working "and Codex PostToolUse still resumes the turn"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+claude_stop
+expect_inflight "" "Codex Stop removes m.*"
+reset
+codex_pre_tool "$MAIN_JSON"
+expect working "Codex PreToolUse claims an empty file"
+
+printf '\nthe in-flight wiring\n'
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    settings="$wire_home/.claude/settings.json"
+    hooks="$wire_home/.codex/hooks.json"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Claude PreToolUse creates the main marker"
+    wired_fire "$settings" PreToolUse Bash "$SUB_JSON"
+    expect_inflight "m.t2 s.t1" "and the subagent marker"
+    wired_fire "$settings" PostToolUse Bash "$POST_M"
+    expect_inflight "s.t1" "wired Claude PostToolUse removes a marker"
+    wired_fire "$settings" PostToolUseFailure Bash "$POST_S"
+    expect_inflight "" "wired Claude PostToolUseFailure removes a marker"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse AskUserQuestion "$MAIN_JSON"
+    expect_inflight "" "the question tool makes no marker"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex PreToolUse creates the marker"
+    wired_fire "$hooks" PostToolUse Bash "$POST_M"
+    expect_inflight "" "wired Codex PostToolUse removes it"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" Stop "" "$MAIN_JSON"
+    expect_inflight "" "wired Claude Stop removes m.*"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" Interrupt ""
+    expect_inflight "" "wired Codex Interrupt clears the directory"
+    check_event "$hooks" PreToolUse "$is_tws" 1 "Codex PreToolUse keeps its one tws entry"
+    check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
+    check_event "$settings" PostToolUse "$is_tws" 2 "Claude PostToolUse still holds two tws entries"
+    check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure still holds one tws entry"
+else
+    printf '  FAIL the in-flight wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe in-flight commands run jq at most once\n'
+for call in codex_begin codex_done main_pre sub_pre main_post sub_post main_failed; do
+    reset
+    prompt_submit
+    permit "$REQ_X"
+    rm -f "$JQ_CALLS"
+    case "$call" in
+        codex_begin) codex_pre_tool "$MAIN_JSON" ;;
+        codex_done)  codex_post_tool "$POST_M" ;;
+        main_pre)    main_tool_call ;;
+        sub_pre)     sub_tool_call ;;
+        main_post)   tool_done "$POST_M" ;;
+        sub_post)    tool_done "$POST_S" ;;
+        main_failed) tool_failed "$POST_M" ;;
+    esac
+    calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+    if [ "${calls:-0}" = 1 ]; then
+        printf '  ok   %s runs jq once\n' "$call"
+    else
+        printf '  FAIL %s runs jq %s time(s), want 1\n' "$call" "${calls:-0}"
+        failures=$((failures + 1))
+    fi
+done
+reset
+prompt_submit
+rm -f "$JQ_CALLS"
+codex_interrupt; claude_session_start; claude_stop; session_end
+if [ ! -e "$JQ_CALLS" ]; then
+    printf '  ok   the clearing commands run no jq\n'
+else
+    printf '  FAIL the clearing commands run jq\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na finished call leaves the permission key work as it was\n'
+reset
+prompt_submit
+permit "$REQ_X"
+main_tool_call
+tool_done "$DONE_X"
+expect working "a grant still resumes the turn"
+expect_keys 0 "and removes its key"
+expect_inflight "m.t2" "and it leaves the marker of another call"
+reset
+prompt_submit
+mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.t1"
+permit "$REQ_X"
+tool_done "$DONE_X"
+expect working "the grant of a call that has a marker resumes the turn"
+expect_inflight "" "and removes that marker"
+
+printf '\nupgrade cleanup clears the in-flight directory\n'
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/inflight"'; then
+    printf '  ok   the upgrade cleanup clears the in-flight directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the in-flight directory\n'
     failures=$((failures + 1))
 fi
 

@@ -178,6 +178,10 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
+#          The same jq call reads the tool_use_id. The hook then makes the in-flight
+#          marker `inflight/$TMUX_PANE/<m|s>.<tool_use_id>` (`s` for a subagent). A
+#          tool call that runs for hours sends no heartbeat, and tws reads the
+#          marker as proof that the pane still works.
 #   stop   turn end (Stop, StopFailure, and PostCompact for a manual /compact).
 #          Writes `working` while a fresh subagent marker exists. Else it writes
 #          the word, or `idle` if the user is looking at the pane. tmux answers
@@ -185,11 +189,14 @@ configure_path() {
 #          pane is in view when the first two are 1 and the third is 1 or more.
 #          If the query fails, the answer is the word. tmux does not know if the
 #          terminal has focus, so a pane in a background terminal counts as in
-#          view. Also deletes stale markers and the permission key files.
+#          view. Also deletes stale markers and the permission key files. It deletes
+#          the `m.*` in-flight markers and keeps `s.*`: background subagents work on
+#          after the main loop ends its turn.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
-#          pane's subagent markers. It rings the trigger only if the word changed.
+#          pane's subagent markers, permission keys and in-flight markers. It rings
+#          the trigger only if the word changed.
 #   permit PermissionRequest (Claude). Records the request as a key file, then raises
 #          `waiting` with the `alert` rules. The key is a checksum of the tool name
 #          and input, because the request carries no tool_use_id. Claude gives the
@@ -198,14 +205,21 @@ configure_path() {
 #          request was answered. It removes the key of that call, and writes
 #          `working` if the pane waits and no other request is open. A payload with
 #          no key file changes nothing. A pane with no open request exits before
-#          it starts jq. A denied tool fires neither event: `stop` clears the keys.
+#          it hashes anything. A denied tool fires neither event: `stop` clears the
+#          keys. It also removes the in-flight marker of the call. The one jq call
+#          gives the tool_use_id and the key input, so this mode always starts jq.
 #   interrupt Codex Interrupt. An ESC interrupt fires no Stop, so this event ends the
 #          turn. It writes the word (`idle`) over any state, and rings the trigger
 #          only if the word changed. The turn gave no result, so there is nothing
-#          to review. It deletes the pane's permission keys, because a pending
-#          approval dies with the turn. It keeps the subagent markers: the docs do
-#          not say that an interrupt stops subagents. It starts no jq and no tmux,
-#          because the hook timeout is 1 s.
+#          to review. It deletes the pane's permission keys and in-flight markers,
+#          because a pending approval and a running tool die with the turn. It keeps
+#          the subagent markers: the docs do not say that an interrupt stops
+#          subagents. It starts no jq and no tmux, because the hook timeout is 1 s.
+#   begin  Codex PreToolUse. Its payload has a tool_use_id, so it works as `live`
+#          and also makes the marker `m.<tool_use_id>`. Codex has no `agent_id` in
+#          the documented payload, so every marker gets the `m` prefix.
+#   done   Codex PostToolUse. It works as `set` and also removes the marker of the
+#          call.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -223,6 +237,14 @@ status_hook_entry() {
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
+    cmd+='ifd="$HOME/.config/tws/inflight/$TMUX_PANE"; '
+    # A tool_use_id names a file, so it must not leave the directory, hide as a dot
+    # file, or hold a backslash. `mark` makes the marker of a call (prefix in $p).
+    # `unmark` removes it: a PostToolUse payload does not say which prefix made the
+    # marker, and the id is unique, so it tries both.
+    local badid='""|*/*|.*|*\\*'
+    local mark="case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
+    local unmark="case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
     # One jq call gives the whole key input. cksum is POSIX, and shasum is not on
     # every Linux. The size joins the checksum to make a collision less likely.
     local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
@@ -235,7 +257,13 @@ status_hook_entry() {
         tool)
             # A failed jq (missing, bad JSON) cannot prove this is the main loop,
             # so it takes the conservative subagent path.
-            cmd+='if ! aid=$(jq -r ".agent_id // empty" 2>/dev/null); then aid=.unknown; fi; '
+            # One jq call gives both ids, split on a tab. A failed jq leaves no id
+            # to mark.
+            cmd+='tab=$(printf "\t"); '
+            cmd+='if ids=$(jq -r "[.agent_id // \"\", .tool_use_id // \"\"] | @tsv" 2>/dev/null); '
+            cmd+='then aid=${ids%%"$tab"*}; tid=${ids#*"$tab"}; else aid=.unknown; tid=; fi; '
+            cmd+='if [ -n "$aid" ]; then p=s; else p=m; fi; '
+            cmd+="$mark"
             cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
             cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
             cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; "
@@ -244,13 +272,13 @@ status_hook_entry() {
             cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
-            cmd+='rm -rf "$pd"; '
+            cmd+='rm -rf "$pd"; rm -f "$ifd"/m.* 2>/dev/null; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
-            cmd+='rm -rf "$sd" "$pd"; '
+            cmd+='rm -rf "$sd" "$pd" "$ifd"; '
             cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
             ;;
         permit)
@@ -259,14 +287,31 @@ status_hook_entry() {
             cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         granted)
+            # One jq call gives the tool_use_id on its first line and the key input
+            # on its second. The id is a JSON string here, so it loses its quotes.
+            cmd+='nl=$(printf "\nx"); nl=${nl%x}; '
+            cmd+='out=$(jq -cS "(.tool_use_id // \"\"), {tool_name, tool_input}" 2>/dev/null); j=; tid=; '
+            cmd+='case "$out" in *"$nl"*) tid=${out%%"$nl"*}; tid=${tid#\"}; tid=${tid%\"}; j=${out#*"$nl"} ;; esac; '
+            cmd+="$unmark"
             cmd+='[ -n "$(ls -A "$pd" 2>/dev/null)" ] || exit 0; '
-            cmd+="$keyof"
-            cmd+='[ -n "${k:-}" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
+            cmd+='k=; [ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
+            cmd+='[ -n "$k" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
             cmd+='[ "$cur" = waiting ] && [ -z "$(ls -A "$pd" 2>/dev/null)" ] '
             cmd+="&& { put $word; $trig; }; :"
             ;;
         interrupt)
-            cmd+='rm -rf "$pd"; '
+            cmd+='rm -rf "$pd" "$ifd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            ;;
+        begin)
+            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; p=m; '
+            cmd+="$mark"
+            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
+            ;;
+        done)
+            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; '
+            cmd+="$unmark"
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)
@@ -317,6 +362,7 @@ session_end_hook_entry() {
     cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/permissions/$TMUX_PANE"; '
+    cmd+='rm -rf "$HOME/.config/tws/inflight/$TMUX_PANE"; '
     cmd+='touch "$HOME/.config/tws/agent.trigger"'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
@@ -507,9 +553,11 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart e_interrupt
+    local e_work e_pretool e_posttool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart e_interrupt
     e_work=$(status_hook_entry working "")
-    e_pretool=$(status_hook_entry working "" live)
+    # Both tool hooks carry a tool_use_id, so a long call keeps an in-flight marker.
+    e_pretool=$(status_hook_entry working "" begin)
+    e_posttool=$(status_hook_entry working "" done)
     e_wait=$(status_hook_entry waiting "" alert)
     e_review=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
@@ -525,7 +573,7 @@ configure_codex_hooks() {
     e_interrupt=$(status_hook_entry idle "" interrupt)
 
     jq \
-        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
+        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson posttool "$e_posttool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson precompact "$e_precompact" \
         --argjson compact "$e_compact" --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
@@ -540,7 +588,7 @@ configure_codex_hooks() {
         .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
         .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
         # PermissionRequest enters waiting; this is its only bounded exit.
-        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $work) |
+        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
@@ -714,6 +762,7 @@ configure_agent_hooks() {
         rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
         rm -rf "$HOME/.config/tws/subagents" 2>/dev/null || true
         rm -rf "$HOME/.config/tws/permissions" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/inflight" 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
         touch "$HOME/.config/tws/agent.trigger"
         info "Cleared stale agent status files"
