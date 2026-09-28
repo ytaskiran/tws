@@ -4,15 +4,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ansi_to_tui::IntoText;
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph};
-use tui_tree_widget::{Tree, TreeState};
+use ratatui::widgets::{Block, Padding, Paragraph};
+use tui_tree_widget::TreeState;
 
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{
     agent_preview, agents_view, confirm_modal, dir_picker_modal, finder_modal, input_modal,
-    notes_sidebar, recent_bar, tree_view,
+    notes_sidebar, recent_bar, sessions_view,
 };
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::core::markdown::MarkdownRenderer;
@@ -364,6 +364,61 @@ impl App {
 
             frame.render_widget(Block::default().style(self.theme.background), area);
 
+            // Header: brand and view tabs, then a hairline that underlines the active tab.
+            let outer = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
+            let header_area = outer[0];
+            let area = outer[1];
+            {
+                let is_agents = matches!(self.view_mode, ViewMode::Agents);
+                let (sessions_style, agents_style) = if is_agents {
+                    (
+                        self.theme.header_view_inactive,
+                        self.theme.header_view_active,
+                    )
+                } else {
+                    (
+                        self.theme.header_view_active,
+                        self.theme.header_view_inactive,
+                    )
+                };
+                const BRAND: &str = "  tws";
+                const GAP: &str = "    ";
+                const SESSIONS: &str = "sessions";
+                const TAB_GAP: &str = "   ";
+                const AGENTS: &str = "agents";
+                let header = Line::from(vec![
+                    Span::styled(BRAND, self.theme.header_brand),
+                    Span::raw(GAP),
+                    Span::styled(SESSIONS, sessions_style),
+                    Span::raw(TAB_GAP),
+                    Span::styled(AGENTS, agents_style),
+                ]);
+                frame.render_widget(Paragraph::new(header), header_area);
+
+                // Second header row: a hairline, with an accent segment under
+                // the active tab.
+                let sessions_at = BRAND.len() + GAP.len();
+                let (start, len) = if is_agents {
+                    (sessions_at + SESSIONS.len() + TAB_GAP.len(), AGENTS.len())
+                } else {
+                    (sessions_at, SESSIONS.len())
+                };
+                let w = header_area.width as usize;
+                let start = start.min(w);
+                let len = len.min(w - start);
+                let rule = Line::from(vec![
+                    Span::styled("─".repeat(start), self.theme.header_rule),
+                    Span::styled("─".repeat(len), self.theme.header_rule_active),
+                    Span::styled("─".repeat(w - start - len), self.theme.header_rule),
+                ]);
+                let rule_area = Rect {
+                    y: header_area.y + 1,
+                    height: 1,
+                    ..header_area
+                };
+                frame.render_widget(Paragraph::new(rule), rule_area);
+            }
+
             let constraints = if show_recent {
                 vec![
                     Constraint::Min(0),
@@ -397,27 +452,19 @@ impl App {
                 (content_area, None)
             };
 
+            let padded = Block::new().padding(Padding::new(1, 1, 0, 0));
+            let view_area = padded.inner(tree_area);
             if matches!(self.view_mode, ViewMode::Agents) {
                 agents_view::render(
                     frame,
                     &flat_agents,
                     self.agent_list_cursor,
-                    tree_area,
+                    view_area,
                     &self.theme,
                 );
             } else {
-                let block = Block::default();
-                let selected_thread = match selected_item {
-                    SelectedItem::Thread(c, t) => self
-                        .state
-                        .collections
-                        .get(c)
-                        .and_then(|col| col.threads.get(t))
-                        .map(|thread| thread.id),
-                    _ => None,
-                };
-                let items = tree_view::build_tree_items(&self.state, &self.theme, selected_thread);
-                if items.is_empty() {
+                let selected_path = self.tree_state.selected().to_vec();
+                if sessions_view::row_paths(&self.state).is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
                     let top_padding = (available_height.saturating_sub(content_height)) / 2;
@@ -434,33 +481,25 @@ impl App {
                         self.theme.empty_hint,
                     )));
 
-                    let paragraph = Paragraph::new(lines)
-                        .block(block)
-                        .alignment(Alignment::Center);
-                    frame.render_widget(paragraph, tree_area);
+                    frame.render_widget(
+                        Paragraph::new(lines).alignment(Alignment::Center),
+                        tree_area,
+                    );
                 } else {
-                    let tree_highlight = if matches!(self.focus, Focus::Notes) {
-                        self.theme.highlight_unfocused
-                    } else {
-                        self.theme.highlight
-                    };
-
-                    let tree = Tree::new(&items)
-                        .expect("collection IDs are unique")
-                        .block(block)
-                        .highlight_style(tree_highlight)
-                        .highlight_symbol("  ")
-                        .node_closed_symbol("\u{203A} ")
-                        .node_open_symbol("\u{2304} ")
-                        .node_no_children_symbol("  ");
-
-                    frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
+                    sessions_view::render(
+                        frame,
+                        &self.state,
+                        &selected_path,
+                        !matches!(self.focus, Focus::Notes),
+                        view_area,
+                        &self.theme,
+                    );
                 }
             }
 
             if let Some(sb_area) = sidebar_area {
                 if show_preview {
-                    let title = format!("Preview: {}", sidebar_title);
+                    let title = format!("preview · {}", sidebar_title);
                     let visible = sb_area.height.saturating_sub(2) as usize;
                     let scroll = self
                         .preview_content
@@ -477,7 +516,7 @@ impl App {
                         &self.theme,
                     );
                 } else {
-                    let title = format!("Notes: {}", sidebar_title);
+                    let title = format!("notes · {}", sidebar_title);
                     notes_sidebar::render(
                         frame,
                         &notes_sidebar::SidebarState {
@@ -711,20 +750,24 @@ impl App {
         };
         match action {
             Action::Quit => self.running = false,
-            Action::MoveDown => {
-                self.tree_state.key_down();
-            }
-            Action::MoveUp => {
-                self.tree_state.key_up();
+            // The sessions view draws its own rows, so TreeState never learns
+            // the row order from a Tree render. Navigate on the view's rows.
+            Action::MoveDown | Action::MoveUp => {
+                let delta = if action == Action::MoveDown { 1 } else { -1 };
+                let paths = sessions_view::row_paths(&self.state);
+                let next = sessions_view::step(&paths, self.tree_state.selected(), delta);
+                self.tree_state.select(next);
             }
             Action::MoveLeft => {
-                self.tree_state.key_left();
+                // Go to the parent row.
+                let mut path = self.tree_state.selected().to_vec();
+                if path.len() > 1 {
+                    path.pop();
+                    self.tree_state.select(path);
+                }
             }
-            Action::MoveRight => {
-                self.tree_state.key_right();
-            }
-            Action::ToggleSelect => {
-                self.tree_state.toggle_selected();
+            Action::MoveRight | Action::ToggleSelect => {
+                // Groups are always open in the sessions view.
             }
             Action::Enter => self.start_enter(terminal)?,
             Action::Deselect => {

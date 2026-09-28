@@ -255,7 +255,7 @@ mod tests {
 
         let theme = crate::theme::Theme::build(&p);
         assert_eq!(
-            theme.thread,
+            theme.selection_bar,
             ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(255, 0, 0))
         );
 

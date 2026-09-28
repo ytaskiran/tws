@@ -8,8 +8,8 @@ pub mod finder_modal;
 pub mod input_modal;
 pub mod notes_sidebar;
 pub mod recent_bar;
+pub mod sessions_view;
 pub mod status_bar;
-pub mod tree_view;
 
 /// Centers a popup of fixed `height` and `percent_x` width inside `area`.
 pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
