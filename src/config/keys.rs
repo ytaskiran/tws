@@ -34,6 +34,8 @@ pub enum Action {
     Move,
     PinAgent,
     PinAgentSlot,
+    SetDirectory,
+    Complete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,6 +46,7 @@ pub enum KeyMode {
     Finder,
     Input,
     ConfirmModal,
+    DirPicker,
 }
 
 /// Parse a key string like "q", "A", "ctrl+j", "enter", "space", etc.
@@ -136,6 +139,8 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "move" => Ok(Action::Move),
         "pin_agent" => Ok(Action::PinAgent),
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
+        "set_directory" => Ok(Action::SetDirectory),
+        "complete" => Ok(Action::Complete),
         _ => Err(format!("unknown action: {:?}", s)),
     }
 }
@@ -236,6 +241,12 @@ impl Keymap {
             A::KillSession
         );
         bind!(M::Normal, KeyCode::Char('m'), KeyModifiers::NONE, A::Move);
+        bind!(
+            M::Normal,
+            KeyCode::Char('c'),
+            KeyModifiers::NONE,
+            A::SetDirectory
+        );
         bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE, A::Finder);
         bind!(
             M::Normal,
@@ -369,6 +380,30 @@ impl Keymap {
         );
         bind!(
             M::Finder,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+            A::Backspace
+        );
+
+        bind!(M::DirPicker, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
+        bind!(M::DirPicker, KeyCode::Enter, KeyModifiers::NONE, A::Confirm);
+        bind!(M::DirPicker, KeyCode::Tab, KeyModifiers::NONE, A::Complete);
+        bind!(M::DirPicker, KeyCode::Down, KeyModifiers::NONE, A::MoveDown);
+        bind!(
+            M::DirPicker,
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL,
+            A::MoveDown
+        );
+        bind!(M::DirPicker, KeyCode::Up, KeyModifiers::NONE, A::MoveUp);
+        bind!(
+            M::DirPicker,
+            KeyCode::Char('k'),
+            KeyModifiers::CONTROL,
+            A::MoveUp
+        );
+        bind!(
+            M::DirPicker,
             KeyCode::Backspace,
             KeyModifiers::NONE,
             A::Backspace
@@ -622,5 +657,57 @@ mod tests {
             km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::SHIFT),
             Some(Action::Finder)
         );
+    }
+
+    #[test]
+    fn default_keymap_binds_c_to_set_directory() {
+        let km = Keymap::default_bindings();
+        assert_eq!(
+            km.resolve(KeyMode::Normal, KeyCode::Char('c'), KeyModifiers::NONE),
+            Some(Action::SetDirectory)
+        );
+    }
+
+    #[test]
+    fn default_keymap_dir_picker_mode() {
+        let km = Keymap::default_bindings();
+        assert_eq!(
+            km.resolve(KeyMode::DirPicker, KeyCode::Tab, KeyModifiers::NONE),
+            Some(Action::Complete)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::DirPicker, KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::DirPicker, KeyCode::Esc, KeyModifiers::NONE),
+            Some(Action::Cancel)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::DirPicker, KeyCode::Backspace, KeyModifiers::NONE),
+            Some(Action::Backspace)
+        );
+        assert_eq!(
+            km.resolve(
+                KeyMode::DirPicker,
+                KeyCode::Char('j'),
+                KeyModifiers::CONTROL
+            ),
+            Some(Action::MoveDown)
+        );
+        assert_eq!(
+            km.resolve(
+                KeyMode::DirPicker,
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL
+            ),
+            Some(Action::MoveUp)
+        );
+    }
+
+    #[test]
+    fn parse_action_accepts_new_names() {
+        assert_eq!(parse_action("set_directory").unwrap(), Action::SetDirectory);
+        assert_eq!(parse_action("complete").unwrap(), Action::Complete);
     }
 }

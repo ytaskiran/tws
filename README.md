@@ -23,6 +23,25 @@ The main view. The thread/session tree on the left, a notes panel on the right. 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
 
 
+### Thread working directories
+
+A thread can have a default working directory. Sessions launched from it start
+there; threads without one start in your home directory.
+
+Press `c` on a thread to open the directory picker. The top row is always the
+directory you are browsing — `Enter` there accepts it. Type to filter, `Tab` to
+enter the first match, or move down to a subdirectory and press `Enter` to go
+into it. `Backspace` deletes a filter character, or goes up a level when the
+filter is empty. `Esc` cancels. New threads prompt for a directory right after
+you name them.
+
+To point a thread back at your home directory, `Backspace` up to `~` and press
+`Enter`.
+
+If a thread's directory is deleted, sessions still launch — they start in your
+home directory with a warning in the status bar (tmux's status line, if tws
+is running inside tmux).
+
 ### Agents view
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
@@ -33,13 +52,16 @@ Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) r
 ### Session fork (experimental)
 
 Press `prefix+F` in a Claude Code pane to open a **forked** copy of that
-session in a tmux popup. The fork inherits the whole conversation. It writes
-to a new session id. The parent transcript stays untouched. Ask a throwaway
-question. Close the popup. The fork leaves nothing behind.
+session in a new pane on the right. The fork inherits the whole conversation.
+It writes to a new session id. The parent transcript stays untouched.
 
-Requires the tws agent hooks (installed by `install.sh`) and the binding:
+Ask a throwaway question while the parent stays visible. Press `prefix+z` to
+zoom the fork, and press it again to restore the split. Type `/exit` to close
+the fork pane.
 
-    bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"
+`install.sh` adds the hooks and, if you accept, this binding:
+
+    bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""
 
 This feature works with Claude Code only. Codex and Pi panes do not support
 forking. `codex resume` appends to the parent session instead of forking it.
@@ -134,6 +156,7 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `r` | Rename selected item |
 | `d` | Delete selected thread |
 | `m` | Move a session to another thread |
+| `c` | Set the selected thread's working directory |
 
 ### Sessions
 
@@ -193,9 +216,12 @@ toggle_view = "v"
 [keys.notes]
 scroll_down = "j"
 scroll_up   = "k"
+
+[keys.dir_picker]
+complete = "tab"
 ```
 
-**Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`.
+**Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`, `dir_picker`.
 
 **Key syntax:** single chars (`"q"`, `"A"`), modifier prefixes (`"ctrl+j"`, `"alt+x"`), named keys (`"enter"`, `"esc"`, `"space"`, `"tab"`, `"backspace"`, `"up"`, `"down"`, `"left"`, `"right"`).
 

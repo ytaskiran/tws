@@ -22,7 +22,6 @@ pub struct FlatAgent {
     pub sess_idx: usize,
     pub session_display_name: String,
     pub agent_idx: usize,
-    pub agent_type: super::model::AgentType,
     pub agent_display_name: String,
     pub tmux_session_name: String,
     pub window_index: u32,
@@ -153,6 +152,19 @@ impl AppState {
             && let Some(thread) = col.threads.get_mut(thread_idx)
         {
             thread.name = new_name;
+        }
+    }
+
+    pub fn set_thread_working_dir(
+        &mut self,
+        col_idx: usize,
+        thread_idx: usize,
+        dir: std::path::PathBuf,
+    ) {
+        if let Some(col) = self.collections.get_mut(col_idx)
+            && let Some(thread) = col.threads.get_mut(thread_idx)
+        {
+            thread.working_dir = Some(dir);
         }
     }
 
@@ -510,7 +522,6 @@ impl AppState {
                             agent_idx,
                             thread_name: thread.name.clone(),
                             session_display_name: session.display_name.clone(),
-                            agent_type: agent.agent_type,
                             agent_display_name: agent.display_name.clone(),
                             tmux_session_name: agent.tmux_session_name.clone(),
                             window_index: agent.window_index,
@@ -1140,5 +1151,29 @@ mod tests {
         }
 
         assert_eq!(state.agent_sessions[0].pin_slot, Some(2));
+    }
+
+    #[test]
+    fn set_thread_working_dir_overwrites_a_previous_value() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "Pipeline".into());
+
+        let first = std::path::PathBuf::from("/tmp/pipeline");
+        state.set_thread_working_dir(0, 0, first.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(first));
+
+        let second = std::path::PathBuf::from("/tmp/other");
+        state.set_thread_working_dir(0, 0, second.clone());
+        assert_eq!(state.collections[0].threads[0].working_dir, Some(second));
+    }
+
+    #[test]
+    fn set_thread_working_dir_ignores_out_of_range_indices() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "Pipeline".into());
+        state.set_thread_working_dir(9, 9, std::path::PathBuf::from("/tmp"));
+        assert!(state.collections[0].threads[0].working_dir.is_none());
     }
 }

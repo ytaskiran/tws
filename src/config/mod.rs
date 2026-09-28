@@ -28,6 +28,7 @@ pub struct KeysConfig {
     pub finder: Option<HashMap<String, String>>,
     pub input: Option<HashMap<String, String>>,
     pub confirm: Option<HashMap<String, String>>,
+    pub dir_picker: Option<HashMap<String, String>>,
 }
 
 /// Load `~/.config/tws/config.toml`. Missing file → default config.
@@ -124,6 +125,9 @@ pub fn build_keymap(config: &Config) -> Keymap {
     }
     if let Some(overrides) = &keys_cfg.confirm {
         km.apply_overrides(KeyMode::ConfirmModal, overrides);
+    }
+    if let Some(overrides) = &keys_cfg.dir_picker {
+        km.apply_overrides(KeyMode::DirPicker, overrides);
     }
 
     km
@@ -251,7 +255,7 @@ mod tests {
 
         let theme = crate::theme::Theme::build(&p);
         assert_eq!(
-            theme.thread,
+            theme.selection_bar,
             ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(255, 0, 0))
         );
 

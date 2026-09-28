@@ -150,55 +150,75 @@ configure_path() {
 # --- 4. Agent hooks (Claude Code + Codex + Pi) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
-# A third argument makes the unchanged case refresh mtime, which tws reads as a
-# liveness heartbeat. agent.trigger stays guarded either way — ringing it per
-# tool call would force a full tmux+ps rescan. The refresh is `touch -c` because
-# `>` truncates before writing, exposing an empty file to concurrent readers.
+# agent.trigger stays guarded in every mode — ringing it per tool call would
+# force a full tmux+ps rescan. The mtime refresh is `touch -c` because `>`
+# truncates before writing, exposing an empty file to concurrent readers.
+#
+# Modes:
+#   set    unconditional — the event names the new state outright.
+#   live   liveness only — refresh `working`, or claim an empty file. A pane in a
+#          resting state stays there. Background subagents share the pane with the
+#          main loop and fire the same tool hooks, so without this guard their
+#          tool calls repaint a finished or question-blocked pane as `working`.
+#   alert  raise `waiting`, but only over `working` or an empty file. Leaving
+#          `review` alone keeps attach-time acknowledgment working.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
-    local heartbeat="${3:-}"
-    local cmd
-    # A fork's own hooks resolve to the PARENT pane (tmux popups report the
-    # originating pane, not the popup), so a fork must not write any status.
-    cmd='[ -n "$TWS_FORK" ] && exit 0; '
-    cmd+='f="$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; '
+    local mode="${3:-set}"
+    local cmd trig
+    trig='touch "$HOME/.config/tws/agent.trigger"'
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
-    if [ -n "$heartbeat" ]; then
-        cmd+="if [ \"\$cur\" != $word ]; then printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; else touch -c \"\$f\"; fi; :"
-    else
-        cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; touch \"\$HOME/.config/tws/agent.trigger\"; }; :"
-    fi
+    case "$mode" in
+        live)
+            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            ;;
+        alert)
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            ;;
+        *)
+            cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; $trig; }; :"
+            ;;
+    esac
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# Emits the SessionStart hook entry that records <session_id>\t<cwd> for the pane,
-# so `tws fork-pane` can fork that session. Skipped when TWS_FORK is set, which is
-# how a fork avoids overwriting its parent's pointer.
-session_hook_entry() {
+# The end-of-session counterpart: drops this pane's status file.
+session_end_hook_entry() {
     local cmd
-    cmd='[ -n "$TWS_FORK" ] && exit 0; '
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
+    cmd+='touch "$HOME/.config/tws/agent.trigger"'
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+# Emits the SessionStart hook entry that records <session_id>\t<cwd> for this
+# pane, so `tws fork-pane` can fork the session that runs in it.
+fork_pointer_entry() {
+    local cmd
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='input=$(cat); '
     cmd+='id=$(printf "%s" "$input" | jq -r ".session_id // empty"); '
     cmd+='[ -z "$id" ] && exit 0; '
     cmd+='cwd=$(printf "%s" "$input" | jq -r ".cwd // empty"); '
     cmd+='[ -z "$cwd" ] && cwd=$PWD; '
-    cmd+='p=${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}; '
-    cmd+='[ -z "$p" ] && exit 0; '
     cmd+='mkdir -p "$HOME/.config/tws/sessions"; '
-    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$p"; :'
+    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-session_end_entry() {
+# The end-of-session counterpart: drops this pane's fork pointer.
+fork_pointer_end_entry() {
     local cmd
-    # Guard for the same reason as session_hook_entry: without it, a fork's
-    # SessionEnd hook deletes the PARENT pane's session pointer.
-    cmd='[ -n "$TWS_FORK" ] && exit 0; '
-    cmd+='rm -f "$HOME/.config/tws/sessions/${TMUX_PANE:-$(tmux display-message -p "#{pane_id}")}"; :'
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='rm -f "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -227,22 +247,28 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_stop e_compact e_fail e_end
+    # Submitting a prompt is the only event that starts a turn, so it is the only
+    # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" heartbeat)
+    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" live)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
-    # The "turn resumed" signal. Without it, leaving `waiting` waits for the
-    # model to reach its next tool call — unbounded. See AGENTS.md.
-    e_posttool=$(status_hook_entry working "")
-    e_notify=$(status_hook_entry waiting "permission_prompt|agent_needs_input")
+    # The "turn resumed" signal, scoped to the question it answers. A match-all
+    # PostToolUse would hand every background subagent the same power, and its
+    # tool calls would repaint the pane the moment `Stop` set `review`.
+    e_posttool=$(status_hook_entry working "^AskUserQuestion$")
+    # `idle_prompt` is the real event name — Claude sends it 60s after the main
+    # loop goes quiet. It is also the backstop that heals a pane no other hook
+    # reached. `agent_needs_input`, the name used before, never existed.
+    e_notify=$(status_hook_entry waiting "permission_prompt|idle_prompt" alert)
     e_stop=$(status_hook_entry review "")
     # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
     e_fail=$(status_hook_entry review "")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
-    local e_sessionstart e_sessionrm
-    e_sessionstart=$(session_hook_entry)
-    e_sessionrm=$(session_end_entry)
+    e_end=$(session_end_hook_entry)
+    local e_forkptr e_forkptr_end
+    e_forkptr=$(fork_pointer_entry)
+    e_forkptr_end=$(fork_pointer_end_entry)
 
     jq \
         --argjson prompt "$e_prompt" \
@@ -254,8 +280,8 @@ configure_claude_hooks() {
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
-        --argjson sessionstart "$e_sessionstart" \
-        --argjson sessionrm "$e_sessionrm" '
+        --argjson forkptr "$e_forkptr" \
+        --argjson forkptrend "$e_forkptr_end" '
         # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
         .hooks //= {} |
@@ -268,10 +294,10 @@ configure_claude_hooks() {
         .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
-        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $sessionstart) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $sessionrm) |
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp" && mv "$tmp" "$settings"
@@ -328,12 +354,12 @@ configure_codex_hooks() {
     tmp="$(mktemp)"
     local e_work e_pretool e_wait e_review e_compact e_end
     e_work=$(status_hook_entry working "")
-    e_pretool=$(status_hook_entry working "" heartbeat)
-    e_wait=$(status_hook_entry waiting "")
+    e_pretool=$(status_hook_entry working "" live)
+    e_wait=$(status_hook_entry waiting "" alert)
     e_review=$(status_hook_entry review "")
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto")
-    e_end='[{"matcher": "", "hooks": [{"type": "command", "command": "[ -n \"$TWS_FORK\" ] && exit 0; rm -f \"$HOME/.config/tws/agents/${TMUX_PANE:-$(tmux display-message -p \"#{pane_id}\")}\"; touch \"$HOME/.config/tws/agent.trigger\""}]}]'
+    e_end=$(session_end_hook_entry)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
@@ -389,16 +415,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
-async function panePath(pi: any): Promise<string | undefined> {
-  let pane = process.env.TMUX_PANE;
-  if (!pane) {
-    try {
-      const result = await pi.exec("tmux", ["display-message", "-p", "#{pane_id}"]);
-      pane = result.stdout?.trim();
-    } catch {
-      return undefined;
-    }
-  }
+// Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
+// answers with the current client's active pane, so an agent outside a pane
+// would stamp its status onto whichever pane the user is watching.
+function panePath(): string | undefined {
+  const pane = process.env.TMUX_PANE;
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
 }
 
@@ -431,27 +452,30 @@ function beat(path: string) {
 
 export default function (pi: any) {
   pi.on("turn_start", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "working");
   });
   // Pi's only per-tool-call event, and so the only place a heartbeat can live.
   pi.on("tool_execution_start", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (!path) return;
-    if (readWord(path) === "working") beat(path);
-    else writeWord(path, "working");
+    const cur = readWord(path);
+    // A tool call proves liveness, it does not start a turn. A pane resting in
+    // review or waiting stays there; only an empty file is claimed.
+    if (cur === "working") beat(path);
+    else if (cur === undefined) writeWord(path, "working");
   });
   // Compaction can end a turn without agent_settled firing.
   pi.on("session_compact", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "review");
   });
   pi.on("agent_settled", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path) writeWord(path, "review");
   });
   pi.on("session_shutdown", async () => {
-    const path = await panePath(pi);
+    const path = panePath();
     if (path && existsSync(path)) {
       rmSync(path, { force: true });
       writeFileSync(TRIGGER, "");
@@ -482,7 +506,9 @@ configure_agent_hooks() {
 
 # --- 5. Optional: tmux fork binding (experimental) ---
 
-FORK_BINDING='bind-key F display-popup -E -w 90% -h 85% "tws fork-pane"'
+# tmux does not expand #{pane_id} in a split-window command, but run-shell
+# expands it first, so the fork pane learns which pane is its parent.
+FORK_BINDING='bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""'
 FORK_MARKER='# tws fork binding'
 # Matches a bind or bind-key line that targets the plain key F, with any
 # number of leading flags (e.g. "bind F ...", "bind-key -r F ...",

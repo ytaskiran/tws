@@ -144,8 +144,9 @@ fn pane_cwd(pane_id: &str) -> Option<PathBuf> {
     (!s.is_empty()).then(|| PathBuf::from(s))
 }
 
-// tmux does not expand `#{pane_id}` inside a `display-popup` shell-command,
-// so the popup must ask tmux for its originating pane itself, from inside.
+// Used only when no pane id is given, e.g. a manual run from a shell. The tmux
+// binding always passes the parent's id: inside the new split, the active pane
+// is the fork itself.
 fn current_pane_id() -> Option<String> {
     let out = Command::new("tmux")
         .args(["display-message", "-p", "#{pane_id}"])
@@ -166,8 +167,8 @@ fn fail(e: &ForkError) -> ! {
     std::process::exit(1);
 }
 
-/// The popup terminal is in line mode, where a plain stdin read waits for Enter.
-/// Raw mode lets a single key close the popup.
+/// The pane terminal is in line mode, where a plain stdin read waits for Enter.
+/// Raw mode lets a single key close the pane.
 fn wait_for_key() {
     use crossterm::event::{Event, read};
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -222,12 +223,9 @@ pub fn run(pane_id: Option<&str>) -> ! {
         Err(e) => fail(&e),
     };
 
-    // TWS_FORK stops the fork's own SessionStart hook from overwriting the
-    // parent's pointer — without it, the next fork would fork this fork.
     let err = Command::new("claude")
         .args(build_argv(&target))
         .current_dir(&target.cwd)
-        .env("TWS_FORK", "1")
         .exec();
 
     eprintln!("fork: could not launch claude: {err}");

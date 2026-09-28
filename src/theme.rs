@@ -33,15 +33,28 @@ fn midpoint(a: Color, b: Color) -> Color {
 
 pub struct Theme {
     pub background: Style,
+    pub selection_bar: Style,
+    pub thread_name: Style,
+    pub thread_idle: Style,
+    pub session_name: Style,
+    pub session_name_selected: Style,
+    pub agent_name: Style,
+    pub agent_name_loud: Style,
+    pub pin_digit: Style,
+    pub path_dim: Style,
+    pub header_brand: Style,
+    pub header_view_active: Style,
+    pub header_view_inactive: Style,
+    pub guide: Style,
+    pub band: Style,
+    pub header_rule: Style,
+    pub header_rule_active: Style,
+    pub meta: Style,
     pub dim_text: Color,
     pub collection: Style,
-    pub thread: Style,
-    pub thread_dim: Style,
-    pub session: Style,
     pub highlight: Style,
     pub highlight_unfocused: Style,
 
-    pub pin_badge: Style,
     pub separator: Style,
     pub statusbar_key: Style,
     pub statusbar_desc: Style,
@@ -54,15 +67,9 @@ pub struct Theme {
     pub empty_title: Style,
     pub empty_hint: Style,
 
-    pub agent: Style,
-    pub agent_connector: Style,
-
     pub status_working: Style,
     pub status_waiting: Style,
     pub status_idle: Style,
-
-    pub badge_dot: Style,
-    pub badge_count: Style,
 
     pub flash: Style,
 
@@ -89,25 +96,36 @@ impl Theme {
         let muted_text = p.muted;
         let subtle_border = p.border;
 
-        let statusbar_key_color = midpoint(p.dim, p.muted);
+        let statusbar_key_color = p.dim;
         let statusbar_desc_color = midpoint(p.muted, p.border);
-        let agent_color = midpoint(p.fg, p.dim);
+
+        let selection_tint = darken_toward(p.accent, p.bg, 0.86);
 
         Self {
             background: Style::new().bg(p.bg),
+            selection_bar: Style::new().fg(p.accent),
+            thread_name: Style::new().fg(p.fg).add_modifier(Modifier::BOLD),
+            thread_idle: Style::new().fg(muted_text),
+            session_name: Style::new().fg(p.fg),
+            session_name_selected: Style::new().fg(brighten(p.accent, 20)),
+            agent_name: Style::new().fg(dim_text),
+            agent_name_loud: Style::new().fg(p.fg),
+            pin_digit: Style::new().fg(muted_text),
+            path_dim: Style::new().fg(muted_text),
+            header_brand: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            header_view_active: Style::new().fg(p.fg),
+            header_view_inactive: Style::new().fg(muted_text),
+            guide: Style::new().fg(subtle_border),
+            band: Style::new().bg(darken_toward(p.fg, p.bg, 0.95)),
+            header_rule: Style::new().fg(subtle_border),
+            header_rule_active: Style::new().fg(p.accent),
+            meta: Style::new().fg(midpoint(p.muted, p.border)),
             dim_text,
             collection: Style::new()
                 .fg(brighten(p.accent, 16))
                 .add_modifier(Modifier::BOLD),
-            thread: Style::new().fg(p.accent),
-            thread_dim: Style::new().fg(darken_toward(p.accent, p.border, 0.5)),
-            session: Style::new().fg(p.green),
-            highlight: Style::new()
-                .fg(p.bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-            highlight_unfocused: Style::new().fg(Color::White).bg(p.border),
-            pin_badge: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            highlight: Style::new().bg(selection_tint),
+            highlight_unfocused: Style::new().bg(darken_toward(p.border, p.bg, 0.5)),
 
             separator: Style::new().fg(subtle_border),
             statusbar_key: Style::new().fg(statusbar_key_color),
@@ -122,15 +140,9 @@ impl Theme {
             empty_title: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             empty_hint: Style::new().fg(muted_text),
 
-            agent: Style::new().fg(agent_color),
-            agent_connector: Style::new().fg(muted_text),
-
             status_working: Style::new().fg(p.green),
             status_waiting: Style::new().fg(p.accent),
             status_idle: Style::new().fg(muted_text),
-
-            badge_dot: Style::new().fg(p.green),
-            badge_count: Style::new().fg(muted_text),
 
             flash: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 
@@ -143,11 +155,11 @@ impl Theme {
             notes_border_focused: Style::new().fg(p.accent),
             notes_border_unfocused: Style::new().fg(subtle_border),
             notes_title_focused: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-            notes_title_unfocused: Style::new().fg(dim_text),
+            notes_title_unfocused: Style::new().fg(muted_text),
             notes_placeholder: Style::new().fg(muted_text),
 
             preview_border: Style::new().fg(subtle_border),
-            preview_title: Style::new().fg(dim_text),
+            preview_title: Style::new().fg(muted_text),
             preview_placeholder: Style::new().fg(muted_text),
         }
     }
@@ -210,7 +222,7 @@ mod tests {
     use tui_markdown::StyleSheet;
 
     #[test]
-    fn default_theme_matches_old_constants() {
+    fn default_theme_matches_constants() {
         let p = Palette::default();
         let t = Theme::build(&p);
 
@@ -220,15 +232,16 @@ mod tests {
                 .fg(Color::Rgb(220, 136, 66))
                 .add_modifier(Modifier::BOLD)
         );
-        assert_eq!(t.thread, Style::new().fg(Color::Rgb(204, 120, 50)));
-        assert_eq!(t.session, Style::new().fg(Color::Rgb(130, 180, 130)));
         assert_eq!(
-            t.highlight,
+            t.thread_name,
             Style::new()
-                .fg(Color::Rgb(30, 30, 30))
-                .bg(Color::Rgb(204, 120, 50))
+                .fg(Color::Rgb(212, 212, 212))
                 .add_modifier(Modifier::BOLD)
         );
+        assert_eq!(t.session_name, Style::new().fg(Color::Rgb(212, 212, 212)));
+        // Selection is a faint accent tint, not a full inverse bar.
+        assert_eq!(t.highlight, Style::new().bg(Color::Rgb(54, 43, 33)));
+        assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(204, 120, 50)));
         assert_eq!(t.modal_border, Style::new().fg(Color::Rgb(204, 120, 50)));
     }
 
@@ -240,20 +253,14 @@ mod tests {
         };
         let t = Theme::build(&p);
 
-        assert_eq!(t.thread, Style::new().fg(Color::Rgb(255, 0, 0)));
+        assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
         assert_eq!(
             t.collection,
             Style::new()
                 .fg(Color::Rgb(255, 16, 16))
                 .add_modifier(Modifier::BOLD)
         );
-        assert_eq!(
-            t.highlight,
-            Style::new()
-                .fg(Color::Rgb(30, 30, 30))
-                .bg(Color::Rgb(255, 0, 0))
-                .add_modifier(Modifier::BOLD)
-        );
+        assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
     }
 
     #[test]

@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
 use crate::theme::Theme;
@@ -24,14 +24,23 @@ pub fn render(frame: &mut Frame, state: &SidebarState<'_>, area: Rect, theme: &T
         (theme.notes_border_unfocused, theme.notes_title_unfocused)
     };
 
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(format!(" {} ", state.title))
-        .title_style(title_style)
-        .border_style(border_style);
-
-    let inner = block.inner(area);
+    // One rule on the left instead of a box. The label sits on the first row,
+    // and the content starts one blank row below it.
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_style(border_style)
+        .padding(Padding::new(2, 1, 0, 0));
+    let padded = block.inner(area);
     frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(state.title, title_style))),
+        padded,
+    );
+    let inner = Rect {
+        y: padded.y + 2,
+        height: padded.height.saturating_sub(2),
+        ..padded
+    };
 
     if inner.width == 0 || inner.height == 0 {
         return;

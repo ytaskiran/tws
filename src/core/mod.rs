@@ -4,3 +4,4 @@ pub mod notes;
 pub mod persistence;
 pub mod state;
 pub mod status;
+pub mod workdir;
