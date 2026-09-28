@@ -76,13 +76,13 @@ the review state of that pane and changes nothing else.
 binary, because `run-shell` does not read your shell `PATH`:
 
     # tws ack hooks
-    set-hook -ga after-select-pane 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
-    set-hook -ga after-select-window 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
-    set-hook -ga client-session-changed 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -g after-select-pane[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -g after-select-window[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -g client-session-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
 
-Write the full path of your own binary in `~/.tmux.conf`. Do not use `~`. Reload with
-`tmux source-file ~/.tmux.conf`. Each reload adds the hooks a second time to the
-running server. This is harmless, but restart tmux to clear the copies.
+Write the full path of your own binary in `~/.tmux.conf`. Do not use `~`. The
+fixed index `89` makes a reload replace the tws entry, and it leaves your own
+hooks at other indexes alone. Reload with `tmux source-file ~/.tmux.conf`.
 
 ### Notes
 

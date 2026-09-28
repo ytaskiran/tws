@@ -141,7 +141,7 @@ tws import       # interactive import of unmanaged tmux sessions
 tws ack-pane [PANE_ID]  # review -> idle for one pane; tmux hooks call it
 ```
 
-`tws ack-pane` reads `$TMUX_PANE` when it has no argument. It changes the pane file only when the word is `review`, and it touches the trigger only after a change. It always exits 0 and prints nothing, because a tmux hook runs it on every focus change. `install.sh` adds the `# tws ack hooks` block to `~/.tmux.conf` (`after-select-pane`, `after-select-window`, `client-session-changed`). The hooks pass `#{pane_id}`, which tmux expands to the pane that receives focus. A `select-pane` on a window that is not on screen also fires the hook, so a script can acknowledge a pane you did not see.
+`tws ack-pane` reads `$TMUX_PANE` when it has no argument. It changes the pane file only when the word is `review`, and it touches the trigger only after a change. It always exits 0 and prints nothing, because a tmux hook runs it on every focus change. `install.sh` adds the `# tws ack hooks` block to `~/.tmux.conf` (`after-select-pane`, `after-select-window`, `client-session-changed`, all at index 89). The hooks pass `#{pane_id}`, which tmux expands to the pane that receives focus. A `select-pane` on a window that is not on screen also fires the hook, so a script can acknowledge a pane you did not see.
 
 Detach from a session with `prefix + d` to return to the shell.
 

@@ -590,17 +590,20 @@ configure_fork_binding() {
 # --- 5b. Optional: tmux ack hooks ---
 
 ACK_MARKER='# tws ack hooks'
+# A fixed hook index makes a reload replace the tws entry. The -ga flags would
+# add one more entry, and one more process, on each source-file.
+ACK_HOOK_INDEX=89
 
 # Prints the marked block. run-shell does not use your shell PATH, so the hook
-# names the binary by its absolute path. The -ga flags append to any hook you
-# already set. tmux expands #{pane_id} before the shell runs, so tws learns the
-# pane that the client lands on.
+# names the binary by its absolute path. Your own hooks at other indexes stay.
+# tmux expands #{pane_id} before the shell runs, so tws learns the pane that
+# the client lands on.
 ack_hook_block() {
     local cmd="run-shell -b \"$INSTALL_DIR/$BINARY_NAME ack-pane #{pane_id}\""
     printf '%s\n' "$ACK_MARKER"
-    printf "set-hook -ga after-select-pane '%s'\n" "$cmd"
-    printf "set-hook -ga after-select-window '%s'\n" "$cmd"
-    printf "set-hook -ga client-session-changed '%s'\n" "$cmd"
+    printf "set-hook -g after-select-pane[%s] '%s'\n" "$ACK_HOOK_INDEX" "$cmd"
+    printf "set-hook -g after-select-window[%s] '%s'\n" "$ACK_HOOK_INDEX" "$cmd"
+    printf "set-hook -g client-session-changed[%s] '%s'\n" "$ACK_HOOK_INDEX" "$cmd"
 }
 
 # Idempotent: drop any earlier marked block, then append the current one.
