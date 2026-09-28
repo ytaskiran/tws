@@ -28,6 +28,9 @@ pub struct FlatAgent {
     pub pane_id: String,
     pub pin_slot: Option<u8>,
     pub status: super::model::AgentStatus,
+    pub agent_type: super::model::AgentType,
+    /// Unix time of the last status change. 0 when unknown.
+    pub status_since: i64,
 }
 
 pub enum SelectedItem {
@@ -528,6 +531,8 @@ impl AppState {
                             pane_id: agent.pane_id.clone(),
                             pin_slot: agent.pin_slot,
                             status: agent.status,
+                            agent_type: agent.agent_type,
+                            status_since: agent.status_since,
                         });
                     }
                 }

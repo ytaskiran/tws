@@ -9,12 +9,11 @@
 //! screen cannot disagree. Paths use the identifiers that
 //! `AppState::resolve_selection` expects.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-use crate::core::model::{AgentSession, AgentStatus, AgentType, Collection, Session, Thread};
+use super::agent_meta;
+use crate::core::model::{AgentSession, AgentStatus, Collection, Session, Thread};
 use crate::core::state::AppState;
 use crate::core::status::status_glyph;
 use crate::core::workdir::shorten_home;
@@ -127,28 +126,6 @@ fn status_style(status: AgentStatus, theme: &Theme) -> Style {
     }
 }
 
-fn kind_label(kind: AgentType) -> &'static str {
-    match kind {
-        AgentType::ClaudeCode => "claude",
-        AgentType::Codex => "codex",
-        AgentType::Pi => "pi",
-    }
-}
-
-/// Compact age of a status: "now", "4m", "2h", "3d". `None` when unknown.
-fn age(since: i64, now: i64) -> Option<String> {
-    if since <= 0 {
-        return None;
-    }
-    let secs = (now - since).max(0);
-    Some(match secs {
-        0..=59 => "now".to_string(),
-        60..=3599 => format!("{}m", secs / 60),
-        3600..=86_399 => format!("{}h", secs / 3600),
-        _ => format!("{}d", secs / 86_400),
-    })
-}
-
 fn visible_len(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
@@ -198,9 +175,7 @@ pub fn render(
     theme: &Theme,
 ) {
     let width = area.width as usize;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let now = agent_meta::now();
     let tint = if focused {
         theme.highlight
     } else {
@@ -288,11 +263,7 @@ pub fn render(
                     ),
                     Span::styled(a.display_name.clone(), name_style(theme.agent_name)),
                 ];
-                let mut meta = kind_label(a.agent_type).to_string();
-                if let Some(t) = age(a.status_since, now) {
-                    meta.push_str(" · ");
-                    meta.push_str(&t);
-                }
+                let meta = agent_meta::label(a.agent_type, a.status_since, now);
                 line(
                     left,
                     vec![Span::styled(meta, theme.meta)],
@@ -313,6 +284,7 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::AgentType;
     use uuid::Uuid;
 
     fn thread(n: u128, name: &str) -> Thread {
@@ -409,14 +381,5 @@ mod tests {
     #[test]
     fn step_on_empty_list_clears_selection() {
         assert!(step(&[], &p(&["x"]), 1).is_empty());
-    }
-
-    #[test]
-    fn age_uses_compact_units() {
-        assert_eq!(age(0, 1000), None);
-        assert_eq!(age(1000, 1030).as_deref(), Some("now"));
-        assert_eq!(age(1000, 1000 + 4 * 60).as_deref(), Some("4m"));
-        assert_eq!(age(1000, 1000 + 2 * 3600).as_deref(), Some("2h"));
-        assert_eq!(age(1000, 1000 + 3 * 86_400).as_deref(), Some("3d"));
     }
 }

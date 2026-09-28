@@ -1,5 +1,6 @@
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
+pub mod agent_meta;
 pub mod agent_preview;
 pub mod agents_view;
 pub mod confirm_modal;
