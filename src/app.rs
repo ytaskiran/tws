@@ -349,7 +349,7 @@ impl App {
 
         let rendered_note = if show_sidebar && !editor_is_empty {
             let (tw, _) = crossterm::terminal::size().unwrap_or((80, 24));
-            let render_width = (tw * 2 / 5).saturating_sub(2);
+            let render_width = notes_sidebar::text_width(tw * 2 / 5);
             Some(
                 self.md_renderer
                     .render(&self.note_editor.content, render_width)

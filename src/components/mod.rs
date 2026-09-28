@@ -19,3 +19,11 @@ pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let [area] = horizontal.areas(area);
     area
 }
+
+/// Scroll offset that keeps row `selected` inside a list `height` rows tall.
+/// The offset is 0 until the row passes the bottom edge, then the row stays
+/// on the last visible line.
+pub fn scroll_to_keep_visible(selected: usize, height: u16) -> u16 {
+    let offset = selected.saturating_sub((height as usize).saturating_sub(1));
+    u16::try_from(offset).unwrap_or(u16::MAX)
+}

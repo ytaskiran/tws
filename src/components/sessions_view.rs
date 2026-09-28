@@ -306,9 +306,8 @@ pub fn render(
         lines.push(l);
     }
 
-    // Keep the selected row on screen.
-    let scroll = selected_line.saturating_sub((area.height as usize).saturating_sub(1));
-    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), area);
+    let scroll = super::scroll_to_keep_visible(selected_line, area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 }
 
 #[cfg(test)]
