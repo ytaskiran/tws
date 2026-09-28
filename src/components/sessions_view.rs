@@ -216,21 +216,10 @@ pub fn render(
                 theme,
             ),
             Row::Thread(_, t) => {
-                let summary: Vec<Span<'static>> = state
-                    .active_sessions
-                    .iter()
-                    .filter(|s| s.thread_id == t.id)
-                    .flat_map(|s| state.agents_for_session(&s.tmux_session_name))
-                    .map(|a| {
-                        Span::styled(
-                            format!("{} ", status_glyph(a.status)),
-                            status_style(a.status, theme),
-                        )
-                    })
-                    .collect();
+                // No status summary here: each agent row carries its own dot.
                 let mut left = vec![Span::styled(format!(" {}", t.name), theme.thread_name)];
                 left.extend(dir(t, is_sel));
-                line(left, summary, width, sel, Some(theme.band), theme)
+                line(left, vec![], width, sel, Some(theme.band), theme)
             }
             Row::IdleThread(_, t) => {
                 let mut left = vec![Span::styled(
@@ -366,6 +355,32 @@ mod tests {
         assert_eq!(paths[0], p(&[&col_id]));
         assert_eq!(paths[1], p(&[&col_id, &id(9)]));
         assert_eq!(paths[2], p(&[&id(2)]));
+    }
+
+    /// The first screen row of the fixture is the band of thread `b`, whose
+    /// agent is working. The dot belongs on the agent row only.
+    #[test]
+    fn thread_band_shows_no_agent_status_summary() {
+        use crate::config::palette::Palette;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let state = fixture();
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal
+            .draw(|f| render(f, &state, &[], true, f.area(), &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row = |y: u16| -> String { (0..60).map(|x| buf[(x, y)].symbol()).collect() };
+
+        assert!(row(0).contains('b'), "row 0 is not the band: {:?}", row(0));
+        assert!(
+            !row(0).contains('●'),
+            "band repeats agent status: {:?}",
+            row(0)
+        );
+        assert!(row(2).contains('●'), "agent row lost its dot: {:?}", row(2));
     }
 
     #[test]
