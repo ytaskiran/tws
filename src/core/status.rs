@@ -222,6 +222,15 @@ pub fn write_status(pane_id: &str, status: AgentStatus) {
     let _ = write_status_to(&agents_dir(), pane_id, status);
 }
 
+/// Return the landing pane only when it contains an agent in `Review`.
+/// Acknowledgment is pane-scoped because a session may contain several agents.
+pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<String> {
+    agents
+        .iter()
+        .find(|a| a.pane_id == landing_pane && a.status == AgentStatus::Review)
+        .map(|a| a.pane_id.clone())
+}
+
 /// Turn `review` into `idle` for one pane. Return `true` only when the file changed.
 ///
 /// A tmux hook passes the pane id, so the id is untrusted: a name with a path
@@ -252,15 +261,6 @@ fn touch_trigger(path: &Path) {
         .append(true)
         .open(path)
         .and_then(|f| f.set_modified(SystemTime::now()));
-}
-
-/// Return the landing pane only when it contains an agent in `Review`.
-/// Acknowledgment is pane-scoped because a session may contain several agents.
-pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<String> {
-    agents
-        .iter()
-        .find(|a| a.pane_id == landing_pane && a.status == AgentStatus::Review)
-        .map(|a| a.pane_id.clone())
 }
 
 /// Map statuses to their display glyphs. `Waiting` and `Review` intentionally share one.
@@ -478,6 +478,86 @@ mod tests {
         assert_eq!(map.get("%53").unwrap().0, AgentStatus::Idle);
         assert_eq!(map.get("%52").unwrap().0, AgentStatus::Review);
         assert_eq!(map.get("%61").unwrap().0, AgentStatus::Review);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn ack_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-ackpane-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ack_pane_turns_review_into_idle() {
+        let dir = ack_dir("review");
+        std::fs::write(dir.join("%4"), "review").unwrap();
+
+        assert!(ack_pane_in(&dir, "%4"));
+        assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), "idle");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_leaves_other_states_alone() {
+        let dir = ack_dir("others");
+        for word in ["working", "waiting", "idle"] {
+            std::fs::write(dir.join("%4"), word).unwrap();
+
+            assert!(!ack_pane_in(&dir, "%4"), "{word} must not change");
+            assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), word);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_ignores_a_missing_file() {
+        let dir = ack_dir("missing");
+
+        assert!(!ack_pane_in(&dir, "%4"));
+        assert!(!dir.join("%4").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_ignores_a_missing_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-ackpane-nodir-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(!ack_pane_in(&dir, "%4"));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn ack_pane_touches_only_the_named_pane() {
+        let dir = ack_dir("sibling");
+        std::fs::write(dir.join("%4"), "review").unwrap();
+        std::fs::write(dir.join("%5"), "review").unwrap();
+
+        assert!(ack_pane_in(&dir, "%4"));
+        assert_eq!(std::fs::read_to_string(dir.join("%5")).unwrap(), "review");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_rejects_ids_that_are_not_file_names() {
+        let dir = ack_dir("badid");
+        std::fs::write(dir.join("review-file"), "review").unwrap();
+
+        assert!(!ack_pane_in(&dir, ""));
+        assert!(!ack_pane_in(&dir, "../agents/review-file"));
+        assert!(!ack_pane_in(&dir, "a/b"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("review-file")).unwrap(),
+            "review"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -722,86 +802,6 @@ mod tests {
             "a status written during the scan must survive the prune"
         );
         assert!(!dir.join("%old").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    fn ack_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("tws-test-ackpane-{tag}-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn ack_pane_turns_review_into_idle() {
-        let dir = ack_dir("review");
-        std::fs::write(dir.join("%4"), "review").unwrap();
-
-        assert!(ack_pane_in(&dir, "%4"));
-        assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), "idle");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn ack_pane_leaves_other_states_alone() {
-        let dir = ack_dir("others");
-        for word in ["working", "waiting", "idle"] {
-            std::fs::write(dir.join("%4"), word).unwrap();
-
-            assert!(!ack_pane_in(&dir, "%4"), "{word} must not change");
-            assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), word);
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn ack_pane_ignores_a_missing_file() {
-        let dir = ack_dir("missing");
-
-        assert!(!ack_pane_in(&dir, "%4"));
-        assert!(!dir.join("%4").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn ack_pane_ignores_a_missing_directory() {
-        let dir =
-            std::env::temp_dir().join(format!("tws-test-ackpane-nodir-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert!(!ack_pane_in(&dir, "%4"));
-        assert!(!dir.exists());
-    }
-
-    #[test]
-    fn ack_pane_touches_only_the_named_pane() {
-        let dir = ack_dir("sibling");
-        std::fs::write(dir.join("%4"), "review").unwrap();
-        std::fs::write(dir.join("%5"), "review").unwrap();
-
-        assert!(ack_pane_in(&dir, "%4"));
-        assert_eq!(std::fs::read_to_string(dir.join("%5")).unwrap(), "review");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn ack_pane_rejects_ids_that_are_not_file_names() {
-        let dir = ack_dir("badid");
-        std::fs::write(dir.join("review-file"), "review").unwrap();
-
-        assert!(!ack_pane_in(&dir, ""));
-        assert!(!ack_pane_in(&dir, "../agents/review-file"));
-        assert!(!ack_pane_in(&dir, "a/b"));
-        assert_eq!(
-            std::fs::read_to_string(dir.join("review-file")).unwrap(),
-            "review"
-        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
