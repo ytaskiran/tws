@@ -24,6 +24,12 @@ pub fn inflight_dir() -> PathBuf {
     config_dir().join("inflight")
 }
 
+/// One file per pane. A hook touches it on each tool call while the pane works.
+/// The status file keeps the state entry time, so the heartbeat needs its own mtime.
+pub fn heartbeat_dir() -> PathBuf {
+    config_dir().join("heartbeat")
+}
+
 pub fn trigger_path() -> PathBuf {
     config_dir().join("agent.trigger")
 }
@@ -205,7 +211,7 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_start
     }
 }
 
-/// `PreToolUse` refreshes mtime on every tool call, so real activity beats every
+/// A tool call touches the pane's heartbeat file, so real activity beats every
 /// few seconds; silence this long means the turn ended without a hook firing.
 /// `SUBAGENT_FRESH_MINS` in `install.sh` must equal this window.
 pub const STALE_WORKING_SECS: i64 = 15 * 60;
@@ -217,6 +223,10 @@ const _: () = assert!(MAX_TOOL_SECS > STALE_WORKING_SECS);
 
 /// Downgrade `working` files whose heartbeat stopped to `idle`.
 ///
+/// A pane is alive at the newer of its status mtime and its `heartbeat_dir/<pane>`
+/// mtime. The status mtime alone is not enough: a hook writes it only when the
+/// word changes, so a long turn leaves it old.
+///
 /// A pane is spared while `inflight_dir/<pane>` holds a marker younger than
 /// `MAX_TOOL_SECS`: a tool call is running, and it sends no heartbeat.
 ///
@@ -224,7 +234,7 @@ const _: () = assert!(MAX_TOOL_SECS > STALE_WORKING_SECS);
 /// and an ESC interrupt in Claude Code (Codex has an `Interrupt` hook).
 /// `idle` rather than `review` because those panes finished nothing, so alerting
 /// on them is noise.
-pub fn expire_stale_working(dir: &Path, inflight_dir: &Path, now: i64) {
+pub fn expire_stale_working(dir: &Path, inflight_dir: &Path, heartbeat_dir: &Path, now: i64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -240,7 +250,11 @@ pub fn expire_stale_working(dir: &Path, inflight_dir: &Path, now: i64) {
         if parse_status(&contents) != AgentStatus::Working {
             continue;
         }
-        let mtime = entry.metadata().ok().map(|m| mtime_secs(&m)).unwrap_or(0);
+        let status_mtime = entry.metadata().ok().map(|m| mtime_secs(&m)).unwrap_or(0);
+        let beat_mtime = std::fs::metadata(heartbeat_dir.join(entry.file_name()))
+            .map(|m| mtime_secs(&m))
+            .unwrap_or(0);
+        let mtime = status_mtime.max(beat_mtime);
         if now - mtime > STALE_WORKING_SECS
             && !has_tool_in_flight(&inflight_dir.join(entry.file_name()), now)
         {
@@ -550,6 +564,14 @@ mod tests {
         ))
     }
 
+    /// A heartbeat directory that does not exist, for tests that need no heartbeat.
+    fn no_heartbeat(dir: &Path) -> PathBuf {
+        dir.with_file_name(format!(
+            "{}-no-heartbeat",
+            dir.file_name().unwrap().to_string_lossy()
+        ))
+    }
+
     fn now_secs() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -576,7 +598,7 @@ mod tests {
         std::fs::create_dir_all(inflight.join("%1")).unwrap();
         std::fs::write(inflight.join("%1").join("m.toolu_1"), "").unwrap();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
 
@@ -590,7 +612,7 @@ mod tests {
         std::fs::create_dir_all(inflight.join("%1")).unwrap();
         std::fs::write(inflight.join("%1").join("s.toolu_2"), "").unwrap();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
 
@@ -606,7 +628,7 @@ mod tests {
         std::fs::write(&marker, "").unwrap();
         backdate(&marker, MAX_TOOL_SECS as u64 + 60);
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
 
@@ -623,7 +645,7 @@ mod tests {
         backdate(&old, MAX_TOOL_SECS as u64 + 60);
         std::fs::write(inflight.join("%1").join("s.toolu_2"), "").unwrap();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
 
@@ -636,7 +658,7 @@ mod tests {
         let (dir, inflight) = stale_working_pane("flight-none");
         std::fs::remove_dir_all(&inflight).ok();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
 
@@ -648,7 +670,7 @@ mod tests {
         let (dir, inflight) = stale_working_pane("flight-empty");
         std::fs::create_dir_all(inflight.join("%1")).unwrap();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
 
@@ -662,7 +684,7 @@ mod tests {
         std::fs::create_dir_all(inflight.join("%2")).unwrap();
         std::fs::write(inflight.join("%2").join("m.toolu_1"), "").unwrap();
 
-        expire_stale_working(&dir, &inflight, now_secs());
+        expire_stale_working(&dir, &inflight, &no_heartbeat(&dir), now_secs());
 
         assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
 
@@ -714,12 +736,126 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_dir_sits_beside_agents_dir() {
+        assert_eq!(heartbeat_dir().parent(), agents_dir().parent());
+        assert_ne!(heartbeat_dir(), agents_dir());
+        assert_ne!(heartbeat_dir(), inflight_dir());
+        assert_ne!(heartbeat_dir(), subagents_dir());
+        assert_ne!(heartbeat_dir(), permissions_dir());
+    }
+
+    #[test]
+    fn expire_keeps_a_pane_with_an_old_status_and_a_fresh_heartbeat() {
+        let (dir, inflight) = stale_working_pane("beat-fresh");
+        let beat = stale_dir("beat-fresh-beat");
+        std::fs::write(beat.join("%1"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Working);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+        std::fs::remove_dir_all(&beat).ok();
+    }
+
+    #[test]
+    fn expire_downgrades_a_pane_when_status_and_heartbeat_are_both_old() {
+        let (dir, inflight) = stale_working_pane("beat-old");
+        let beat = stale_dir("beat-old-beat");
+        std::fs::write(beat.join("%1"), "").unwrap();
+        backdate(&beat.join("%1"), STALE_WORKING_SECS as u64 + 60);
+
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+        std::fs::remove_dir_all(&beat).ok();
+    }
+
+    #[test]
+    fn expire_uses_the_status_mtime_when_there_is_no_heartbeat_file() {
+        let (dir, inflight) = stale_working_pane("beat-none");
+        let beat = stale_dir("beat-none-beat");
+
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+
+        write_status_to(&dir, "%2", AgentStatus::Working).unwrap();
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+        assert_eq!(status_of(&dir, "%2"), AgentStatus::Working);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+        std::fs::remove_dir_all(&beat).ok();
+    }
+
+    #[test]
+    fn expire_ignores_the_heartbeat_of_another_pane() {
+        let (dir, inflight) = stale_working_pane("beat-other");
+        let beat = stale_dir("beat-other-beat");
+        std::fs::write(beat.join("%2"), "").unwrap();
+
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+
+        assert_eq!(status_of(&dir, "%1"), AgentStatus::Idle);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+        std::fs::remove_dir_all(&beat).ok();
+    }
+
+    #[test]
+    fn status_mtime_stays_the_state_entry_time_under_a_heartbeat() {
+        let (dir, inflight) = stale_working_pane("beat-since");
+        let beat = stale_dir("beat-since-beat");
+        std::fs::write(beat.join("%1"), "").unwrap();
+        let entered = load_statuses_from(&dir).get("%1").unwrap().1;
+
+        expire_stale_working(&dir, &inflight, &beat, now_secs());
+
+        assert_eq!(load_statuses_from(&dir).get("%1").unwrap().1, entered);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&inflight).ok();
+        std::fs::remove_dir_all(&beat).ok();
+    }
+
+    #[test]
+    fn prune_removes_heartbeat_files_without_live_pane_and_keeps_live_ones() {
+        let dir = stale_dir("prune-beat");
+        std::fs::write(dir.join("%1"), "").unwrap();
+        std::fs::write(dir.join("%2"), "").unwrap();
+
+        let live: HashSet<String> = ["%1".to_string()].into();
+        prune_stale_files(&dir, &live, SystemTime::now());
+
+        assert!(dir.join("%1").exists());
+        assert!(!dir.join("%2").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_keeps_a_heartbeat_file_made_after_the_scan_began() {
+        let dir = stale_dir("prune-beat-race");
+        std::fs::write(dir.join("%old"), "").unwrap();
+
+        let scan_started_at = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(dir.join("%fresh"), "").unwrap();
+
+        prune_stale_files(&dir, &HashSet::new(), scan_started_at);
+
+        assert!(dir.join("%fresh").exists());
+        assert!(!dir.join("%old").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn expires_working_past_the_threshold() {
         let dir = stale_dir("expire");
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -735,7 +871,7 @@ mod tests {
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS - 1;
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -754,7 +890,12 @@ mod tests {
         write_status_to(&dir, "%3", AgentStatus::Idle).unwrap();
 
         let base = load_statuses_from(&dir).get("%1").unwrap().1;
-        expire_stale_working(&dir, &no_inflight(&dir), base + STALE_WORKING_SECS * 100);
+        expire_stale_working(
+            &dir,
+            &no_inflight(&dir),
+            &no_heartbeat(&dir),
+            base + STALE_WORKING_SECS * 100,
+        );
 
         let map = load_statuses_from(&dir);
         assert_eq!(map.get("%1").unwrap().0, AgentStatus::Review);
@@ -771,9 +912,9 @@ mod tests {
         write_status_to(&dir, "%1", AgentStatus::Working).unwrap();
 
         let now = load_statuses_from(&dir).get("%1").unwrap().1 + STALE_WORKING_SECS + 1;
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
         let after_first = load_statuses_from(&dir).get("%1").copied().unwrap();
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
         let after_second = load_statuses_from(&dir).get("%1").copied().unwrap();
 
         assert_eq!(after_first.0, AgentStatus::Idle);
@@ -786,7 +927,7 @@ mod tests {
     fn expire_on_missing_dir_is_a_noop() {
         let dir = std::env::temp_dir().join(format!("tws-test-noexist-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
-        expire_stale_working(&dir, &no_inflight(&dir), 1_000_000);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), 1_000_000);
     }
 
     #[test]
@@ -808,7 +949,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
 
         assert_eq!(
             load_statuses_from(&dir).get("%1").unwrap().0,
@@ -1068,7 +1209,7 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
 
         assert_eq!(
             std::fs::read_to_string(dir.join(".%1.4242")).unwrap(),
@@ -1088,7 +1229,7 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        expire_stale_working(&dir, &no_inflight(&dir), now);
+        expire_stale_working(&dir, &no_inflight(&dir), &no_heartbeat(&dir), now);
 
         assert_eq!(std::fs::read_to_string(dir.join("%1")).unwrap(), "idle");
         assert_eq!(dir_names(&dir), vec!["%1".to_string()]);

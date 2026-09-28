@@ -158,16 +158,21 @@ configure_path() {
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
 # agent.trigger stays guarded in every mode — ringing it per tool call would
-# force a full tmux+ps rescan. The mtime refresh is `touch -c` because `>`
-# truncates before writing, exposing an empty file to concurrent readers. For the
-# same reason every status write goes through `put`: a dot temp file in the same
-# directory, then `mv -f`. A reader sees the old word or the new word, never an
-# empty file, and `live` mode cannot claim a file that is only mid-write.
+# force a full tmux+ps rescan. Every status write goes through `put`, because `>`
+# truncates before writing and exposes an empty file to concurrent readers. `put`
+# writes a dot temp file in the same directory, then runs `mv -f`. A reader sees
+# the old word or the new word, never an empty file, and `live` mode cannot claim
+# a file that is only mid-write.
+#
+# A hook writes the status file only when the word changes, so its mtime is the
+# state entry time. A tool call in a `working` pane touches the heartbeat file
+# `heartbeat/$TMUX_PANE` instead (`live`, `tool` and `begin` do this). tws reads
+# the newer of the two mtimes to find a silent pane.
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
-#   live   liveness only — refresh `working`, or claim an empty file. A pane in a
-#          resting state stays there. Background subagents share the pane with the
+#   live   liveness only — touch the heartbeat of a `working` pane, or claim an
+#          empty file. A pane in a resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
 #          tool calls repaint a finished or question-blocked pane as `working`.
 #   alert  raise `waiting`, but only over `working` or an empty file. Leaving
@@ -195,8 +200,8 @@ configure_path() {
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
-#          pane's subagent markers, permission keys and in-flight markers. It rings
-#          the trigger only if the word changed.
+#          pane's subagent markers, permission keys, in-flight markers and
+#          heartbeat. It rings the trigger only if the word changed.
 #   permit PermissionRequest (Claude). Records the request as a key file, then raises
 #          `waiting` with the `alert` rules. The key is a checksum of the tool name
 #          and input, because the request carries no tool_use_id. Claude gives the
@@ -238,10 +243,15 @@ status_hook_entry() {
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
     cmd+='ifd="$HOME/.config/tws/inflight/$TMUX_PANE"; '
+    cmd+='hb="$HOME/.config/tws/heartbeat/$TMUX_PANE"; '
     # A tool_use_id names a file, so it must not leave the directory, hide as a dot
     # file, or hold a backslash. `mark` makes the marker of a call (prefix in $p).
     # `unmark` removes it: a PostToolUse payload does not say which prefix made the
     # marker, and the id is unique, so it tries both.
+    # A tool call in a working pane touches the heartbeat file. It leaves the status
+    # file alone, so that file keeps the state entry time. The plain touch makes the
+    # file, and the directory only when the first touch fails.
+    local beat='touch "$hb" 2>/dev/null || { mkdir -p "$HOME/.config/tws/heartbeat" && touch "$hb"; }'
     local badid='""|*/*|.*|*\\*'
     local mark="case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
     local unmark="case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
@@ -265,10 +275,10 @@ status_hook_entry() {
             cmd+='if [ -n "$aid" ]; then p=s; else p=m; fi; '
             cmd+="$mark"
             cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
-            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
             cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; "
             cmd+='else case "$cur" in '
-            cmd+="$word) touch -c \"\$f\" ;; waiting) ;; "
+            cmd+="$word) $beat ;; waiting) ;; "
             cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
@@ -278,7 +288,7 @@ status_hook_entry() {
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
-            cmd+='rm -rf "$sd" "$pd" "$ifd"; '
+            cmd+='rm -rf "$sd" "$pd" "$ifd" "$hb"; '
             cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
             ;;
         permit)
@@ -306,7 +316,7 @@ status_hook_entry() {
         begin)
             cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; p=m; '
             cmd+="$mark"
-            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
             cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         done)
@@ -322,7 +332,7 @@ status_hook_entry() {
             cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         live)
-            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
             cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         alert)
@@ -363,6 +373,7 @@ session_end_hook_entry() {
     cmd+='rm -rf "$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/permissions/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/inflight/$TMUX_PANE"; '
+    cmd+='rm -f "$HOME/.config/tws/heartbeat/$TMUX_PANE"; '
     cmd+='touch "$HOME/.config/tws/agent.trigger"'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
@@ -636,6 +647,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, wr
 import { basename } from "node:path";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
+const HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
 // Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
@@ -695,14 +707,20 @@ function writeWord(path: string, word: string) {
   writeFileSync(TRIGGER, "");
 }
 
-// Refreshing mtime is how a pane proves liveness to tws. Never creates the file;
-// a missing one is restored by the next writeWord.
-function beat(path: string) {
+// The heartbeat file is how a working pane proves liveness to tws. It is a file
+// of its own: the status file keeps the state entry time, which tws shows as the
+// turn age. A tool call makes the file when it is absent.
+function beat(pane: string) {
   const now = new Date();
   try {
-    utimesSync(path, now, now);
+    utimesSync(`${HEARTBEAT_DIR}/${pane}`, now, now);
   } catch {
-    // Pane file not there yet — the next state change writes it.
+    try {
+      mkdirSync(HEARTBEAT_DIR, { recursive: true });
+      writeFileSync(`${HEARTBEAT_DIR}/${pane}`, "");
+    } catch {
+      // A heartbeat that cannot be written must not break the tool call.
+    }
   }
 }
 
@@ -720,11 +738,12 @@ export default function (pi: any) {
   // Pi's only per-tool-call event, and so the only place a heartbeat can live.
   pi.on("tool_execution_start", async () => {
     const path = panePath();
-    if (!path) return;
+    const pane = process.env.TMUX_PANE;
+    if (!path || !pane) return;
     const cur = readWord(path);
     // A tool call proves liveness, it does not start a turn. A pane resting in
     // review or waiting stays there; only an empty file is claimed.
-    if (cur === "working") beat(path);
+    if (cur === "working") beat(pane);
     else if (cur === undefined) writeWord(path, "working");
   });
   // agent_settled waits for the "threshold" and "overflow" compactions, and they
@@ -738,7 +757,9 @@ export default function (pi: any) {
   });
   pi.on("session_shutdown", async () => {
     const path = panePath();
-    if (path && existsSync(path)) {
+    if (!path) return;
+    rmSync(`${HEARTBEAT_DIR}/${process.env.TMUX_PANE}`, { force: true });
+    if (existsSync(path)) {
       rmSync(path, { force: true });
       writeFileSync(TRIGGER, "");
     }
@@ -763,6 +784,7 @@ configure_agent_hooks() {
         rm -rf "$HOME/.config/tws/subagents" 2>/dev/null || true
         rm -rf "$HOME/.config/tws/permissions" 2>/dev/null || true
         rm -rf "$HOME/.config/tws/inflight" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/heartbeat" 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
         touch "$HOME/.config/tws/agent.trigger"
         info "Cleared stale agent status files"

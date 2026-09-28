@@ -182,6 +182,7 @@ PERM_DIR="$HOME/.config/tws/permissions/%7"
 codex_pre_tool()  { fire_in "$1" working "" begin ; }
 codex_post_tool() { fire_in "$1" working "" done ; }
 INFLIGHT_DIR="$HOME/.config/tws/inflight/%7"
+HEARTBEAT="$HOME/.config/tws/heartbeat/%7"
 
 # What tmux says about the pane: the visible pane of an attached session, and
 # the four ways to be out of sight.
@@ -202,6 +203,49 @@ mtime() {
         ''|*[!0-9]*) printf 'cannot read mtime of %s\n' "$1" >&2; exit 1 ;;
         *) printf '%s' "$t" ;;
     esac
+}
+
+# The mtime of a file that may be absent: 0 when it is.
+mtime_or_zero() { if [ -e "$1" ]; then mtime "$1"; else printf 0; fi; }
+
+# check_heartbeat NAME EVENT: a working pane's tool call, run as the function
+# EVENT, touches the heartbeat file and leaves the status file alone. The status
+# mtime is the state entry time, which the agent row shows as the turn age.
+check_heartbeat() {
+    local name="$1" event="$2" st_before hb_before st_after hb_after
+    reset
+    prompt_submit
+    "$event"
+    if [ ! -e "$HEARTBEAT" ]; then
+        printf '  FAIL %s — no heartbeat file\n' "$name"
+        failures=$((failures + 1))
+        return
+    fi
+    st_before="$(mtime_or_zero "$STATUS_FILE")"
+    hb_before="$(mtime_or_zero "$HEARTBEAT")"
+    sleep 1.1
+    "$event"
+    st_after="$(mtime_or_zero "$STATUS_FILE")"
+    hb_after="$(mtime_or_zero "$HEARTBEAT")"
+    if [ "$hb_after" -gt "$hb_before" ] && [ "$st_after" = "$st_before" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — heartbeat %s -> %s, status %s -> %s\n' \
+            "$name" "$hb_before" "$hb_after" "$st_before" "$st_after"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_heartbeat present|absent NAME
+expect_heartbeat() {
+    local want="$1" name="$2" got=absent
+    [ -e "$HEARTBEAT" ] && got=present
+    if [ "$got" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want heartbeat %s, got %s\n' "$name" "$want" "$got"
+        failures=$((failures + 1))
+    fi
 }
 
 expect() {
@@ -293,16 +337,32 @@ notification;   expect review  "idle_prompt must not downgrade review"
 printf '\nliveness\n'
 reset
 tool_call;      expect working "an empty file is claimed by the first tool call"
-before="$(mtime "$STATUS_FILE")"
-sleep 1.1
-tool_call
-after="$(mtime "$STATUS_FILE")"
-if [ "$after" -gt "$before" ]; then
-    printf '  ok   the heartbeat refreshes mtime\n'
+now="$(date +%s)"
+if [ "$(( now - $(mtime "$STATUS_FILE") ))" -le 2 ]; then
+    printf '  ok   and the claim stamps the status file with the entry time\n'
 else
-    printf '  FAIL the heartbeat refreshes mtime — %s did not advance past %s\n' "$after" "$before"
+    printf '  FAIL and the claim stamps the status file with the entry time\n'
     failures=$((failures + 1))
 fi
+check_heartbeat "a live tool call touches the heartbeat and not the status file" tool_call
+check_heartbeat "a Claude main-thread tool call does the same" main_tool_call
+check_heartbeat "a Claude subagent tool call does the same" sub_tool_call
+codex_begin() { codex_pre_tool "$MAIN_JSON"; }
+check_heartbeat "a Codex PreToolUse does the same" codex_begin
+reset
+prompt_submit
+tool_call
+if [ -d "$(dirname "$HEARTBEAT")" ]; then
+    printf '  ok   the heartbeat directory is made on the first tool call\n'
+else
+    printf '  FAIL the heartbeat directory is made on the first tool call\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_stop
+tool_call
+expect_heartbeat absent "a tool call over review does not start a heartbeat"
+expect review "and does not change review"
 
 printf '\nsubagents keep the pane working\n'
 reset
@@ -354,10 +414,10 @@ prompt_submit
 backdate "$STATUS_FILE"
 old="$(mtime "$STATUS_FILE")"
 main_tool_call
-if [ "$(mtime "$STATUS_FILE")" -gt "$old" ]; then
-    printf '  ok   a main-thread tool call refreshes a working pane\n'
+if [ "$(mtime "$STATUS_FILE")" = "$old" ] && [ -e "$HEARTBEAT" ]; then
+    printf '  ok   a main-thread tool call over working touches the heartbeat only\n'
 else
-    printf '  FAIL a main-thread tool call refreshes a working pane\n'
+    printf '  FAIL a main-thread tool call over working touches the heartbeat only\n'
     failures=$((failures + 1))
 fi
 reset
@@ -1046,10 +1106,10 @@ reset
 prompt_submit
 : > "$MV_CALLS"
 tool_call
-if [ ! -s "$MV_CALLS" ]; then
-    printf '  ok   the heartbeat touches the file and does not rename\n'
+if [ ! -s "$MV_CALLS" ] && [ -e "$HEARTBEAT" ]; then
+    printf '  ok   the heartbeat touches its own file and does not rename\n'
 else
-    printf '  FAIL the heartbeat touches the file and does not rename\n'
+    printf '  FAIL the heartbeat touches its own file and does not rename\n'
     failures=$((failures + 1))
 fi
 
@@ -1510,6 +1570,74 @@ permit "$REQ_X"
 tool_done "$DONE_X"
 expect working "the grant of a call that has a marker resumes the turn"
 expect_inflight "" "and removes that marker"
+
+printf '\nthe heartbeat is its own file\n'
+# The status file changes only when the word changes, so its mtime is the state
+# entry time. A tool call touches ~/.config/tws/heartbeat/$TMUX_PANE instead.
+reset
+prompt_submit
+tool_call
+expect_heartbeat present "a tool call in a working pane leaves a heartbeat file"
+session_end
+expect_heartbeat absent "SessionEnd removes the heartbeat"
+reset
+prompt_submit
+tool_call
+claude_session_start
+expect_heartbeat absent "Claude SessionStart (reset) removes the heartbeat"
+reset
+prompt_submit
+tool_call
+mkdir -p "$(dirname "$HEARTBEAT")"; : > "$(dirname "$HEARTBEAT")/%9"
+session_end
+if [ -e "$(dirname "$HEARTBEAT")/%9" ]; then
+    printf '  ok   and SessionEnd leaves the heartbeat of another pane\n'
+else
+    printf '  FAIL and SessionEnd leaves the heartbeat of another pane\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+tool_call
+PANE_LESS=1 session_end
+expect_heartbeat present "a SessionEnd with no TMUX_PANE removes no heartbeat"
+PANE_LESS=1 claude_session_start
+expect_heartbeat present "nor does a reset with no TMUX_PANE"
+reset
+PANE_LESS=1 tool_call
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+if [ ! -e "$HOME/.config/tws/heartbeat" ]; then
+    printf '  ok   a tool call with no TMUX_PANE makes no heartbeat\n'
+else
+    printf '  FAIL a tool call with no TMUX_PANE makes no heartbeat\n'
+    failures=$((failures + 1))
+fi
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/heartbeat"'; then
+    printf '  ok   the upgrade cleanup clears the heartbeat directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the heartbeat directory\n'
+    failures=$((failures + 1))
+fi
+
+# Pi has no shell command to run, so the extension text is the check. beat()
+# must name the heartbeat directory and must not touch the status file. Node runs
+# the real extension below when it can strip types.
+if printf '%s' "$pi_ext" | grep -Fq 'HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`' \
+    && printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'HEARTBEAT_DIR' \
+    && ! printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'utimesSync(path'; then
+    printf '  ok   Pi beat() touches the heartbeat file and not the status file\n'
+else
+    printf '  FAIL Pi beat() touches the heartbeat file and not the status file\n'
+    failures=$((failures + 1))
+fi
+if printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'writeFileSync'; then
+    printf '  ok   and beat() creates the file when it is absent\n'
+else
+    printf '  FAIL and beat() creates the file when it is absent\n'
+    failures=$((failures + 1))
+fi
 
 printf '\nupgrade cleanup clears the in-flight directory\n'
 if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/inflight"'; then
