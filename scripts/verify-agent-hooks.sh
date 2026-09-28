@@ -87,6 +87,13 @@ mkdir -p "$BROKEN_BIN"
 printf '#!/bin/sh\nexit 127\n' > "$BROKEN_BIN/jq"
 chmod +x "$BROKEN_BIN/jq"
 
+# Lines in a spy log. An absent log means the spy never ran: zero calls. The
+# guard is a test and not a `2>/dev/null` on wc, because the shell reports a
+# failed `<` redirect before that stderr redirect takes effect.
+count_lines() {
+    if [ -e "$1" ]; then wc -l < "$1" | tr -d ' '; else printf 0; fi
+}
+
 # Runs a hook command with a JSON payload on stdin, as Claude Code does. With
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
 # inherit. The fake tmux is on the PATH either way, so the real server is never
@@ -484,13 +491,12 @@ fi
 printf '\na tool with no open request runs one jq and no cksum\n'
 # The tool_use_id needs one jq call, so the call is no longer skipped. The hash
 # and the key compare stay behind the "is a request open" test.
-count_lines() { wc -l < "$1" 2>/dev/null | tr -d ' ' || true; }
 reset
 prompt_submit
 rm -f "$JQ_CALLS" "$CKSUM_CALLS"
 tool_done "$DONE_X"
 tool_failed "$DONE_X"
-calls="$(count_lines "$JQ_CALLS" 2>/dev/null || true)"
+calls="$(count_lines "$JQ_CALLS")"
 if [ "${calls:-0}" = 2 ]; then
     printf '  ok   no permissions directory: one jq call per hook\n'
 else
@@ -507,7 +513,7 @@ expect working "and the status stays as it was"
 mkdir -p "$PERM_DIR"
 rm -f "$JQ_CALLS" "$CKSUM_CALLS"
 tool_done "$DONE_X"
-calls="$(count_lines "$JQ_CALLS" 2>/dev/null || true)"
+calls="$(count_lines "$JQ_CALLS")"
 if [ "${calls:-0}" = 1 ] && [ ! -e "$CKSUM_CALLS" ]; then
     printf '  ok   an empty permissions directory: one jq call and no cksum\n'
 else
@@ -827,7 +833,7 @@ for call in main_tool_call sub_tool_call sub_start sub_stop permit_x done_x fail
     case "$call" in done_x|failed_x) permit "$REQ_X" ;; esac
     rm -f "$JQ_CALLS"
     "$call"
-    calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+    calls="$(count_lines "$JQ_CALLS")"
     if [ "${calls:-0}" -le 1 ]; then
         printf '  ok   %s runs jq %s time(s)\n' "$call" "${calls:-0}"
     else
@@ -1218,14 +1224,14 @@ reset
 prompt_submit
 rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
 codex_interrupt
-calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+calls="$(count_lines "$JQ_CALLS")"
 if [ "${calls:-0}" = 0 ]; then
     printf '  ok   an interrupt starts no jq\n'
 else
     printf '  FAIL an interrupt starts jq %s time(s)\n' "$calls"
     failures=$((failures + 1))
 fi
-calls="$(wc -l < "$FAKE_TMUX_CALLS" 2>/dev/null | tr -d ' ' || true)"
+calls="$(count_lines "$FAKE_TMUX_CALLS")"
 if [ "${calls:-0}" = 0 ]; then
     printf '  ok   an interrupt starts no tmux\n'
 else
@@ -1469,7 +1475,7 @@ for call in codex_begin codex_done main_pre sub_pre main_post sub_post main_fail
         sub_post)    tool_done "$POST_S" ;;
         main_failed) tool_failed "$POST_M" ;;
     esac
-    calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+    calls="$(count_lines "$JQ_CALLS")"
     if [ "${calls:-0}" = 1 ]; then
         printf '  ok   %s runs jq once\n' "$call"
     else
