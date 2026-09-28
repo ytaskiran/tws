@@ -3,7 +3,7 @@
 
 **tmux workspace manager** — organize your tmux sessions into threads.
 
-<img width="960" height="625" alt="tws-launch" src="https://github.com/user-attachments/assets/365ec572-542f-4478-bb3c-6d25ef0131d8" />
+<img width="960" height="624" alt="tws-demo" src="https://github.com/user-attachments/assets/6546bd05-3305-4725-8558-2828d8ffca7f" />
 
 tws is a terminal UI that adds a persistent organizational layer on top of tmux. tmux sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and attaches them for you.
 
@@ -12,7 +12,7 @@ tws is a terminal UI that adds a persistent organizational layer on top of tmux.
 
 Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime. Detach from a tmux session to go back to tws.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-02 at 22 34 36" src="https://github.com/user-attachments/assets/18da8c05-6973-4838-ad81-8b96c8010101" />
+<img width="2940" height="1912" alt="tws-welcome" src="https://github.com/user-attachments/assets/023bb887-9f75-4bdd-8a84-43d9c35fb8ef" />
 
 ## Features
 
@@ -20,8 +20,7 @@ Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovere
 
 The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
-
+<img width="2940" height="1912" alt="tws-sessions" src="https://github.com/user-attachments/assets/cc23cebe-38c1-44f3-9f85-657284c1000e" />
 
 ### Thread working directories
 
@@ -46,8 +45,7 @@ is running inside tmux).
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 24 23" src="https://github.com/user-attachments/assets/d4f09aca-03d9-49df-b391-bcdc6c06fd7e" />
-
+<img width="2940" height="1912" alt="tws-agents" src="https://github.com/user-attachments/assets/2a6fe568-20a1-47ec-afbc-efc1a4328f96" />
 
 ### Notes
 
