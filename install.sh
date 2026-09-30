@@ -166,6 +166,11 @@ configure_path() {
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
+#   prompt UserPromptSubmit (Claude). The same write as `set`. It also removes the
+#          pane's permission keys: a new prompt means the user answered every
+#          request of the last turn. A denied tool, or an Esc at the dialog, aborts
+#          the turn without firing Stop, so this is the only event that clears
+#          its key.
 #   live   liveness only — refresh `working`, or claim an empty file. A pane in a
 #          resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
@@ -179,17 +184,23 @@ configure_path() {
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
 #   stop   turn end (Stop, StopFailure, and PostCompact for a manual /compact).
-#          Writes `working` while a fresh subagent marker exists. Else it writes
-#          the word, or `idle` if the user is looking at the pane. tmux answers
-#          with three flags: pane_active, window_active and session_attached. The
-#          pane is in view when the first two are 1 and the third is 1 or more.
-#          If the query fails, the answer is the word. tmux does not know if the
-#          terminal has focus, so a pane in a background terminal counts as in
-#          view. Also deletes stale markers and the permission key files.
+#          While a fresh subagent marker exists it writes `working`, but keeps
+#          `waiting`: a background subagent can hold the pane there for a
+#          permission prompt. Without a marker it writes the word, or `idle` if
+#          the user is looking at the pane. tmux answers with three flags:
+#          pane_active, window_active and session_attached. The pane is in view
+#          when the first two are 1 and the third is 1 or more. If the query
+#          fails, the answer is the word. tmux does not know if the terminal has
+#          focus, so a pane in a background terminal counts as in view. Also
+#          deletes stale markers and the permission key files.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
-#          pane's subagent markers. It rings the trigger only if the word changed.
+#          pane's subagent markers and permission keys. It rings the trigger only
+#          if the word changed.
+#          Exception: if the word is `working` and a fresh marker exists, it does
+#          nothing. A nested `claude -p` that the pane's agent runs inherits
+#          TMUX_PANE and fires SessionStart in the middle of a turn.
 #   permit PermissionRequest (Claude). Records the request as a key file, then raises
 #          `waiting` with the `alert` rules. The key is a checksum of the tool name
 #          and input, because the request carries no tool_use_id. Claude gives the
@@ -198,7 +209,8 @@ configure_path() {
 #          request was answered. It removes the key of that call, and writes
 #          `working` if the pane waits and no other request is open. A payload with
 #          no key file changes nothing. A pane with no open request exits before
-#          it starts jq. A denied tool fires neither event: `stop` clears the keys.
+#          it starts jq. A denied tool fires neither event, and an interrupt fires no
+#          Stop: `prompt` clears the keys at the next prompt.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -239,12 +251,18 @@ status_hook_entry() {
         stop)
             cmd+='rm -rf "$pd"; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
+            cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
             cmd+='rm -rf "$sd" "$pd"; '
-            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
+            ;;
+        prompt)
+            cmd+='rm -rf "$pd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         permit)
             cmd+="$keyof"
@@ -363,7 +381,7 @@ configure_claude_hooks() {
     local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail e_precompact
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
-    e_prompt=$(status_hook_entry working "")
+    e_prompt=$(status_hook_entry working "" prompt)
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" tool)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
@@ -381,7 +399,9 @@ configure_claude_hooks() {
     # request has no tool_use_id, so a key from the tool name and input pairs the
     # grant with its request. The Notification above stays as the backstop. The
     # matcher is disjoint from the question entry: Claude runs matches in parallel.
-    e_permit=$(status_hook_entry waiting "" permit)
+    # PermissionRequest fires for AskUserQuestion too, and no hook removes that
+    # key, so permit skips it exactly as granted does.
+    e_permit=$(status_hook_entry waiting "^(?!AskUserQuestion\$).*" permit)
     e_granted=$(status_hook_entry working "^(?!AskUserQuestion\$).*" granted)
     e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
@@ -673,7 +693,10 @@ export default function (pi: any) {
   pi.on("agent_settled", async () => {
     settle();
   });
-  pi.on("session_shutdown", async () => {
+  // `reload` keeps the session, and its session_start skips the reset. Deleting
+  // the file here would lose the pane's word anyway.
+  pi.on("session_shutdown", async (event: { reason: string }) => {
+    if (event.reason === "reload") return;
     const path = panePath();
     if (path && existsSync(path)) {
       rmSync(path, { force: true });

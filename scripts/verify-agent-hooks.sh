@@ -124,7 +124,7 @@ subagent_event() {
 }
 
 # The events, named as the state machine names them.
-prompt_submit()   { fire working "" ; }
+prompt_submit()   { fire working "" prompt ; }
 tool_call()       { fire working "^(?!AskUserQuestion$).*" live ; }
 question_shown()  { fire waiting "^AskUserQuestion$" ; }
 question_answered() { fire working "^AskUserQuestion$" ; }
@@ -156,7 +156,7 @@ DONE_Y='{"tool_response":{"stdout":""},"tool_use_id":"t2","tool_input":{"command
 DONE_Z='{"tool_use_id":"t3","tool_input":{"command":"ls","description":"list"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
 # An open request, planted directly, so a clearing check does not depend on permit.
 seed_key()    { mkdir -p "$PERM_DIR" && : > "$PERM_DIR/planted"; }
-permit()      { fire_in "$1" waiting "" permit ; }
+permit()      { fire_in "$1" waiting "$POST_MATCHER" permit ; }
 tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
 tool_failed() { fire_in "$1" working "" granted ; }
 PERM_DIR="$HOME/.config/tws/permissions/%7"
@@ -302,6 +302,24 @@ reset
 prompt_submit; sub_start; fire review "" stop
 expect working "StopFailure shares the marker guard"
 
+printf '\na subagent permission prompt survives the main loop ending its turn\n'
+reset
+prompt_submit; sub_start; permission_prompt
+expect waiting "the subagent's permission prompt raises waiting"
+main_tool_call; expect waiting "a main-thread tool call keeps waiting"
+claude_stop
+expect waiting "Stop with a live subagent keeps an open prompt visible"
+idle_prompt
+expect waiting "idle_prompt then changes nothing"
+reset
+prompt_submit; sub_start; permission_prompt; main_tool_call
+fire review "" stop
+expect waiting "StopFailure keeps an open prompt visible too"
+reset
+prompt_submit; sub_start; permission_prompt
+claude_stop
+expect waiting "Stop right after the prompt keeps waiting"
+
 printf '\na main-thread tool call starts the turn\n'
 reset
 prompt_submit; claude_stop
@@ -420,6 +438,30 @@ prompt_submit
 permit "$REQ_X"; seed_key
 session_end
 expect_keys 0 "SessionEnd clears the request"
+
+printf '\na denied request is cleared by the next prompt\n'
+reset
+prompt_submit
+permit "$REQ_X"
+expect waiting "a request raises waiting"
+expect_keys 1 "and the denial leaves its key, because it fires no Stop"
+prompt_submit
+expect working "the next prompt resumes the turn"
+expect_keys 0 "and clears the key of the denied request"
+permit "$REQ_Y"
+tool_done "$DONE_Y"
+expect working "a later grant resumes the turn again"
+expect_keys 0 "and leaves no key"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+prompt_submit
+if [ ! -e "$PERM_DIR" ]; then
+    printf '  ok   the next prompt removes the pane permissions directory\n'
+else
+    printf '  FAIL the next prompt removes the pane permissions directory\n'
+    failures=$((failures + 1))
+fi
 
 reset
 prompt_submit; turn_end
@@ -576,6 +618,10 @@ prompt_submit; sub_start
 FAKE_TMUX_STATE=$VISIBLE claude_stop
 expect working "a live subagent keeps a visible pane working"
 reset
+prompt_submit; sub_start; permission_prompt
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect waiting "a live subagent keeps an open prompt in a visible pane"
+reset
 prompt_submit; sub_start; backdate "$MARKER"
 FAKE_TMUX_STATE=$VISIBLE claude_stop
 expect idle "a stale marker does not hold a visible pane"
@@ -601,7 +647,7 @@ mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
 claude_session_start
 expect idle "an empty file becomes idle"
 reset
-prompt_submit; sub_start
+prompt_submit; sub_start; turn_end
 expect_marker present "a marker is in place before the session starts"
 claude_session_start
 expect_marker absent "SessionStart removes the pane's subagent markers"
@@ -635,6 +681,38 @@ reset
 prompt_submit; sub_start; backdate "$MARKER"; claude_session_start
 prompt_submit; claude_stop
 expect review "a turn after the reset ends normally"
+
+printf '\na nested Claude session does not reset a busy pane\n'
+reset
+prompt_submit; sub_start
+claude_session_start
+expect working "working with a fresh marker stays working"
+expect_marker present "and the marker stays"
+claude_stop
+expect working "and the parent Stop still finds the marker"
+reset
+prompt_submit
+claude_session_start
+expect idle "working without markers becomes idle"
+reset
+prompt_submit; sub_start; backdate "$MARKER"
+claude_session_start
+expect idle "working with a stale marker becomes idle"
+reset
+prompt_submit; sub_start; turn_end
+claude_session_start
+expect idle "a stale review becomes idle"
+expect_marker absent "and its markers go"
+reset
+prompt_submit; sub_start
+rm -f "$TRIGGER"
+claude_session_start
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   a skipped reset leaves the trigger alone\n'
+else
+    printf '  FAIL a skipped reset leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
 
 printf '\na Codex session start never overwrites a live state\n'
 reset
@@ -751,6 +829,46 @@ if declare -F configure_claude_hooks >/dev/null; then
         fi
     done
     check_event "$settings" PermissionRequest "$is_tws" 1 "Claude PermissionRequest holds one tws entry"
+    # AskUserQuestion fires PermissionRequest too, and no hook removes its key. The
+    # permit entry must skip it, exactly as the granted entry does.
+    perm_matcher="$(jq -c '[.hooks.PermissionRequest[] | select(.hooks[0].command | test("config/tws/")) | .matcher]' "$settings")"
+    post_matcher="$(jq -c '[.hooks.PostToolUse[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher != "^AskUserQuestion$") | .matcher]' "$settings")"
+    if [ "$perm_matcher" = "$post_matcher" ] && [ "$perm_matcher" != "[]" ]; then
+        printf '  ok   the PermissionRequest matcher equals the non-question PostToolUse matcher\n'
+    else
+        printf '  FAIL the PermissionRequest matcher %s differs from the PostToolUse matcher %s\n' "$perm_matcher" "$post_matcher"
+        failures=$((failures + 1))
+    fi
+    # Runs the wired command of EVENT for a payload, only if Claude would: the
+    # tool name must match the wired matcher.
+    fire_wired() {
+        local event="$1" json="$2" tool entry
+        tool="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
+        entry="$(jq -c --arg t "$tool" '[.hooks.'"$event"'[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher as $m | $t | test($m))][0] // empty' "$settings")"
+        [ -n "$entry" ] || return 0
+        run_command "$json" "$(printf '%s' "$entry" | jq -r '.hooks[0].command')"
+    }
+    ASK_REQ='{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"which?"}]}}'
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$ASK_REQ"
+    expect working "a question request does not raise waiting"
+    expect_keys 0 "and leaves no key file"
+    fire_wired PermissionRequest "$REQ_X"
+    expect waiting "an ordinary request still raises waiting"
+    expect_keys 1 "and records its key"
+    fire_wired PostToolUse "$DONE_X"
+    expect working "and its grant resumes the turn, with no question key left over"
+    expect_keys 0 "and removes its key"
+    # The wired UserPromptSubmit entry clears a denied request.
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$REQ_X"
+    fire_wired UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"next"}'
+    expect_keys 0 "the wired UserPromptSubmit entry clears a denied request"
+    fire_wired PermissionRequest "$REQ_Y"
+    fire_wired PostToolUse "$DONE_Y"
+    expect working "and a later grant resumes the turn"
     check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure holds one tws entry"
     check_event "$settings" PostToolUseFailure "$is_tws and .matcher == \"\"" 1 "and it matches every tool"
     check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
@@ -849,13 +967,17 @@ fi
 
 # A query scoped with -t to $TMUX_PANE reads facts about the caller's own pane,
 # and it is allowed. Any other display-message call is a pane-identity guess.
+# Each call is judged alone, so a scoped call cannot excuse an unscoped one that
+# shares its line. A call ends at `)`, `;`, `|` or `&`.
 unscoped_queries() {
-    grep 'display-message' | grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true
+    { grep -o 'display-message[^);|&]*' || true; } \
+        | { grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true; }
 }
 
 reset
 sample='tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"
-execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])'
+execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])
+a=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"); b=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")'
 if [ -z "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
     printf '  ok   the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
 else
@@ -865,6 +987,9 @@ fi
 for sample in \
     'tmux display-message -p "#{pane_id}"' \
     'tmux display-message -p -t "$OTHER" "#{pane_id}"' \
+    'p=$(tmux display-message -p "#{pane_id}"); v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")' \
+    'tmux display-message -p "#{pane_id}"; tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"]); execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])' \
     'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"])'; do
     if [ -n "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
         printf '  ok   the pane-identity check rejects: %s\n' "$sample"
@@ -907,7 +1032,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert reset rest permit granted; do
+for mode in set prompt live alert tool stop idle_alert reset rest permit granted; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -944,7 +1069,7 @@ expect_no_temp() {
 }
 
 reset; : > "$MV_CALLS"
-prompt_submit;  expect_rename "set mode writes through a rename" working
+prompt_submit;  expect_rename "prompt mode writes through a rename" working
 expect_no_temp "and leaves no temp file"
 claude_stop;    expect_rename "stop mode writes through a rename" review
 expect_no_temp "and leaves no temp file"
