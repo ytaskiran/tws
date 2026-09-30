@@ -178,9 +178,10 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
-#   stop   turn end. Writes `working` while a fresh subagent marker exists. Else
-#          it writes the word, or `idle` if the pane is in view (see `settle`).
-#          Also deletes stale markers.
+#   stop   turn end. While a fresh subagent marker exists it writes `working`,
+#          but keeps `waiting`: a background subagent can hold the pane there for
+#          a permission prompt. Without a marker it writes the word, or `idle` if
+#          the pane is in view (see `settle`). Also deletes stale markers.
 #   settle turn end with no subagent guard (compaction). Writes the word, or
 #          `idle` if the user is looking at the pane. tmux answers with three
 #          flags: pane_active, window_active and session_attached. The pane is in
@@ -225,7 +226,8 @@ status_hook_entry() {
             ;;
         stop)
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         settle)
