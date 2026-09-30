@@ -9,6 +9,11 @@ pub fn agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
 
+/// One directory per pane, one marker file per running subagent.
+pub fn subagents_dir() -> PathBuf {
+    config_dir().join("subagents")
+}
+
 pub fn trigger_path() -> PathBuf {
     config_dir().join("agent.trigger")
 }
@@ -139,9 +144,9 @@ pub fn status_counts(agents: &[AgentSession]) -> StatusCounts {
     c
 }
 
-/// Remove files for panes that are no longer live.
+/// Remove files and directories for panes that are no longer live.
 ///
-/// Files written since `scan_started_at` are kept regardless: an agent that
+/// Entries written since `scan_started_at` are kept regardless: an agent that
 /// spawned after the caller took its pane snapshot is absent from
 /// `live_pane_ids` but running, and deleting its fresh status blanks it out.
 pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_started_at: SystemTime) {
@@ -162,13 +167,18 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_start
             .and_then(|m| m.modified())
             .is_ok_and(|m| m >= scan_started_at);
         if !written_during_scan {
-            std::fs::remove_file(&path).ok();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).ok();
+            } else {
+                std::fs::remove_file(&path).ok();
+            }
         }
     }
 }
 
 /// `PreToolUse` refreshes mtime on every tool call, so real activity beats every
 /// few seconds; silence this long means the turn ended without a hook firing.
+/// `SUBAGENT_FRESH_MINS` in `install.sh` must equal this window.
 pub const STALE_WORKING_SECS: i64 = 15 * 60;
 
 /// Downgrade `working` files whose heartbeat stopped to `idle`.
@@ -692,5 +702,65 @@ mod tests {
         assert!(!dir.join("%old").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_removes_marker_directories_without_live_pane() {
+        let dir = std::env::temp_dir().join(format!("tws-test-prune-dirs-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("%1")).unwrap();
+        std::fs::create_dir_all(dir.join("%2")).unwrap();
+        std::fs::write(dir.join("%1").join("a1"), "").unwrap();
+        std::fs::write(dir.join("%2").join("a2"), "").unwrap();
+
+        let mut live = HashSet::new();
+        live.insert("%1".to_string());
+        prune_stale_files(&dir, &live, SystemTime::now());
+
+        assert!(dir.join("%1").join("a1").exists());
+        assert!(!dir.join("%2").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_keeps_a_marker_directory_written_after_the_scan_began() {
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-prune-dirs-race-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("%old")).unwrap();
+
+        let scan_started_at = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::create_dir_all(dir.join("%fresh")).unwrap();
+
+        prune_stale_files(&dir, &HashSet::new(), scan_started_at);
+
+        assert!(
+            dir.join("%fresh").exists(),
+            "a marker directory made during the scan must survive the prune"
+        );
+        assert!(!dir.join("%old").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subagents_dir_sits_beside_agents_dir() {
+        assert_eq!(subagents_dir().parent(), agents_dir().parent());
+        assert_ne!(subagents_dir(), agents_dir());
+    }
+
+    #[test]
+    fn install_marker_window_matches_the_stale_working_window() {
+        let install = include_str!("../../install.sh");
+        let minutes: i64 = install
+            .lines()
+            .find_map(|l| l.strip_prefix("SUBAGENT_FRESH_MINS="))
+            .expect("install.sh defines SUBAGENT_FRESH_MINS")
+            .trim()
+            .parse()
+            .expect("SUBAGENT_FRESH_MINS is a number");
+        assert_eq!(minutes * 60, STALE_WORKING_SECS);
     }
 }

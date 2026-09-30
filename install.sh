@@ -6,6 +6,10 @@ INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 tmpdir=""
 hooks_configured=0
+# Minutes a subagent marker counts as live. Equals STALE_WORKING_SECS (15 min) in
+# src/core/status.rs: tws expires a silent `working` pane after that long, so an
+# older marker must not hold the pane working.
+SUBAGENT_FRESH_MINS=15
 
 # --- Helpers ---
 
@@ -162,6 +166,17 @@ configure_path() {
 #          tool calls repaint a finished or question-blocked pane as `working`.
 #   alert  raise `waiting`, but only over `working` or an empty file. Leaving
 #          `review` alone keeps attach-time acknowledgment working.
+#   tool   PreToolUse for Claude. Reads the payload: a call with an `agent_id`, or
+#          one whose payload cannot be read, is a subagent and behaves as `live`
+#          (and refreshes its marker). A call
+#          without one is the main loop, so it proves the turn is live: it also
+#          resumes `review` and `idle`. Only `waiting` is left alone, because a
+#          background subagent can hold the pane there for a permission prompt.
+#   stop   turn end. While a fresh subagent marker exists it writes `working`,
+#          but keeps `waiting`: a background subagent can hold the pane there for
+#          a permission prompt. Without a marker it writes the word. Also deletes
+#          stale markers.
+#   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
@@ -172,7 +187,30 @@ status_hook_entry() {
     cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
+    cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
     case "$mode" in
+        tool)
+            # A failed jq (missing, bad JSON) cannot prove this is the main loop,
+            # so it takes the conservative subagent path.
+            cmd+='if ! aid=$(jq -r ".agent_id // empty" 2>/dev/null); then aid=.unknown; fi; '
+            cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
+            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
+            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; "
+            cmd+='else case "$cur" in '
+            cmd+="$word) touch -c \"\$f\" ;; waiting) ;; "
+            cmd+="*) printf $word > \"\$f\"; $trig ;; esac; fi; :"
+            ;;
+        stop)
+            cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; fi; "
+            cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
+            ;;
+        idle_alert)
+            cmd+="if $fresh; then :; "
+            cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            ;;
         live)
             cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
             cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
@@ -188,11 +226,31 @@ status_hook_entry() {
         "$matcher" "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# The end-of-session counterpart: drops this pane's status file.
+# Emits the SubagentStart / SubagentStop hook entry. A marker file named for the
+# subagent tells `stop` mode that work continues after the main loop ends its turn.
+# A stop with no marker is normal (compaction sends one), so it removes nothing.
+subagent_hook_entry() {
+    local kind="$1"    # start | stop
+    local cmd
+    cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    cmd+='aid=$(jq -r ".agent_id // empty" 2>/dev/null); '
+    cmd+='case "$aid" in ""|*/*|.*) exit 0 ;; esac; '
+    cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    if [ "$kind" = start ]; then
+        cmd+='mkdir -p "$sd" && touch "$sd/$aid"; :'
+    else
+        cmd+='rm -f "$sd/$aid"; :'
+    fi
+    printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
+        "$(printf '%s' "$cmd" | jq -Rs .)"
+}
+
+# The end-of-session counterpart: drops this pane's status file and markers.
 session_end_hook_entry() {
     local cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
+    cmd+='rm -rf "$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='touch "$HOME/.config/tws/agent.trigger"'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
@@ -246,12 +304,13 @@ configure_claude_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_prompt e_pretool e_question e_posttool e_notify e_stop e_compact e_fail e_end
+    local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
+    local e_substart e_substop
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "")
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
-    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" live)
+    e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" tool)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
     # The "turn resumed" signal, scoped to the question it answers. A match-all
     # PostToolUse would hand every background subagent the same power, and its
@@ -260,11 +319,16 @@ configure_claude_hooks() {
     # `idle_prompt` is the real event name — Claude sends it 60s after the main
     # loop goes quiet. It is also the backstop that heals a pane no other hook
     # reached. `agent_needs_input`, the name used before, never existed.
-    e_notify=$(status_hook_entry waiting "permission_prompt|idle_prompt" alert)
-    e_stop=$(status_hook_entry review "")
+    # It yields to a live subagent marker: the main loop is quiet then, but work
+    # goes on in the pane.
+    e_notify=$(status_hook_entry waiting "permission_prompt" alert)
+    e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
+    e_stop=$(status_hook_entry review "" stop)
     # Compaction and API errors end a turn without firing Stop.
     e_compact=$(status_hook_entry review "manual|auto")
-    e_fail=$(status_hook_entry review "")
+    e_fail=$(status_hook_entry review "" stop)
+    e_substart=$(subagent_hook_entry start)
+    e_substop=$(subagent_hook_entry stop)
     e_end=$(session_end_hook_entry)
     local e_forkptr e_forkptr_end
     e_forkptr=$(fork_pointer_entry)
@@ -276,14 +340,17 @@ configure_claude_hooks() {
         --argjson question "$e_question" \
         --argjson posttool "$e_posttool" \
         --argjson notify "$e_notify" \
+        --argjson idle "$e_idle" \
+        --argjson substart "$e_substart" \
+        --argjson substop "$e_substop" \
         --argjson stop "$e_stop" \
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
         --argjson forkptr "$e_forkptr" \
         --argjson forkptrend "$e_forkptr_end" '
-        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
+        # A tws hook entry is identified by the config/tws/ path in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
@@ -292,8 +359,10 @@ configure_claude_hooks() {
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
         .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
-        .hooks.Notification     = ((.hooks.Notification // []) + $notify) |
+        .hooks.Notification     = ((.hooks.Notification // []) + $notify + $idle) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
+        .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
+        .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
         .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
@@ -352,20 +421,23 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_compact e_end
+    local e_work e_pretool e_wait e_review e_compact e_end e_substart e_substop
     e_work=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "" live)
     e_wait=$(status_hook_entry waiting "" alert)
-    e_review=$(status_hook_entry review "")
+    e_review=$(status_hook_entry review "" stop)
+    e_substart=$(subagent_hook_entry start)
+    e_substop=$(subagent_hook_entry stop)
     # Codex has no API-error event, so stale expiry is the only backstop there.
     e_compact=$(status_hook_entry review "manual|auto")
     e_end=$(session_end_hook_entry)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" '
-        # A tws hook entry is identified by the config/tws/agents or config/tws/sessions marker in its command.
-        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/(agents|sessions)"));
+        --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" \
+        --argjson substart "$e_substart" --argjson substop "$e_substop" '
+        # A tws hook entry is identified by the config/tws/ path in its command.
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
         # Strip any prior tws entries (of any version/shape) from every event array,
         # leaving non-tws hooks untouched. Makes re-runs idempotent.
@@ -377,6 +449,8 @@ configure_codex_hooks() {
         .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $work) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
+        .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
+        .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
@@ -498,6 +572,7 @@ configure_agent_hooks() {
     # hook fire.
     if [ "$hooks_configured" -eq 1 ]; then
         rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/subagents" 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
         touch "$HOME/.config/tws/agent.trigger"
         info "Cleared stale agent status files"
