@@ -1903,6 +1903,116 @@ else
     failures=$((failures + 1))
 fi
 
+printf '\na new prompt stamps the turn start\n'
+# After an Esc in Claude Code no Stop and no interrupt hook fires, so the file
+# still says `working` with the old turn's mtime. A tool call touches only the
+# heartbeat, so a prompt that wrote only on a word change would leave the new
+# turn with the old turn's age. The prompt entries always write.
+prompt_fired() { [ -e "$TRIGGER" ]; }
+
+# check_prompt_age LABEL FIRE...: FIRE is the command that submits a prompt.
+check_prompt_age() {
+    local label="$1" old now after
+    shift
+    reset
+    prompt_submit
+    backdate "$STATUS_FILE"
+    old="$(mtime "$STATUS_FILE")"
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label keeps the word working"
+    after="$(mtime "$STATUS_FILE")"
+    now="$(date +%s)"
+    if [ "$after" -gt "$old" ] && [ "$(( now - after ))" -le 3 ]; then
+        printf '  ok   %s stamps a fresh mtime over an old working turn\n' "$label"
+    else
+        printf '  FAIL %s left the mtime at %s (old %s, now %s)\n' "$label" "$after" "$old" "$now"
+        failures=$((failures + 1))
+    fi
+    if prompt_fired; then
+        printf '  FAIL %s rings the trigger although the word did not change\n' "$label"
+        failures=$((failures + 1))
+    else
+        printf '  ok   and %s does not ring the trigger\n' "$label"
+    fi
+    reset
+    prompt_submit; turn_end
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label over review writes working"
+    if prompt_fired; then
+        printf '  ok   and %s rings the trigger when the word changed\n' "$label"
+    else
+        printf '  FAIL %s does not ring the trigger when the word changed\n' "$label"
+        failures=$((failures + 1))
+    fi
+    reset
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label over an empty file writes working"
+    if prompt_fired; then
+        printf '  ok   and %s rings the trigger then\n' "$label"
+    else
+        printf '  FAIL %s does not ring the trigger over an empty file\n' "$label"
+        failures=$((failures + 1))
+    fi
+}
+check_prompt_age "Claude UserPromptSubmit" prompt_submit
+prompt_submit; expect_rename "a prompt over the same word still writes through a rename" working
+
+# The same turn-start stamp for the wired entries, so the wiring cannot drift
+# from the mode. Codex uses the same mode for its UserPromptSubmit.
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    wired_prompt_claude() { wired_fire "$wire_home/.claude/settings.json" UserPromptSubmit ""; }
+    wired_prompt_codex()  { wired_fire "$wire_home/.codex/hooks.json" UserPromptSubmit ""; }
+    check_prompt_age "the wired Claude UserPromptSubmit" wired_prompt_claude
+    check_prompt_age "the wired Codex UserPromptSubmit" wired_prompt_codex
+else
+    printf '  FAIL the prompt wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+# ESC, then a new prompt, then tool calls: the age is the new prompt's age.
+# The one sleep makes a touch by a tool call visible to a one-second mtime.
+for agent in claude codex; do
+    case "$agent" in
+        claude) submit=wired_prompt_claude ;;
+        codex)  submit=wired_prompt_codex ;;
+    esac
+    reset
+    prompt_submit
+    backdate "$STATUS_FILE"
+    before="$(date +%s)"
+    "$submit"
+    at_prompt="$(mtime "$STATUS_FILE")"
+    sleep 1.1
+    if [ "$agent" = claude ]; then
+        main_tool_call; sub_tool_call; tool_call
+    else
+        codex_pre_tool "$MAIN_JSON"
+    fi
+    if [ "$at_prompt" -ge "$before" ] && [ "$(mtime "$STATUS_FILE")" = "$at_prompt" ]; then
+        printf '  ok   %s: a tool call after the new prompt leaves the mtime at the prompt time\n' "$agent"
+    else
+        printf '  FAIL %s: the prompt stamped %s (want at least %s), and the status mtime is now %s\n' "$agent" "$at_prompt" "$before" "$(mtime "$STATUS_FILE")"
+        failures=$((failures + 1))
+    fi
+done
+
+# The question-answered PostToolUse resumes the same turn, so it keeps the mtime.
+reset
+prompt_submit
+backdate "$STATUS_FILE"
+old="$(mtime "$STATUS_FILE")"
+question_answered
+expect working "a question answered over working stays working"
+if [ "$(mtime "$STATUS_FILE")" = "$old" ]; then
+    printf '  ok   and it keeps the turn start\n'
+else
+    printf '  FAIL the question-answered entry moved the mtime\n'
+    failures=$((failures + 1))
+fi
+
 printf '\n'
 if [ "$failures" -eq 0 ]; then
     printf 'all checks passed\n'

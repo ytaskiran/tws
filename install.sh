@@ -164,18 +164,24 @@ configure_path() {
 # the old word or the new word, never an empty file, and `live` mode cannot claim
 # a file that is only mid-write.
 #
-# A hook writes the status file only when the word changes, so its mtime is the
-# state entry time. A tool call in a `working` pane touches the heartbeat file
+# Every other hook writes the status file only when the word changes, so its mtime
+# is the state entry time. `prompt` is the exception: it always writes, so for a
+# `working` pane the mtime is the start of the turn. A tool call in a `working`
+# pane touches the heartbeat file
 # `heartbeat/$TMUX_PANE` instead (`live`, `tool` and `begin` do this). tws reads
 # the newer of the two mtimes to find a silent pane.
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
-#   prompt UserPromptSubmit. The same write as `set`. It also removes the
-#          pane's permission keys: a new prompt means the user answered every
-#          request of the last turn. A denied tool, or an Esc at the dialog, aborts
-#          the turn without firing Stop, so this is the only event that clears
-#          its key.
+#   prompt UserPromptSubmit (Claude and Codex). It always writes the word, so the
+#          rename stamps a fresh mtime. After an Esc there is no Stop and no
+#          interrupt hook: the file still says `working` with the old turn's
+#          mtime, and a tool call touches only the heartbeat, so the new turn
+#          would show the old turn's age. It rings the trigger only if the word
+#          changed. It also removes the pane's permission keys: a new prompt
+#          means the user answered every request of the last turn. A denied tool,
+#          or an Esc at the dialog, aborts the turn without firing Stop, so this
+#          is the only event that clears its key.
 #   live   liveness only — touch the heartbeat of a `working` pane, or claim an
 #          empty file. A pane in a resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
@@ -320,7 +326,7 @@ status_hook_entry() {
             ;;
         prompt)
             cmd+='rm -rf "$pd"; '
-            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
             ;;
         permit)
             cmd+="$keyof"
@@ -597,7 +603,9 @@ configure_codex_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_work e_pretool e_posttool e_wait e_review e_compact e_end e_substart e_substop e_sessionstart e_interrupt
-    e_work=$(status_hook_entry working "")
+    # A new prompt stamps the turn start, as it does for Claude. Codex has no
+    # permission key files, so the `rm -rf "$pd"` in `prompt` removes nothing.
+    e_work=$(status_hook_entry working "" prompt)
     # Both tool hooks carry a tool_use_id, so a long call keeps an in-flight marker.
     e_pretool=$(status_hook_entry working "" begin)
     e_posttool=$(status_hook_entry working "" done)
