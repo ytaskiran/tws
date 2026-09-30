@@ -19,6 +19,17 @@ fn status_style(status: AgentStatus, theme: &Theme) -> Style {
     }
 }
 
+/// Cut `s` to at most `max` chars, and mark a cut with a trailing `…`.
+fn fit(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    match max {
+        0 => String::new(),
+        _ => s.chars().take(max - 1).chain(['…']).collect(),
+    }
+}
+
 pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme) {
     if agents.is_empty() {
         let top = area.height.saturating_sub(1) / 2;
@@ -67,13 +78,19 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                     },
                 ),
                 Span::raw(pad),
-                Span::styled(
-                    format!("{} / {}", a.thread_name, a.session_display_name),
-                    theme.path_dim,
-                ),
             ];
-            // `kind · age` at the right edge, as in the sessions view.
+            // `kind · age` at the right edge, as in the sessions view. The path
+            // gives way first, so the meta stays on screen in a narrow pane.
             let meta = agent_meta::label(a.agent_type, a.status_since, now);
+            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            let room = width.saturating_sub(used + meta.chars().count() + 3);
+            spans.push(Span::styled(
+                fit(
+                    &format!("{} / {}", a.thread_name, a.session_display_name),
+                    room,
+                ),
+                theme.path_dim,
+            ));
             let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
             let gap = width.saturating_sub(used + meta.chars().count() + 2).max(1);
             spans.push(Span::raw(" ".repeat(gap)));
@@ -151,6 +168,19 @@ mod tests {
         // No status time yet: the kind shows alone.
         assert!(out.contains("codex"), "missing kind:\n{out}");
         assert!(!out.contains("codex ·"), "age shown without a time:\n{out}");
+    }
+
+    #[test]
+    fn long_path_is_cut_so_the_meta_stays_visible() {
+        let mut a = agent(0);
+        a.thread_name = "project-operations-analytics".into();
+        a.session_display_name = "cortex-pr-123-review".into();
+        let out = screen(&[a], 0, 1);
+        assert!(out.contains('…'), "path not marked as cut:\n{out}");
+        assert!(
+            out.trim_end().ends_with("claude"),
+            "meta pushed off:\n{out}"
+        );
     }
 
     #[test]
