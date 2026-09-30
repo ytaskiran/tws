@@ -79,9 +79,21 @@ binary, because `run-shell` does not read your shell `PATH`:
     set-hook -g after-select-pane[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
     set-hook -g after-select-window[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
     set-hook -g client-session-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -g window-pane-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
+    set-hook -g session-window-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
 
 Write the full path of your own binary in `~/.tmux.conf`. Do not use `~`. The
-fixed index `89` makes a reload replace the tws entry, and it leaves your own
+path must not contain a space or one of these characters: `'` `"` `\` `$` `#` `;`.
+tmux splits the hook line with its own quoting, and a bad path breaks the line.
+`install.sh` does not write the hooks for such a path. It prints them instead.
+
+The last two hooks cover `last-pane`, `kill-pane` and `kill-window`. These
+commands move focus but fire none of the first three hooks. One move can fire
+two hooks. This is safe, because `ack-pane` does the same thing each time.
+`kill-session` fires no hook, so a client that falls to another session does
+not clear the review state.
+
+The fixed index `89` makes a reload replace the tws entry, and it leaves your own
 hooks at other indexes alone. Reload with `tmux source-file ~/.tmux.conf`.
 
 ### Notes
