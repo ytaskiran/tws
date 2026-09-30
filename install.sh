@@ -199,6 +199,12 @@ configure_path() {
 #          deletes stale markers and the permission key files. It deletes the
 #          `m.*` in-flight markers and keeps `s.*`: background subagents work on
 #          after the main loop ends its turn.
+#          With the fourth argument `keep` (Codex) it deletes no in-flight marker.
+#          Codex tool hooks carry no `agent_id`, so a Codex subagent call gets the
+#          `m` prefix too, and Stop cannot tell it from a main-loop call. Deleting
+#          it would let tws expire the pane after 15 minutes while the subagent's
+#          tool still runs. A Codex marker ends at its PostToolUse, at Interrupt, at
+#          SessionEnd, or at the 4 h cap.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
@@ -242,6 +248,7 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
+    local keep="${4:-}"     # `stop` only: "keep" leaves the in-flight markers
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -252,13 +259,16 @@ status_hook_entry() {
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
     cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
     cmd+='ifd="$HOME/.config/tws/inflight/$TMUX_PANE"; '
-    # A tool_use_id names a file, so it must not leave the directory, hide as a dot
-    # file, or hold a backslash. `mark` makes the marker of a call (prefix in $p).
-    # `unmark` removes it: a PostToolUse payload does not say which prefix made the
-    # marker, and the id is unique, so it tries both.
-    local badid='""|*/*|.*|*\\*'
-    local mark="case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
-    local unmark="case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
+    # A tool_use_id names a file, so only [A-Za-z0-9_-]+ is safe. The modes decode
+    # the id in two ways (`@tsv` in `tool`, a `-c` JSON string in `granted`), and
+    # they agree only on this alphabet: a quote or a control character would make a
+    # marker that `granted` never removes. `mark` makes the marker of a call (prefix
+    # in $p). `unmark` removes it: a PostToolUse payload does not say which prefix
+    # made the marker, and the id is unique, so it tries both. `LC_ALL=C` keeps the
+    # ranges to ASCII: some shells (macOS sh) let `A-Z` match accented letters.
+    local badid='""|*[!A-Za-z0-9_-]*'
+    local mark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
+    local unmark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
     # One jq call gives the whole key input. cksum is POSIX, and shasum is not on
     # every Linux. The size joins the checksum to make a collision less likely.
     local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
@@ -286,7 +296,8 @@ status_hook_entry() {
             cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
-            cmd+='rm -rf "$pd"; rm -f "$ifd"/m.* 2>/dev/null; '
+            cmd+='rm -rf "$pd"; '
+            [ "$keep" = keep ] || cmd+='rm -f "$ifd"/m.* 2>/dev/null; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
             cmd+="else w=$word; $seen fi; "
@@ -580,7 +591,7 @@ configure_codex_hooks() {
     e_pretool=$(status_hook_entry working "" begin)
     e_posttool=$(status_hook_entry working "" done)
     e_wait=$(status_hook_entry waiting "" alert)
-    e_review=$(status_hook_entry review "" stop)
+    e_review=$(status_hook_entry review "" stop keep)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     # Interrupt covers an ESC. Codex has no API-error event, so stale expiry still
@@ -588,7 +599,7 @@ configure_codex_hooks() {
     # Compaction follows the Claude rule: PostCompact ends a manual /compact, and
     # PreCompact writes nothing because a cancelled /compact has no exit event. An
     # auto compaction is ended by the Stop of its turn.
-    e_compact=$(status_hook_entry review "manual" stop)
+    e_compact=$(status_hook_entry review "manual" stop keep)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)

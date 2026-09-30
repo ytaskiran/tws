@@ -156,7 +156,7 @@ claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 codex_interrupt()      { fire idle "" interrupt ; }
 codex_permission_request() { fire waiting "" alert ; }
-codex_stop()           { fire review "" stop ; }
+codex_stop()           { fire review "" stop keep ; }
 
 # PermissionRequest and the tool-done events carry the same tool_name and
 # tool_input, but the rest of the payload differs, and so does the key order.
@@ -742,6 +742,10 @@ expect working "working with a fresh marker stays working"
 expect_marker present "and the marker stays"
 claude_stop
 expect working "and the parent Stop still finds the marker"
+reset
+prompt_submit; sub_start; main_tool_call
+claude_session_start
+expect_inflight "m.t2" "a skipped reset keeps the in-flight marker of the running tool"
 reset
 prompt_submit
 claude_session_start
@@ -1504,12 +1508,17 @@ else
 fi
 
 printf '\nan unsafe tool_use_id makes no marker\n'
-for id in '../x' '.x' '..' 'a/b' '' 'a\\b'; do
+# Only [A-Za-z0-9_-]+ names a marker. The modes decode the id in two ways (`@tsv`
+# in `tool`, a `-c` JSON string in `granted`), so an id with a quote or a control
+# character could get a marker that `granted` never removes.
+id_json() { jq -nc --arg id "$1" '{tool_use_id: $id, tool_name: "Bash", tool_input: {}}'; }
+id_json_sub() { jq -nc --arg id "$1" '{agent_id: "a1", tool_use_id: $id, tool_name: "Bash", tool_input: {}}'; }
+for id in '../x' '.x' '..' 'a/b' '' 'a\\b' 'q"x' 'a b' 'a'$'\t''b' 'a'$'\n''b' 'a.b' 'a:b' 'é'; do
     reset
     prompt_submit
-    fire_in "{\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}" working "$TOOL_MATCHER" tool
-    fire_in "{\"agent_id\":\"a1\",\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}" working "$TOOL_MATCHER" tool
-    codex_pre_tool "{\"tool_use_id\":\"$id\",\"tool_name\":\"Bash\"}"
+    fire_in "$(id_json "$id")" working "$TOOL_MATCHER" tool
+    fire_in "$(id_json_sub "$id")" working "$TOOL_MATCHER" tool
+    codex_pre_tool "$(id_json "$id")"
     left="$(find "$HOME/.config/tws/inflight" 2>/dev/null | wc -l | tr -d ' ' || true)"
     if [ "${left:-0}" = 0 ]; then
         printf '  ok   tool_use_id [%s] creates nothing\n' "$id"
@@ -1517,6 +1526,36 @@ for id in '../x' '.x' '..' 'a/b' '' 'a\\b'; do
         printf '  FAIL tool_use_id [%s] created %s path(s)\n' "$id" "$left"
         failures=$((failures + 1))
     fi
+done
+# A rejected id removes nothing either: a marker that has the same name stays.
+for id in 'q"x' 'a b' '.x' '..' 'a.b'; do
+    for remover in tool_done tool_failed codex_post_tool; do
+        reset
+        prompt_submit
+        mkdir -p "$INFLIGHT_DIR"
+        : > "$INFLIGHT_DIR/m.$id"
+        : > "$INFLIGHT_DIR/s.$id"
+        "$remover" "$(id_json "$id")"
+        if [ -e "$INFLIGHT_DIR/m.$id" ] && [ -e "$INFLIGHT_DIR/s.$id" ]; then
+            printf '  ok   %s with id [%s] removes nothing\n' "$remover" "$id"
+        else
+            printf '  FAIL %s with id [%s] removed a marker\n' "$remover" "$id"
+            failures=$((failures + 1))
+        fi
+    done
+done
+for id in 'toolu_01AbC-9' 'call_ABC123' 'x' 'T-1_a'; do
+    reset
+    prompt_submit
+    fire_in "$(id_json "$id")" working "$TOOL_MATCHER" tool
+    fire_in "$(id_json_sub "$id")" working "$TOOL_MATCHER" tool
+    expect_inflight "m.$id s.$id" "a safe id [$id] makes both markers"
+    tool_done "$(id_json "$id")"
+    expect_inflight "" "and PostToolUse removes them"
+    codex_pre_tool "$(id_json "$id")"
+    expect_inflight "m.$id" "a safe id [$id] makes a Codex marker"
+    codex_post_tool "$(id_json "$id")"
+    expect_inflight "" "and Codex PostToolUse removes it"
 done
 reset
 prompt_submit
@@ -1561,11 +1600,49 @@ codex_pre_tool "$MAIN_JSON"
 expect review "Codex PreToolUse still never resumes review"
 codex_post_tool "$POST_M"
 expect working "and Codex PostToolUse still resumes the turn"
+# Codex tool hooks carry no agent_id, so a Codex subagent call gets the m prefix
+# too. A Stop that removed m.* would drop the marker of a subagent that still
+# runs a long tool, and tws would expire the pane after 15 minutes.
 reset
 prompt_submit
 codex_pre_tool "$MAIN_JSON"
+codex_stop
+expect_inflight "m.t2" "Codex Stop keeps the marker of a call in flight"
+expect review "and still writes review"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+fire review "manual" stop keep
+expect_inflight "m.t2" "Codex PostCompact keeps it too"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+seed_key
+codex_stop
+expect_keys 0 "Codex Stop still clears the permission key files"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+codex_post_tool "$POST_M"
+expect_inflight "" "a kept marker ends at its PostToolUse"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+codex_interrupt
+expect_inflight "" "or at Interrupt"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+session_end
+expect_inflight "" "or at SessionEnd"
+reset
+prompt_submit
+main_tool_call
 claude_stop
-expect_inflight "" "Codex Stop removes m.*"
+expect_inflight "" "Claude Stop still removes m.*"
 reset
 codex_pre_tool "$MAIN_JSON"
 expect working "Codex PreToolUse claims an empty file"
@@ -1604,6 +1681,26 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
     wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
     wired_fire "$hooks" Interrupt ""
     expect_inflight "" "wired Codex Interrupt clears the directory"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" Stop "" "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex Stop keeps the marker"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" PostCompact manual "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex PostCompact keeps the marker"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" PostCompact manual "$MAIN_JSON"
+    expect_inflight "" "wired Claude PostCompact removes m.*"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" StopFailure "" "$MAIN_JSON"
+    expect_inflight "" "wired Claude StopFailure removes m.*"
     check_event "$hooks" PreToolUse "$is_tws" 1 "Codex PreToolUse keeps its one tws entry"
     check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
     check_event "$settings" PostToolUse "$is_tws" 2 "Claude PostToolUse still holds two tws entries"
