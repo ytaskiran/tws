@@ -55,7 +55,7 @@ tws is a standalone Rust TUI that replaces tmux's `prefix+s` session picker. It 
 Collection → Thread → Session(s)
 ```
 
-Collections and threads are user-created, persisted to `~/.config/tws/state.json`. Sessions are live tmux sessions discovered at runtime. Agent sessions (Claude Code, Codex) are detected by scanning tmux panes and matching child process names.
+Collections and threads are user-created, persisted to `~/.config/tws/state.json`. Sessions are live tmux sessions discovered at runtime. tws detects agent sessions (Claude Code, Codex, Pi) when it scans the process tree of each tmux pane.
 
 ## Architecture
 
@@ -87,7 +87,7 @@ The sessions view (`components/sessions_view.rs`) draws its own rows and does no
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command` |
-| `tmux/agent_scan.rs` | Detect AI agents by `tmux list-panes` + `ps -e`, match child process names |
+| `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
 | `theme.rs` | All `Style` constants — warm palette (orange collections, tan threads, sage green sessions) |
 
@@ -98,7 +98,7 @@ Immediate-mode: all widgets are rebuilt from `AppState` each frame. Components a
 ### tmux integration
 
 - Sessions are launched detached (`tmux new-session -d`), then attached via `switch-client` (inside tmux) or `attach-session` (outside tmux)
-- Agent detection: `tmux list-panes -a` gets pane PIDs → `ps -e` finds child processes → match against known agent binaries (`claude`, `codex`)
+- Agent detection: `tmux list-panes -a` gives the pane PIDs. `ps -e` gives the process tree. tws searches breadth-first from `pane_pid` (depth 0 is the pane process) down to depth 3. The shallowest agent wins. Each pane has one agent at most. Agents: Claude Code (also the native `claude/versions/<v>` path), Codex, and Pi. A `node` or `deno` script matches by npm package name, not by directory name.
 - Agent renames are in-memory only (not persisted), preserved across scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
 
 ### Agent status protocol
