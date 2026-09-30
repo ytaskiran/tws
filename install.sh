@@ -171,6 +171,11 @@ configure_path() {
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
+#   prompt UserPromptSubmit. The same write as `set`. It also removes the
+#          pane's permission keys: a new prompt means the user answered every
+#          request of the last turn. A denied tool, or an Esc at the dialog, aborts
+#          the turn without firing Stop, so this is the only event that clears
+#          its key.
 #   live   liveness only — touch the heartbeat of a `working` pane, or claim an
 #          empty file. A pane in a resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
@@ -188,20 +193,31 @@ configure_path() {
 #          tool call that runs for hours sends no heartbeat, and tws reads the
 #          marker as proof that the pane still works.
 #   stop   turn end (Stop, StopFailure, and PostCompact for a manual /compact).
-#          Writes `working` while a fresh subagent marker exists. Else it writes
-#          the word, or `idle` if the user is looking at the pane. tmux answers
-#          with three flags: pane_active, window_active and session_attached. The
-#          pane is in view when the first two are 1 and the third is 1 or more.
-#          If the query fails, the answer is the word. tmux does not know if the
-#          terminal has focus, so a pane in a background terminal counts as in
-#          view. Also deletes stale markers and the permission key files. It deletes
-#          the `m.*` in-flight markers and keeps `s.*`: background subagents work on
+#          While a fresh subagent marker exists it writes `working`, but keeps
+#          `waiting`: a background subagent can hold the pane there for a
+#          permission prompt. Without a marker it writes the word, or `idle` if
+#          the user is looking at the pane. tmux answers with three flags:
+#          pane_active, window_active and session_attached. The pane is in view
+#          when the first two are 1 and the third is 1 or more. If the query
+#          fails, the answer is the word. tmux does not know if the terminal has
+#          focus, so a pane in a background terminal counts as in view. Also
+#          deletes stale markers and the permission key files. It deletes the
+#          `m.*` in-flight markers and keeps `s.*`: background subagents work on
 #          after the main loop ends its turn.
+#          With the fourth argument `keep` (Codex) it deletes no in-flight marker.
+#          Codex tool hooks carry no `agent_id`, so a Codex subagent call gets the
+#          `m` prefix too, and Stop cannot tell it from a main-loop call. Deleting
+#          it would let tws expire the pane after 15 minutes while the subagent's
+#          tool still runs. A Codex marker ends at its PostToolUse, at Interrupt, at
+#          SessionEnd, or at the 4 h cap.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
 #          pane's subagent markers, permission keys, in-flight markers and
 #          heartbeat. It rings the trigger only if the word changed.
+#          Exception: if the word is `working` and a fresh marker exists, it does
+#          nothing. A nested `claude -p` that the pane's agent runs inherits
+#          TMUX_PANE and fires SessionStart in the middle of a turn.
 #   permit PermissionRequest (Claude). Records the request as a key file, then raises
 #          `waiting` with the `alert` rules. The key is a checksum of the tool name
 #          and input, because the request carries no tool_use_id. Claude gives the
@@ -210,16 +226,20 @@ configure_path() {
 #          request was answered. It removes the key of that call, and writes
 #          `working` if the pane waits and no other request is open. A payload with
 #          no key file changes nothing. A pane with no open request exits before
-#          it hashes anything. A denied tool fires neither event: `stop` clears the
-#          keys. It also removes the in-flight marker of the call. The one jq call
-#          gives the tool_use_id and the key input, so this mode always starts jq.
+#          it hashes anything. A denied tool fires neither event, and an interrupt
+#          fires no Stop: `prompt` clears the keys at the next prompt. It also
+#          removes the in-flight marker of the call. The one jq call gives the
+#          tool_use_id and the key input, so this mode always starts jq.
 #   interrupt Codex Interrupt. An ESC interrupt fires no Stop, so this event ends the
 #          turn. It writes the word (`idle`) over any state, and rings the trigger
 #          only if the word changed. The turn gave no result, so there is nothing
-#          to review. It deletes the pane's permission keys and in-flight markers,
-#          because a pending approval and a running tool die with the turn. It keeps
-#          the subagent markers: the docs do not say that an interrupt stops
-#          subagents. It starts no jq and no tmux, because the hook timeout is 1 s.
+#          to review. This also ends an approval wait: Codex PermissionRequest
+#          uses `alert` and writes no key file. It removes the pane's subagent
+#          markers, so the next Stop does not see a fresh marker of a stopped
+#          subagent and write `working`. If a subagent survives, its next
+#          PostToolUse repaints `working` within seconds. It also deletes the
+#          pane's in-flight markers, because a running tool dies with the turn. It
+#          starts no jq and no tmux, because the hook timeout is 1 s.
 #   begin  Codex PreToolUse. Its payload has a tool_use_id, so it works as `live`
 #          and also makes the marker `m.<tool_use_id>`. Codex has no `agent_id` in
 #          the documented payload, so every marker gets the `m` prefix.
@@ -233,6 +253,7 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
+    local keep="${4:-}"     # `stop` only: "keep" leaves the in-flight markers
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -244,17 +265,20 @@ status_hook_entry() {
     cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
     cmd+='ifd="$HOME/.config/tws/inflight/$TMUX_PANE"; '
     cmd+='hb="$HOME/.config/tws/heartbeat/$TMUX_PANE"; '
-    # A tool_use_id names a file, so it must not leave the directory, hide as a dot
-    # file, or hold a backslash. `mark` makes the marker of a call (prefix in $p).
-    # `unmark` removes it: a PostToolUse payload does not say which prefix made the
-    # marker, and the id is unique, so it tries both.
+    # A tool_use_id names a file, so only [A-Za-z0-9_-]+ is safe. The modes decode
+    # the id in two ways (`@tsv` in `tool`, a `-c` JSON string in `granted`), and
+    # they agree only on this alphabet: a quote or a control character would make a
+    # marker that `granted` never removes. `mark` makes the marker of a call (prefix
+    # in $p). `unmark` removes it: a PostToolUse payload does not say which prefix
+    # made the marker, and the id is unique, so it tries both. `LC_ALL=C` keeps the
+    # ranges to ASCII: some shells (macOS sh) let `A-Z` match accented letters.
     # A tool call in a working pane touches the heartbeat file. It leaves the status
     # file alone, so that file keeps the state entry time. The plain touch makes the
     # file, and the directory only when the first touch fails.
     local beat='touch "$hb" 2>/dev/null || { mkdir -p "$HOME/.config/tws/heartbeat" && touch "$hb"; }'
-    local badid='""|*/*|.*|*\\*'
-    local mark="case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
-    local unmark="case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
+    local badid='""|*[!A-Za-z0-9_-]*'
+    local mark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
+    local unmark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
     # One jq call gives the whole key input. cksum is POSIX, and shasum is not on
     # every Linux. The size joins the checksum to make a collision less likely.
     local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
@@ -282,14 +306,21 @@ status_hook_entry() {
             cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
-            cmd+='rm -rf "$pd"; rm -f "$ifd"/m.* 2>/dev/null; '
+            cmd+='rm -rf "$pd"; '
+            [ "$keep" = keep ] || cmd+='rm -f "$ifd"/m.* 2>/dev/null; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
+            cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
             cmd+='rm -rf "$sd" "$pd" "$ifd" "$hb"; '
-            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
+            ;;
+        prompt)
+            cmd+='rm -rf "$pd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         permit)
             cmd+="$keyof"
@@ -310,7 +341,7 @@ status_hook_entry() {
             cmd+="&& { put $word; $trig; }; :"
             ;;
         interrupt)
-            cmd+='rm -rf "$pd" "$ifd"; '
+            cmd+='rm -rf "$sd" "$ifd"; '
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         begin)
@@ -322,6 +353,7 @@ status_hook_entry() {
         done)
             cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; '
             cmd+="$unmark"
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)
@@ -428,10 +460,10 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
-    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail e_precompact
+    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
-    e_prompt=$(status_hook_entry working "")
+    e_prompt=$(status_hook_entry working "" prompt)
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" tool)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
@@ -449,16 +481,18 @@ configure_claude_hooks() {
     # request has no tool_use_id, so a key from the tool name and input pairs the
     # grant with its request. The Notification above stays as the backstop. The
     # matcher is disjoint from the question entry: Claude runs matches in parallel.
-    e_permit=$(status_hook_entry waiting "" permit)
+    # PermissionRequest fires for AskUserQuestion too, and no hook removes that
+    # key, so permit skips it exactly as granted does.
+    e_permit=$(status_hook_entry waiting "^(?!AskUserQuestion\$).*" permit)
     e_granted=$(status_hook_entry working "^(?!AskUserQuestion\$).*" granted)
     e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
     e_stop=$(status_hook_entry review "" stop)
-    # A manual /compact fires no UserPromptSubmit and no Stop: PreCompact starts
-    # the work and PostCompact ends the turn. An auto compaction happens in a turn,
-    # and the Stop of that turn ends it, so it has no hook. StopFailure is the
-    # API error event.
-    e_precompact=$(status_hook_entry working "manual")
+    # A manual /compact fires no UserPromptSubmit and no Stop, so PostCompact ends
+    # it. There is no PreCompact write: a /compact that is cancelled, fails or is
+    # blocked fires no PostCompact, so a `working` from PreCompact would have no
+    # exit. An auto compaction happens in a turn, and the Stop of that turn ends
+    # it, so it has no hook. StopFailure is the API error event.
     e_compact=$(status_hook_entry review "manual" stop)
     e_fail=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
@@ -482,7 +516,6 @@ configure_claude_hooks() {
         --argjson substart "$e_substart" \
         --argjson substop "$e_substop" \
         --argjson stop "$e_stop" \
-        --argjson precompact "$e_precompact" \
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
@@ -506,7 +539,6 @@ configure_claude_hooks() {
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
         .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
-        .hooks.PreCompact       = ((.hooks.PreCompact // []) + $precompact) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
@@ -564,29 +596,29 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_posttool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart e_interrupt
+    local e_work e_pretool e_posttool e_wait e_review e_compact e_end e_substart e_substop e_sessionstart e_interrupt
     e_work=$(status_hook_entry working "")
     # Both tool hooks carry a tool_use_id, so a long call keeps an in-flight marker.
     e_pretool=$(status_hook_entry working "" begin)
     e_posttool=$(status_hook_entry working "" done)
     e_wait=$(status_hook_entry waiting "" alert)
-    e_review=$(status_hook_entry review "" stop)
+    e_review=$(status_hook_entry review "" stop keep)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     # Interrupt covers an ESC. Codex has no API-error event, so stale expiry still
     # covers an API error and a hard kill.
-    # Compaction follows the Claude rule: a manual /compact has its own hooks, and
-    # an auto compaction is ended by the Stop of its turn.
-    e_precompact=$(status_hook_entry working "manual")
-    e_compact=$(status_hook_entry review "manual" stop)
+    # Compaction follows the Claude rule: PostCompact ends a manual /compact, and
+    # PreCompact writes nothing because a cancelled /compact has no exit event. An
+    # auto compaction is ended by the Stop of its turn.
+    e_compact=$(status_hook_entry review "manual" stop keep)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson posttool "$e_posttool" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson precompact "$e_precompact" \
-        --argjson compact "$e_compact" --argjson end "$e_end" \
+        --argjson review "$e_review" --argjson compact "$e_compact" \
+        --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
         --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" '
         # A tws hook entry is identified by the config/tws/ path in its command.
@@ -606,7 +638,6 @@ configure_codex_hooks() {
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
         # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
         .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
-        .hooks.PreCompact         = ((.hooks.PreCompact // []) + $precompact) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # An ESC interrupt fires Interrupt and no Stop; Claude Code has no such hook.
@@ -755,7 +786,10 @@ export default function (pi: any) {
   pi.on("agent_settled", async () => {
     settle();
   });
-  pi.on("session_shutdown", async () => {
+  // `reload` keeps the session, and its session_start skips the reset. Deleting
+  // the file here would lose the pane's word anyway.
+  pi.on("session_shutdown", async (event: { reason: string }) => {
+    if (event.reason === "reload") return;
     const path = panePath();
     if (!path) return;
     rmSync(`${HEARTBEAT_DIR}/${process.env.TMUX_PANE}`, { force: true });
