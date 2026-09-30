@@ -166,6 +166,11 @@ configure_path() {
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
+#   prompt UserPromptSubmit (Claude). The same write as `set`. It also removes the
+#          pane's permission keys: a new prompt means the user answered every
+#          request of the last turn. A denied tool, or an Esc at the dialog, aborts
+#          the turn without firing Stop, so this is the only event that clears
+#          its key.
 #   live   liveness only — refresh `working`, or claim an empty file. A pane in a
 #          resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
@@ -204,7 +209,8 @@ configure_path() {
 #          request was answered. It removes the key of that call, and writes
 #          `working` if the pane waits and no other request is open. A payload with
 #          no key file changes nothing. A pane with no open request exits before
-#          it starts jq. A denied tool fires neither event: `stop` clears the keys.
+#          it starts jq. A denied tool fires neither event, and an interrupt fires no
+#          Stop: `prompt` clears the keys at the next prompt.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -257,6 +263,10 @@ status_hook_entry() {
             cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
             cmd+='rm -rf "$sd" "$pd"; '
             cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
+            ;;
+        prompt)
+            cmd+='rm -rf "$pd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         permit)
             cmd+="$keyof"
@@ -375,7 +385,7 @@ configure_claude_hooks() {
     local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
-    e_prompt=$(status_hook_entry working "")
+    e_prompt=$(status_hook_entry working "" prompt)
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" tool)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
@@ -393,7 +403,9 @@ configure_claude_hooks() {
     # request has no tool_use_id, so a key from the tool name and input pairs the
     # grant with its request. The Notification above stays as the backstop. The
     # matcher is disjoint from the question entry: Claude runs matches in parallel.
-    e_permit=$(status_hook_entry waiting "" permit)
+    # PermissionRequest fires for AskUserQuestion too, and no hook removes that
+    # key, so permit skips it exactly as granted does.
+    e_permit=$(status_hook_entry waiting "^(?!AskUserQuestion\$).*" permit)
     e_granted=$(status_hook_entry working "^(?!AskUserQuestion\$).*" granted)
     e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)

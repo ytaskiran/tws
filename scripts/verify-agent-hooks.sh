@@ -124,7 +124,7 @@ subagent_event() {
 }
 
 # The events, named as the state machine names them.
-prompt_submit()   { fire working "" ; }
+prompt_submit()   { fire working "" prompt ; }
 tool_call()       { fire working "^(?!AskUserQuestion$).*" live ; }
 question_shown()  { fire waiting "^AskUserQuestion$" ; }
 question_answered() { fire working "^AskUserQuestion$" ; }
@@ -155,7 +155,7 @@ DONE_Y='{"tool_response":{"stdout":""},"tool_use_id":"t2","tool_input":{"command
 DONE_Z='{"tool_use_id":"t3","tool_input":{"command":"ls","description":"list"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
 # An open request, planted directly, so a clearing check does not depend on permit.
 seed_key()    { mkdir -p "$PERM_DIR" && : > "$PERM_DIR/planted"; }
-permit()      { fire_in "$1" waiting "" permit ; }
+permit()      { fire_in "$1" waiting "$POST_MATCHER" permit ; }
 tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
 tool_failed() { fire_in "$1" working "" granted ; }
 PERM_DIR="$HOME/.config/tws/permissions/%7"
@@ -437,6 +437,30 @@ prompt_submit
 permit "$REQ_X"; seed_key
 session_end
 expect_keys 0 "SessionEnd clears the request"
+
+printf '\na denied request is cleared by the next prompt\n'
+reset
+prompt_submit
+permit "$REQ_X"
+expect waiting "a request raises waiting"
+expect_keys 1 "and the denial leaves its key, because it fires no Stop"
+prompt_submit
+expect working "the next prompt resumes the turn"
+expect_keys 0 "and clears the key of the denied request"
+permit "$REQ_Y"
+tool_done "$DONE_Y"
+expect working "a later grant resumes the turn again"
+expect_keys 0 "and leaves no key"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+prompt_submit
+if [ ! -e "$PERM_DIR" ]; then
+    printf '  ok   the next prompt removes the pane permissions directory\n'
+else
+    printf '  FAIL the next prompt removes the pane permissions directory\n'
+    failures=$((failures + 1))
+fi
 
 reset
 prompt_submit; turn_end
@@ -803,6 +827,46 @@ if declare -F configure_claude_hooks >/dev/null; then
         fi
     done
     check_event "$settings" PermissionRequest "$is_tws" 1 "Claude PermissionRequest holds one tws entry"
+    # AskUserQuestion fires PermissionRequest too, and no hook removes its key. The
+    # permit entry must skip it, exactly as the granted entry does.
+    perm_matcher="$(jq -c '[.hooks.PermissionRequest[] | select(.hooks[0].command | test("config/tws/")) | .matcher]' "$settings")"
+    post_matcher="$(jq -c '[.hooks.PostToolUse[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher != "^AskUserQuestion$") | .matcher]' "$settings")"
+    if [ "$perm_matcher" = "$post_matcher" ] && [ "$perm_matcher" != "[]" ]; then
+        printf '  ok   the PermissionRequest matcher equals the non-question PostToolUse matcher\n'
+    else
+        printf '  FAIL the PermissionRequest matcher %s differs from the PostToolUse matcher %s\n' "$perm_matcher" "$post_matcher"
+        failures=$((failures + 1))
+    fi
+    # Runs the wired command of EVENT for a payload, only if Claude would: the
+    # tool name must match the wired matcher.
+    fire_wired() {
+        local event="$1" json="$2" tool entry
+        tool="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
+        entry="$(jq -c --arg t "$tool" '[.hooks.'"$event"'[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher as $m | $t | test($m))][0] // empty' "$settings")"
+        [ -n "$entry" ] || return 0
+        run_command "$json" "$(printf '%s' "$entry" | jq -r '.hooks[0].command')"
+    }
+    ASK_REQ='{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"which?"}]}}'
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$ASK_REQ"
+    expect working "a question request does not raise waiting"
+    expect_keys 0 "and leaves no key file"
+    fire_wired PermissionRequest "$REQ_X"
+    expect waiting "an ordinary request still raises waiting"
+    expect_keys 1 "and records its key"
+    fire_wired PostToolUse "$DONE_X"
+    expect working "and its grant resumes the turn, with no question key left over"
+    expect_keys 0 "and removes its key"
+    # The wired UserPromptSubmit entry clears a denied request.
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$REQ_X"
+    fire_wired UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"next"}'
+    expect_keys 0 "the wired UserPromptSubmit entry clears a denied request"
+    fire_wired PermissionRequest "$REQ_Y"
+    fire_wired PostToolUse "$DONE_Y"
+    expect working "and a later grant resumes the turn"
     check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure holds one tws entry"
     check_event "$settings" PostToolUseFailure "$is_tws and .matcher == \"\"" 1 "and it matches every tool"
     check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
@@ -965,7 +1029,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set live alert tool stop idle_alert settle reset rest permit granted; do
+for mode in set prompt live alert tool stop idle_alert settle reset rest permit granted; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -1002,7 +1066,7 @@ expect_no_temp() {
 }
 
 reset; : > "$MV_CALLS"
-prompt_submit;  expect_rename "set mode writes through a rename" working
+prompt_submit;  expect_rename "prompt mode writes through a rename" working
 expect_no_temp "and leaves no temp file"
 claude_stop;    expect_rename "stop mode writes through a rename" review
 expect_no_temp "and leaves no temp file"
