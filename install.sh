@@ -10,6 +10,9 @@ hooks_configured=0
 # src/core/status.rs: tws expires a silent `working` pane after that long, so an
 # older marker must not hold the pane working.
 SUBAGENT_FRESH_MINS=15
+# The SessionStart sources that begin a new conversation. `compact` fires in the
+# middle of a session, and `fork` does not start a new one, so neither may reset.
+SESSION_START_MATCHER='startup|resume|clear'
 
 # --- Helpers ---
 
@@ -155,13 +158,32 @@ configure_path() {
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
 # agent.trigger stays guarded in every mode — ringing it per tool call would
-# force a full tmux+ps rescan. The mtime refresh is `touch -c` because `>`
-# truncates before writing, exposing an empty file to concurrent readers.
+# force a full tmux+ps rescan. Every status write goes through `put`, because `>`
+# truncates before writing and exposes an empty file to concurrent readers. `put`
+# writes a dot temp file in the same directory, then runs `mv -f`. A reader sees
+# the old word or the new word, never an empty file, and `live` mode cannot claim
+# a file that is only mid-write.
+#
+# Every other hook writes the status file only when the word changes, so its mtime
+# is the state entry time. `prompt` is the exception: it always writes, so for a
+# `working` pane the mtime is the start of the turn. A tool call in a `working`
+# pane touches the heartbeat file
+# `heartbeat/$TMUX_PANE` instead (`live`, `tool` and `begin` do this). tws reads
+# the newer of the two mtimes to find a silent pane.
 #
 # Modes:
 #   set    unconditional — the event names the new state outright.
-#   live   liveness only — refresh `working`, or claim an empty file. A pane in a
-#          resting state stays there. Background subagents share the pane with the
+#   prompt UserPromptSubmit (Claude and Codex). It always writes the word, so the
+#          rename stamps a fresh mtime. After an Esc there is no Stop and no
+#          interrupt hook: the file still says `working` with the old turn's
+#          mtime, and a tool call touches only the heartbeat, so the new turn
+#          would show the old turn's age. It rings the trigger only if the word
+#          changed. It also removes the pane's permission keys: a new prompt
+#          means the user answered every request of the last turn. A denied tool,
+#          or an Esc at the dialog, aborts the turn without firing Stop, so this
+#          is the only event that clears its key.
+#   live   liveness only — touch the heartbeat of a `working` pane, or claim an
+#          empty file. A pane in a resting state stays there. Background subagents share the pane with the
 #          main loop and fire the same tool hooks, so without this guard their
 #          tool calls repaint a finished or question-blocked pane as `working`.
 #   alert  raise `waiting`, but only over `working` or an empty file. Leaving
@@ -172,54 +194,190 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
-#   stop   turn end. While a fresh subagent marker exists it writes `working`,
-#          but keeps `waiting`: a background subagent can hold the pane there for
-#          a permission prompt. Without a marker it writes the word. Also deletes
-#          stale markers.
+#          The same jq call reads the tool_use_id. The hook then makes the in-flight
+#          marker `inflight/$TMUX_PANE/<m|s>.<tool_use_id>` (`s` for a subagent). A
+#          tool call that runs for hours sends no heartbeat, and tws reads the
+#          marker as proof that the pane still works.
+#   stop   turn end (Stop, StopFailure, and PostCompact for a manual /compact).
+#          While a fresh subagent marker exists it writes `working`, but keeps
+#          `waiting`: a background subagent can hold the pane there for a
+#          permission prompt. Without a marker it writes the word, or `idle` if
+#          the user is looking at the pane. tmux answers with three flags:
+#          pane_active, window_active and session_attached. The pane is in view
+#          when the first two are 1 and the third is 1 or more. If the query
+#          fails, the answer is the word. tmux does not know if the terminal has
+#          focus, so a pane in a background terminal counts as in view. Also
+#          deletes stale markers and the permission key files. It deletes the
+#          `m.*` in-flight markers and keeps `s.*`: background subagents work on
+#          after the main loop ends its turn.
+#          With the fourth argument `keep` (Codex) it deletes no in-flight marker.
+#          Codex tool hooks carry no `agent_id`, so a Codex subagent call gets the
+#          `m` prefix too, and Stop cannot tell it from a main-loop call. Deleting
+#          it would let tws expire the pane after 15 minutes while the subagent's
+#          tool still runs. A Codex marker ends at its PostToolUse, at Interrupt, at
+#          SessionEnd, or at the 4 h cap.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
+#   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
+#          last one, so it writes the word (`idle`) over any state and deletes the
+#          pane's subagent markers, permission keys, in-flight markers and
+#          heartbeat. It rings the trigger only if the word changed.
+#          Exception: if the word is `working` and a fresh marker exists, it does
+#          nothing. A nested `claude -p` that the pane's agent runs inherits
+#          TMUX_PANE and fires SessionStart in the middle of a turn.
+#   permit PermissionRequest (Claude). Records the request as a key file, then raises
+#          `waiting` with the `alert` rules. The key is a checksum of the tool name
+#          and input, because the request carries no tool_use_id. Claude gives the
+#          same name and input to PostToolUse when the tool runs after a grant.
+#   granted PostToolUse and PostToolUseFailure (Claude). The tool ran, so its
+#          request was answered. It removes the key of that call, and writes
+#          `working` if the pane waits and no other request is open. A payload with
+#          no key file changes nothing. A pane with no open request exits before
+#          it hashes anything. A denied tool fires neither event, and an interrupt
+#          fires no Stop: `prompt` clears the keys at the next prompt. It also
+#          removes the in-flight marker of the call. The one jq call gives the
+#          tool_use_id and the key input, so this mode always starts jq.
+#   interrupt Codex Interrupt. An ESC interrupt fires no Stop, so this event ends the
+#          turn. It writes the word (`idle`) over any state, and rings the trigger
+#          only if the word changed. The turn gave no result, so there is nothing
+#          to review. This also ends an approval wait: Codex PermissionRequest
+#          uses `alert` and writes no key file. It removes the pane's subagent
+#          markers, so the next Stop does not see a fresh marker of a stopped
+#          subagent and write `working`. If a subagent survives, its next
+#          PostToolUse repaints `working` within seconds. It also deletes the
+#          pane's in-flight markers, because a running tool dies with the turn. It
+#          starts no jq and no tmux, because the hook timeout is 1 s.
+#   begin  Codex PreToolUse. Its payload has a tool_use_id, so it works as `live`
+#          and also makes the marker `m.<tool_use_id>`. Codex has no `agent_id` in
+#          the documented payload, so every marker gets the `m` prefix.
+#   done   Codex PostToolUse. It works as `set` and also removes the marker of the
+#          call.
+#   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
+#          must not end the turn of the main loop. It changes `review` or an empty
+#          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
+#          It keeps the markers.
 status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
+    local keep="${4:-}"     # `stop` only: "keep" leaves the in-flight markers
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='f="$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='mkdir -p "$HOME/.config/tws/agents"; '
+    cmd+='put() { t="$HOME/.config/tws/agents/.$TMUX_PANE.$$"; printf %s "$1" > "$t" && mv -f "$t" "$f" || rm -f "$t"; }; '
     cmd+='cur=$(cat "$f" 2>/dev/null); '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    cmd+='pd="$HOME/.config/tws/permissions/$TMUX_PANE"; '
+    cmd+='ifd="$HOME/.config/tws/inflight/$TMUX_PANE"; '
+    cmd+='hb="$HOME/.config/tws/heartbeat/$TMUX_PANE"; '
+    # A tool_use_id names a file, so only [A-Za-z0-9_-]+ is safe. The modes decode
+    # the id in two ways (`@tsv` in `tool`, a `-c` JSON string in `granted`), and
+    # they agree only on this alphabet: a quote or a control character would make a
+    # marker that `granted` never removes. `mark` makes the marker of a call (prefix
+    # in $p). `unmark` removes it: a PostToolUse payload does not say which prefix
+    # made the marker, and the id is unique, so it tries both. `LC_ALL=C` keeps the
+    # ranges to ASCII: some shells (macOS sh) let `A-Z` match accented letters.
+    # A tool call in a working pane touches the heartbeat file. It leaves the status
+    # file alone, so that file keeps the state entry time. The plain touch makes the
+    # file, and the directory only when the first touch fails.
+    local beat='touch "$hb" 2>/dev/null || { mkdir -p "$HOME/.config/tws/heartbeat" && touch "$hb"; }'
+    local badid='""|*[!A-Za-z0-9_-]*'
+    local mark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) mkdir -p \"\$ifd\" 2>/dev/null && touch \"\$ifd/\$p.\$tid\" 2>/dev/null ;; esac; "
+    local unmark="LC_ALL=C; case \"\$tid\" in $badid) ;; *) rm -f \"\$ifd/m.\$tid\" \"\$ifd/s.\$tid\" ;; esac; "
+    # One jq call gives the whole key input. cksum is POSIX, and shasum is not on
+    # every Linux. The size joins the checksum to make a collision less likely.
+    local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
+    keyof+='[ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
+    # Only the -t "$TMUX_PANE" form is allowed: it asks about the caller's own pane.
+    local seen='v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}#{window_active}#{session_attached}" 2>/dev/null); '
+    seen+='case "$v" in 11[1-9]*) w=idle ;; esac; '
     case "$mode" in
         tool)
             # A failed jq (missing, bad JSON) cannot prove this is the main loop,
             # so it takes the conservative subagent path.
-            cmd+='if ! aid=$(jq -r ".agent_id // empty" 2>/dev/null); then aid=.unknown; fi; '
+            # One jq call gives both ids, split on a tab. A failed jq leaves no id
+            # to mark.
+            cmd+='tab=$(printf "\t"); '
+            cmd+='if ids=$(jq -r "[.agent_id // \"\", .tool_use_id // \"\"] | @tsv" 2>/dev/null); '
+            cmd+='then aid=${ids%%"$tab"*}; tid=${ids#*"$tab"}; else aid=.unknown; tid=; fi; '
+            cmd+='if [ -n "$aid" ]; then p=s; else p=m; fi; '
+            cmd+="$mark"
             cmd+='if [ -n "$aid" ]; then touch -c "$sd/$aid" 2>/dev/null; '
-            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
-            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; "
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; "
             cmd+='else case "$cur" in '
-            cmd+="$word) touch -c \"\$f\" ;; waiting) ;; "
-            cmd+="*) printf $word > \"\$f\"; $trig ;; esac; fi; :"
+            cmd+="$word) $beat ;; waiting) ;; "
+            cmd+="*) put $word; $trig ;; esac; fi; :"
             ;;
         stop)
+            cmd+='rm -rf "$pd"; '
+            [ "$keep" = keep ] || cmd+='rm -f "$ifd"/m.* 2>/dev/null; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
-            cmd+="else w=$word; fi; "
-            cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
+            cmd+="else w=$word; $seen fi; "
+            cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
+            ;;
+        reset)
+            cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
+            cmd+='rm -rf "$sd" "$pd" "$ifd" "$hb"; '
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
+            ;;
+        prompt)
+            cmd+='rm -rf "$pd"; '
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            ;;
+        permit)
+            cmd+="$keyof"
+            cmd+='if [ -n "${k:-}" ] && mkdir -p "$pd"; then : > "$pd/$k"; fi; '
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
+            ;;
+        granted)
+            # One jq call gives the tool_use_id on its first line and the key input
+            # on its second. The id is a JSON string here, so it loses its quotes.
+            cmd+='nl=$(printf "\nx"); nl=${nl%x}; '
+            cmd+='out=$(jq -cS "(.tool_use_id // \"\"), {tool_name, tool_input}" 2>/dev/null); j=; tid=; '
+            cmd+='case "$out" in *"$nl"*) tid=${out%%"$nl"*}; tid=${tid#\"}; tid=${tid%\"}; j=${out#*"$nl"} ;; esac; '
+            cmd+="$unmark"
+            cmd+='[ -n "$(ls -A "$pd" 2>/dev/null)" ] || exit 0; '
+            cmd+='k=; [ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
+            cmd+='[ -n "$k" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
+            cmd+='[ "$cur" = waiting ] && [ -z "$(ls -A "$pd" 2>/dev/null)" ] '
+            cmd+="&& { put $word; $trig; }; :"
+            ;;
+        interrupt)
+            cmd+='rm -rf "$sd" "$ifd"; '
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            ;;
+        begin)
+            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; p=m; '
+            cmd+="$mark"
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
+            ;;
+        done)
+            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; '
+            cmd+="$unmark"
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            ;;
+        rest)
+            cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
             ;;
         idle_alert)
             cmd+="if $fresh; then :; "
-            cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="elif [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         live)
-            cmd+="if [ \"\$cur\" = $word ]; then touch -c \"\$f\"; "
-            cmd+="elif [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
+            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         alert)
-            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then printf $word > \"\$f\"; $trig; fi; :"
+            cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         *)
-            cmd+="[ \"\$cur\" != $word ] && { printf $word > \"\$f\"; $trig; }; :"
+            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
     esac
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
@@ -251,6 +409,9 @@ session_end_hook_entry() {
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
     cmd+='rm -f "$HOME/.config/tws/agents/$TMUX_PANE"; '
     cmd+='rm -rf "$HOME/.config/tws/subagents/$TMUX_PANE"; '
+    cmd+='rm -rf "$HOME/.config/tws/permissions/$TMUX_PANE"; '
+    cmd+='rm -rf "$HOME/.config/tws/inflight/$TMUX_PANE"; '
+    cmd+='rm -f "$HOME/.config/tws/heartbeat/$TMUX_PANE"; '
     cmd+='touch "$HOME/.config/tws/agent.trigger"'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
@@ -305,10 +466,10 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
-    local e_substart e_substop
+    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
-    e_prompt=$(status_hook_entry working "")
+    e_prompt=$(status_hook_entry working "" prompt)
     # Claude runs matching hooks in parallel, so keep these matchers disjoint.
     e_pretool=$(status_hook_entry working "^(?!AskUserQuestion$).*" tool)
     e_question=$(status_hook_entry waiting "^AskUserQuestion$")
@@ -322,14 +483,28 @@ configure_claude_hooks() {
     # It yields to a live subagent marker: the main loop is quiet then, but work
     # goes on in the pane.
     e_notify=$(status_hook_entry waiting "permission_prompt" alert)
+    # A grant is the exit from the `waiting` that a permission request enters. The
+    # request has no tool_use_id, so a key from the tool name and input pairs the
+    # grant with its request. The Notification above stays as the backstop. The
+    # matcher is disjoint from the question entry: Claude runs matches in parallel.
+    # PermissionRequest fires for AskUserQuestion too, and no hook removes that
+    # key, so permit skips it exactly as granted does.
+    e_permit=$(status_hook_entry waiting "^(?!AskUserQuestion\$).*" permit)
+    e_granted=$(status_hook_entry working "^(?!AskUserQuestion\$).*" granted)
+    e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
     e_stop=$(status_hook_entry review "" stop)
-    # Compaction and API errors end a turn without firing Stop.
-    e_compact=$(status_hook_entry review "manual|auto")
+    # A manual /compact fires no UserPromptSubmit and no Stop, so PostCompact ends
+    # it. There is no PreCompact write: a /compact that is cancelled, fails or is
+    # blocked fires no PostCompact, so a `working` from PreCompact would have no
+    # exit. An auto compaction happens in a turn, and the Stop of that turn ends
+    # it, so it has no hook. StopFailure is the API error event.
+    e_compact=$(status_hook_entry review "manual" stop)
     e_fail=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     e_end=$(session_end_hook_entry)
+    e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" reset)
     local e_forkptr e_forkptr_end
     e_forkptr=$(fork_pointer_entry)
     e_forkptr_end=$(fork_pointer_end_entry)
@@ -340,6 +515,9 @@ configure_claude_hooks() {
         --argjson question "$e_question" \
         --argjson posttool "$e_posttool" \
         --argjson notify "$e_notify" \
+        --argjson permit "$e_permit" \
+        --argjson granted "$e_granted" \
+        --argjson grantedfail "$e_granted_fail" \
         --argjson idle "$e_idle" \
         --argjson substart "$e_substart" \
         --argjson substop "$e_substop" \
@@ -347,6 +525,7 @@ configure_claude_hooks() {
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
+        --argjson sessionstart "$e_sessionstart" \
         --argjson forkptr "$e_forkptr" \
         --argjson forkptrend "$e_forkptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
@@ -358,12 +537,14 @@ configure_claude_hooks() {
         # Append the current, correct tws entries.
         .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $prompt) |
         .hooks.PreToolUse       = ((.hooks.PreToolUse // []) + $pretool + $question) |
-        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool) |
+        .hooks.PostToolUse      = ((.hooks.PostToolUse // []) + $posttool + $granted) |
+        .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) + $grantedfail) |
+        .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + $permit) |
         .hooks.Notification     = ((.hooks.Notification // []) + $notify + $idle) |
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
-        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
@@ -421,21 +602,33 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_compact e_end e_substart e_substop
-    e_work=$(status_hook_entry working "")
-    e_pretool=$(status_hook_entry working "" live)
+    local e_work e_pretool e_posttool e_wait e_review e_compact e_end e_substart e_substop e_sessionstart e_interrupt
+    # A new prompt stamps the turn start, as it does for Claude. Codex has no
+    # permission key files, so the `rm -rf "$pd"` in `prompt` removes nothing.
+    e_work=$(status_hook_entry working "" prompt)
+    # Both tool hooks carry a tool_use_id, so a long call keeps an in-flight marker.
+    e_pretool=$(status_hook_entry working "" begin)
+    e_posttool=$(status_hook_entry working "" done)
     e_wait=$(status_hook_entry waiting "" alert)
-    e_review=$(status_hook_entry review "" stop)
+    e_review=$(status_hook_entry review "" stop keep)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
-    # Codex has no API-error event, so stale expiry is the only backstop there.
-    e_compact=$(status_hook_entry review "manual|auto")
+    # Interrupt covers an ESC. Codex has no API-error event, so stale expiry still
+    # covers an API error and a hard kill.
+    # Compaction follows the Claude rule: PostCompact ends a manual /compact, and
+    # PreCompact writes nothing because a cancelled /compact has no exit event. An
+    # auto compaction is ended by the Stop of its turn.
+    e_compact=$(status_hook_entry review "manual" stop keep)
     e_end=$(session_end_hook_entry)
+    e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
+    e_interrupt=$(status_hook_entry idle "" interrupt)
 
     jq \
-        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson compact "$e_compact" --argjson end "$e_end" \
-        --argjson substart "$e_substart" --argjson substop "$e_substop" '
+        --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson posttool "$e_posttool" --argjson wait "$e_wait" \
+        --argjson review "$e_review" --argjson compact "$e_compact" \
+        --argjson end "$e_end" \
+        --argjson substart "$e_substart" --argjson substop "$e_substop" \
+        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -446,13 +639,17 @@ configure_codex_hooks() {
         .hooks.UserPromptSubmit   = ((.hooks.UserPromptSubmit // []) + $work) |
         .hooks.PreToolUse         = ((.hooks.PreToolUse // []) + $pretool) |
         # PermissionRequest enters waiting; this is its only bounded exit.
-        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $work) |
+        .hooks.PostToolUse        = ((.hooks.PostToolUse // []) + $posttool) |
         .hooks.PermissionRequest  = ((.hooks.PermissionRequest // []) + $wait) |
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
+        # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
+        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
+        # An ESC interrupt fires Interrupt and no Stop; Claude Code has no such hook.
+        .hooks.Interrupt          = ((.hooks.Interrupt // []) + $interrupt) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
@@ -484,9 +681,12 @@ configure_pi_hooks() {
     # idempotent since tws owns it outright (unlike the Claude/Codex configs,
     # which are shared JSON we must merge into carefully).
     cat > "$ext_file" <<'PI_EXT_EOF'
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
+const HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
 // Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
@@ -495,6 +695,31 @@ const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 function panePath(): string | undefined {
   const pane = process.env.TMUX_PANE;
   return pane ? `${AGENTS_DIR}/${pane}` : undefined;
+}
+
+// A turn that ends in the pane the user is looking at is already read. tmux
+// answers three flags for the pane: pane_active, window_active and
+// session_attached. Any failure means the pane is not known to be in view. The
+// query names the pane with -t, so it reads this pane and not the active one.
+// tmux does not know if the terminal has focus: a pane in a background terminal
+// counts as in view.
+function turnEndWord(pane: string): string {
+  try {
+    const seen = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}#{window_active}#{session_attached}"], {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return /^11[1-9]/.test(seen.trim()) ? "idle" : "review";
+  } catch {
+    return "review";
+  }
+}
+
+function settle() {
+  const pane = process.env.TMUX_PANE;
+  const path = panePath();
+  if (pane && path) writeWord(path, turnEndWord(pane));
 }
 
 function readWord(path: string): string | undefined {
@@ -509,22 +734,42 @@ function readWord(path: string): string | undefined {
 function writeWord(path: string, word: string) {
   if (readWord(path) === word) return;
   mkdirSync(AGENTS_DIR, { recursive: true });
-  writeFileSync(path, word);
+  // Truncate-then-write would expose an empty file to a reader in between.
+  const tmp = `${AGENTS_DIR}/.${basename(path)}.${process.pid}`;
+  try {
+    writeFileSync(tmp, word);
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
   writeFileSync(TRIGGER, "");
 }
 
-// Refreshing mtime is how a pane proves liveness to tws. Never creates the file;
-// a missing one is restored by the next writeWord.
-function beat(path: string) {
+// The heartbeat file is how a working pane proves liveness to tws. It is a file
+// of its own: the status file keeps the state entry time, which tws shows as the
+// turn age. A tool call makes the file when it is absent.
+function beat(pane: string) {
   const now = new Date();
   try {
-    utimesSync(path, now, now);
+    utimesSync(`${HEARTBEAT_DIR}/${pane}`, now, now);
   } catch {
-    // Pane file not there yet — the next state change writes it.
+    try {
+      mkdirSync(HEARTBEAT_DIR, { recursive: true });
+      writeFileSync(`${HEARTBEAT_DIR}/${pane}`, "");
+    } catch {
+      // A heartbeat that cannot be written must not break the tool call.
+    }
   }
 }
 
 export default function (pi: any) {
+  // A new conversation in the pane owns nothing of the last one. `reload` keeps
+  // the same session, so it must not reset a pane that waits for the user.
+  pi.on("session_start", async (event: { reason: string }) => {
+    const path = panePath();
+    if (path && event.reason !== "reload") writeWord(path, "idle");
+  });
   pi.on("turn_start", async () => {
     const path = panePath();
     if (path) writeWord(path, "working");
@@ -532,25 +777,31 @@ export default function (pi: any) {
   // Pi's only per-tool-call event, and so the only place a heartbeat can live.
   pi.on("tool_execution_start", async () => {
     const path = panePath();
-    if (!path) return;
+    const pane = process.env.TMUX_PANE;
+    if (!path || !pane) return;
     const cur = readWord(path);
     // A tool call proves liveness, it does not start a turn. A pane resting in
     // review or waiting stays there; only an empty file is claimed.
-    if (cur === "working") beat(path);
+    if (cur === "working") beat(pane);
     else if (cur === undefined) writeWord(path, "working");
   });
-  // Compaction can end a turn without agent_settled firing.
-  pi.on("session_compact", async () => {
-    const path = panePath();
-    if (path) writeWord(path, "review");
+  // agent_settled waits for the "threshold" and "overflow" compactions, and they
+  // happen in a turn, so they must not end it here. Only a manual /compact needs
+  // its own turn-end write.
+  pi.on("session_compact", async (event: { reason: string }) => {
+    if (event.reason === "manual") settle();
   });
   pi.on("agent_settled", async () => {
-    const path = panePath();
-    if (path) writeWord(path, "review");
+    settle();
   });
-  pi.on("session_shutdown", async () => {
+  // `reload` keeps the session, and its session_start skips the reset. Deleting
+  // the file here would lose the pane's word anyway.
+  pi.on("session_shutdown", async (event: { reason: string }) => {
+    if (event.reason === "reload") return;
     const path = panePath();
-    if (path && existsSync(path)) {
+    if (!path) return;
+    rmSync(`${HEARTBEAT_DIR}/${process.env.TMUX_PANE}`, { force: true });
+    if (existsSync(path)) {
       rmSync(path, { force: true });
       writeFileSync(TRIGGER, "");
     }
@@ -573,6 +824,9 @@ configure_agent_hooks() {
     if [ "$hooks_configured" -eq 1 ]; then
         rm -f "$HOME"/.config/tws/agents/* 2>/dev/null || true
         rm -rf "$HOME/.config/tws/subagents" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/permissions" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/inflight" 2>/dev/null || true
+        rm -rf "$HOME/.config/tws/heartbeat" 2>/dev/null || true
         mkdir -p "$HOME/.config/tws"
         touch "$HOME/.config/tws/agent.trigger"
         info "Cleared stale agent status files"
