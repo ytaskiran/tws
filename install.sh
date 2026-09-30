@@ -192,6 +192,9 @@ configure_path() {
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
 #          pane's subagent markers. It rings the trigger only if the word changed.
+#          Exception: if the word is `working` and a fresh marker exists, it does
+#          nothing. A nested `claude -p` that the pane's agent runs inherits
+#          TMUX_PANE and fires SessionStart in the middle of a turn.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -235,8 +238,9 @@ status_hook_entry() {
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
+            cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
             cmd+='rm -rf "$sd"; '
-            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
             ;;
         rest)
             cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
@@ -627,7 +631,10 @@ export default function (pi: any) {
   pi.on("agent_settled", async () => {
     settle();
   });
-  pi.on("session_shutdown", async () => {
+  // `reload` keeps the session, and its session_start skips the reset. Deleting
+  // the file here would lose the pane's word anyway.
+  pi.on("session_shutdown", async (event: { reason: string }) => {
+    if (event.reason === "reload") return;
     const path = panePath();
     if (path && existsSync(path)) {
       rmSync(path, { force: true });

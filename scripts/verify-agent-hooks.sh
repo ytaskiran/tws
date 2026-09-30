@@ -443,7 +443,7 @@ mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
 claude_session_start
 expect idle "an empty file becomes idle"
 reset
-prompt_submit; sub_start
+prompt_submit; sub_start; turn_end
 expect_marker present "a marker is in place before the session starts"
 claude_session_start
 expect_marker absent "SessionStart removes the pane's subagent markers"
@@ -477,6 +477,38 @@ reset
 prompt_submit; sub_start; backdate "$MARKER"; claude_session_start
 prompt_submit; claude_stop
 expect review "a turn after the reset ends normally"
+
+printf '\na nested Claude session does not reset a busy pane\n'
+reset
+prompt_submit; sub_start
+claude_session_start
+expect working "working with a fresh marker stays working"
+expect_marker present "and the marker stays"
+claude_stop
+expect working "and the parent Stop still finds the marker"
+reset
+prompt_submit
+claude_session_start
+expect idle "working without markers becomes idle"
+reset
+prompt_submit; sub_start; backdate "$MARKER"
+claude_session_start
+expect idle "working with a stale marker becomes idle"
+reset
+prompt_submit; sub_start; turn_end
+claude_session_start
+expect idle "a stale review becomes idle"
+expect_marker absent "and its markers go"
+reset
+prompt_submit; sub_start
+rm -f "$TRIGGER"
+claude_session_start
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   a skipped reset leaves the trigger alone\n'
+else
+    printf '  FAIL a skipped reset leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
 
 printf '\na Codex session start never overwrites a live state\n'
 reset
