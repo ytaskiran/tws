@@ -272,6 +272,24 @@ reset
 prompt_submit; sub_start; fire review "" stop
 expect working "StopFailure shares the marker guard"
 
+printf '\na subagent permission prompt survives the main loop ending its turn\n'
+reset
+prompt_submit; sub_start; permission_prompt
+expect waiting "the subagent's permission prompt raises waiting"
+main_tool_call; expect waiting "a main-thread tool call keeps waiting"
+claude_stop
+expect waiting "Stop with a live subagent keeps an open prompt visible"
+idle_prompt
+expect waiting "idle_prompt then changes nothing"
+reset
+prompt_submit; sub_start; permission_prompt; main_tool_call
+fire review "" stop
+expect waiting "StopFailure keeps an open prompt visible too"
+reset
+prompt_submit; sub_start; permission_prompt
+claude_stop
+expect waiting "Stop right after the prompt keeps waiting"
+
 printf '\na main-thread tool call starts the turn\n'
 reset
 prompt_submit; claude_stop
@@ -394,6 +412,10 @@ prompt_submit; sub_start
 FAKE_TMUX_STATE=$VISIBLE claude_stop
 expect working "a live subagent keeps a visible pane working"
 reset
+prompt_submit; sub_start; permission_prompt
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect waiting "a live subagent keeps an open prompt in a visible pane"
+reset
 prompt_submit; sub_start; backdate "$MARKER"
 FAKE_TMUX_STATE=$VISIBLE claude_stop
 expect idle "a stale marker does not hold a visible pane"
@@ -477,13 +499,17 @@ fi
 
 # A query scoped with -t to $TMUX_PANE reads facts about the caller's own pane,
 # and it is allowed. Any other display-message call is a pane-identity guess.
+# Each call is judged alone, so a scoped call cannot excuse an unscoped one that
+# shares its line. A call ends at `)`, `;`, `|` or `&`.
 unscoped_queries() {
-    grep 'display-message' | grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true
+    { grep -o 'display-message[^);|&]*' || true; } \
+        | { grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true; }
 }
 
 reset
 sample='tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"
-execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])'
+execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])
+a=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"); b=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")'
 if [ -z "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
     printf '  ok   the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
 else
@@ -493,6 +519,9 @@ fi
 for sample in \
     'tmux display-message -p "#{pane_id}"' \
     'tmux display-message -p -t "$OTHER" "#{pane_id}"' \
+    'p=$(tmux display-message -p "#{pane_id}"); v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")' \
+    'tmux display-message -p "#{pane_id}"; tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"]); execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])' \
     'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"])'; do
     if [ -n "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
         printf '  ok   the pane-identity check rejects: %s\n' "$sample"
