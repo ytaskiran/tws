@@ -581,6 +581,28 @@ configure_agent_hooks() {
 
 # --- 5. Optional: tmux fork binding (experimental) ---
 
+# Idempotent: drop any earlier marked block, then append the new one. The text
+# goes back into the existing file, because mv would replace a symlinked
+# ~/.tmux.conf with a plain file. The blank lines before a dropped block go
+# with it, and a blank line separates the new block from your lines only when
+# the file does not already end with one. So repeated runs add no blank lines.
+rewrite_conf_block() {
+    local conf="$1" marker="$2" stale="$3" block="$4" tmp
+    tmp="$(mktemp)"
+    MARKER="$marker" STALE="$stale" awk '
+        index($0, ENVIRON["MARKER"]) || index($0, ENVIRON["STALE"]) { blanks = 0; next }
+        /^[[:space:]]*$/ { held[++blanks] = $0; next }
+        { for (i = 1; i <= blanks; i++) print held[i]; blanks = 0; print }
+        END { for (i = 1; i <= blanks; i++) print held[i] }
+    ' "$conf" > "$tmp"
+    if [ -s "$tmp" ] && [ -n "$(tail -n 1 "$tmp" | tr -d '[:space:]')" ]; then
+        printf '\n' >> "$tmp"
+    fi
+    printf '%s\n' "$block" >> "$tmp"
+    cat "$tmp" > "$conf"
+    rm -f "$tmp"
+}
+
 # tmux does not expand #{pane_id} in a split-window command, but run-shell
 # expands it first, so the fork pane learns which pane is its parent.
 FORK_BINDING='bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""'
@@ -647,18 +669,80 @@ configure_fork_binding() {
         return
     fi
 
-    # Idempotent: drop any previously marked block before re-adding.
-    if grep -qF "$FORK_MARKER" "$conf"; then
-        local tmp
-        tmp="$(mktemp)"
-        # grep exits 1 (no error) when the filter matches nothing, which
-        # would abort the script under set -o pipefail if chained with &&.
-        grep -vF -e "$FORK_MARKER" -e "tws fork-pane" "$conf" > "$tmp" || true
-        mv "$tmp" "$conf"
+    rewrite_conf_block "$conf" "$FORK_MARKER" "tws fork-pane" "$FORK_MARKER"$'\n'"$FORK_BINDING"
+    ok "Added fork binding (prefix+F) — EXPERIMENTAL"
+    info "Run: tmux source-file ~/.tmux.conf"
+}
+
+# --- 5b. Optional: tmux ack hooks ---
+
+ACK_MARKER='# tws ack hooks'
+# A fixed hook index makes a reload replace the tws entry. The -ga flags would
+# add one more entry, and one more process, on each source-file.
+ACK_HOOK_INDEX=89
+
+# tmux splits the run-shell string with its own quoting and expands #{...} in
+# it, so a path with one of these characters breaks the hook line. A broken
+# line can stop tmux from loading the rest of ~/.tmux.conf.
+ack_path_is_safe() {
+    case "$1" in
+        *[[:space:]\'\"\\\$\#\;]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Prints the marked block. run-shell does not use your shell PATH, so the hook
+# names the binary by its absolute path. Your own hooks at other indexes stay.
+# tmux expands #{pane_id} before the shell runs, so tws learns the pane that
+# the client lands on. The two window-pane-changed and session-window-changed
+# hooks cover last-pane, kill-pane and kill-window, which fire none of the
+# after-* hooks.
+ack_hook_block() {
+    local cmd="run-shell -b \"$INSTALL_DIR/$BINARY_NAME ack-pane #{pane_id}\""
+    local hook
+    printf '%s\n' "$ACK_MARKER"
+    for hook in after-select-pane after-select-window client-session-changed \
+        window-pane-changed session-window-changed; do
+        printf "set-hook -g %s[%s] '%s'\n" "$hook" "$ACK_HOOK_INDEX" "$cmd"
+    done
+}
+
+write_ack_hooks() {
+    rewrite_conf_block "$1" "$ACK_MARKER" "tws ack-pane" "$(ack_hook_block)"
+}
+
+configure_ack_hooks() {
+    local conf="$HOME/.tmux.conf"
+
+    if [ ! -f "$conf" ]; then
+        info "No ~/.tmux.conf — skipping ack hooks"
+        return
     fi
 
-    printf '\n%s\n%s\n' "$FORK_MARKER" "$FORK_BINDING" >> "$conf"
-    ok "Added fork binding (prefix+F) — EXPERIMENTAL"
+    if [ "$hooks_configured" -ne 1 ]; then
+        info "Agent hooks are not configured — the ack hooks have no status to clear"
+        info "Skipping ack hooks. Re-run install and accept the agent hooks step, then add them manually with:"
+        ack_hook_block | sed 's/^/  /'
+        return
+    fi
+
+    if ! ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
+        warn "The binary path has a space or one of ' \" \\ \$ # ; — not writing the ack hooks"
+        info "Put the binary at a path without these characters, then add the hooks manually with:"
+        ack_hook_block | sed 's/^/  /'
+        return
+    fi
+
+    printf '%s' "Mark a pane as read when you move into it with tmux, and add ack hooks to ~/.tmux.conf? [y/N] "
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipped ack hooks — add them manually with:"
+        ack_hook_block | sed 's/^/  /'
+        return
+    fi
+
+    write_ack_hooks "$conf"
+    ok "Added ack hooks to ~/.tmux.conf"
     info "Run: tmux source-file ~/.tmux.conf"
 }
 
@@ -706,6 +790,7 @@ main() {
     install_binary "$target"
     configure_agent_hooks
     configure_fork_binding
+    configure_ack_hooks
     configure_glow
 
     echo ""

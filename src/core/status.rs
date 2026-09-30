@@ -241,6 +241,38 @@ pub fn agent_to_ack(agents: &[AgentSession], landing_pane: &str) -> Option<Strin
         .map(|a| a.pane_id.clone())
 }
 
+/// Turn `review` into `idle` for one pane. Return `true` only when the file changed.
+///
+/// A tmux hook passes the pane id, so the id is untrusted: a name with a path
+/// separator must never reach outside `dir`.
+pub fn ack_pane_in(dir: &Path, pane_id: &str) -> bool {
+    if pane_id.is_empty() || pane_id.contains(['/', '\\']) {
+        return false;
+    }
+    let path = dir.join(pane_id);
+    let is_review =
+        std::fs::read_to_string(&path).is_ok_and(|c| parse_status(&c) == AgentStatus::Review);
+    is_review && write_status_to(dir, pane_id, AgentStatus::Idle).is_ok()
+}
+
+/// Ack one pane in the real agents directory and wake tws.
+///
+/// The trigger moves only when a file changed, so a focus change on a pane
+/// with no `review` status costs tws no rescan.
+pub fn ack_pane(pane_id: &str) {
+    if ack_pane_in(&agents_dir(), pane_id) {
+        touch_trigger(&trigger_path());
+    }
+}
+
+fn touch_trigger(path: &Path) {
+    let _ = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|f| f.set_modified(SystemTime::now()));
+}
+
 /// Map statuses to their display glyphs. `Waiting` and `Review` intentionally share one.
 pub fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
@@ -456,6 +488,86 @@ mod tests {
         assert_eq!(map.get("%53").unwrap().0, AgentStatus::Idle);
         assert_eq!(map.get("%52").unwrap().0, AgentStatus::Review);
         assert_eq!(map.get("%61").unwrap().0, AgentStatus::Review);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn ack_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-ackpane-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ack_pane_turns_review_into_idle() {
+        let dir = ack_dir("review");
+        std::fs::write(dir.join("%4"), "review").unwrap();
+
+        assert!(ack_pane_in(&dir, "%4"));
+        assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), "idle");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_leaves_other_states_alone() {
+        let dir = ack_dir("others");
+        for word in ["working", "waiting", "idle"] {
+            std::fs::write(dir.join("%4"), word).unwrap();
+
+            assert!(!ack_pane_in(&dir, "%4"), "{word} must not change");
+            assert_eq!(std::fs::read_to_string(dir.join("%4")).unwrap(), word);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_ignores_a_missing_file() {
+        let dir = ack_dir("missing");
+
+        assert!(!ack_pane_in(&dir, "%4"));
+        assert!(!dir.join("%4").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_ignores_a_missing_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("tws-test-ackpane-nodir-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(!ack_pane_in(&dir, "%4"));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn ack_pane_touches_only_the_named_pane() {
+        let dir = ack_dir("sibling");
+        std::fs::write(dir.join("%4"), "review").unwrap();
+        std::fs::write(dir.join("%5"), "review").unwrap();
+
+        assert!(ack_pane_in(&dir, "%4"));
+        assert_eq!(std::fs::read_to_string(dir.join("%5")).unwrap(), "review");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ack_pane_rejects_ids_that_are_not_file_names() {
+        let dir = ack_dir("badid");
+        std::fs::write(dir.join("review-file"), "review").unwrap();
+
+        assert!(!ack_pane_in(&dir, ""));
+        assert!(!ack_pane_in(&dir, "../agents/review-file"));
+        assert!(!ack_pane_in(&dir, "a/b"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("review-file")).unwrap(),
+            "review"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

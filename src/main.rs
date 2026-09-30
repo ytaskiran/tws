@@ -30,6 +30,11 @@ enum Command {
         /// tmux pane id, e.g. %12
         pane_id: Option<String>,
     },
+    /// Mark a pane as read when you move into it (called by a tmux hook)
+    AckPane {
+        /// tmux pane id, e.g. %12. Defaults to $TMUX_PANE
+        pane_id: Option<String>,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -38,7 +43,18 @@ fn main() -> std::io::Result<()> {
     match cli.command {
         Some(Command::Import) => import::run(),
         Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
+        Some(Command::AckPane { pane_id }) => {
+            ack_pane(pane_id);
+            Ok(())
+        }
         None => run_tui(),
+    }
+}
+
+/// A tmux hook runs this on every focus change, so it never fails or prints.
+fn ack_pane(pane_id: Option<String>) {
+    if let Some(pane_id) = pane_id.or_else(|| std::env::var("TMUX_PANE").ok()) {
+        core::status::ack_pane(&pane_id);
     }
 }
 
