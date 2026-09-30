@@ -172,8 +172,10 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
-#   stop   turn end. Writes `working` while a fresh subagent marker exists, else
-#          the word. Also deletes stale markers.
+#   stop   turn end. While a fresh subagent marker exists it writes `working`,
+#          but keeps `waiting`: a background subagent can hold the pane there for
+#          a permission prompt. Without a marker it writes the word. Also deletes
+#          stale markers.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 status_hook_entry() {
     local word="$1"
@@ -201,7 +203,8 @@ status_hook_entry() {
             ;;
         stop)
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; fi; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { printf %s \"\$w\" > \"\$f\"; $trig; }; :"
             ;;
         idle_alert)

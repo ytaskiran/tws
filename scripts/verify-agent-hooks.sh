@@ -231,6 +231,24 @@ reset
 prompt_submit; sub_start; fire review "" stop
 expect working "StopFailure shares the marker guard"
 
+printf '\na subagent permission prompt survives the main loop ending its turn\n'
+reset
+prompt_submit; sub_start; permission_prompt
+expect waiting "the subagent's permission prompt raises waiting"
+main_tool_call; expect waiting "a main-thread tool call keeps waiting"
+claude_stop
+expect waiting "Stop with a live subagent keeps an open prompt visible"
+idle_prompt
+expect waiting "idle_prompt then changes nothing"
+reset
+prompt_submit; sub_start; permission_prompt; main_tool_call
+fire review "" stop
+expect waiting "StopFailure keeps an open prompt visible too"
+reset
+prompt_submit; sub_start; permission_prompt
+claude_stop
+expect waiting "Stop right after the prompt keeps waiting"
+
 printf '\na main-thread tool call starts the turn\n'
 reset
 prompt_submit; claude_stop
