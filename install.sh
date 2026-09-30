@@ -178,9 +178,10 @@ configure_path() {
 #          without one is the main loop, so it proves the turn is live: it also
 #          resumes `review` and `idle`. Only `waiting` is left alone, because a
 #          background subagent can hold the pane there for a permission prompt.
-#   stop   turn end. Writes `working` while a fresh subagent marker exists. Else
-#          it writes the word, or `idle` if the pane is in view (see `settle`).
-#          Also deletes stale markers.
+#   stop   turn end. While a fresh subagent marker exists it writes `working`,
+#          but keeps `waiting`: a background subagent can hold the pane there for
+#          a permission prompt. Without a marker it writes the word, or `idle` if
+#          the pane is in view (see `settle`). Also deletes stale markers.
 #   settle turn end with no subagent guard (compaction). Writes the word, or
 #          `idle` if the user is looking at the pane. tmux answers with three
 #          flags: pane_active, window_active and session_attached. The pane is in
@@ -190,7 +191,11 @@ configure_path() {
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
-#          pane's subagent markers. It rings the trigger only if the word changed.
+#          pane's subagent markers and permission keys. It rings the trigger only
+#          if the word changed.
+#          Exception: if the word is `working` and a fresh marker exists, it does
+#          nothing. A nested `claude -p` that the pane's agent runs inherits
+#          TMUX_PANE and fires SessionStart in the middle of a turn.
 #   permit PermissionRequest (Claude). Records the request as a key file, then raises
 #          `waiting` with the `alert` rules. The key is a checksum of the tool name
 #          and input, because the request carries no tool_use_id. Claude gives the
@@ -240,7 +245,8 @@ status_hook_entry() {
         stop)
             cmd+='rm -rf "$pd"; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
-            cmd+="if $fresh; then w=working; else w=$word; $seen fi; "
+            cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
+            cmd+="else w=$word; $seen fi; "
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         settle)
@@ -248,8 +254,9 @@ status_hook_entry() {
             cmd+="[ \"\$cur\" != \"\$w\" ] && { put \"\$w\"; $trig; }; :"
             ;;
         reset)
+            cmd+="if [ \"\$cur\" = working ] && $fresh; then :; else "
             cmd+='rm -rf "$sd" "$pd"; '
-            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
+            cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; fi; :"
             ;;
         permit)
             cmd+="$keyof"
@@ -665,7 +672,10 @@ export default function (pi: any) {
   pi.on("agent_settled", async () => {
     settle();
   });
-  pi.on("session_shutdown", async () => {
+  // `reload` keeps the session, and its session_start skips the reset. Deleting
+  // the file here would lose the pane's word anyway.
+  pi.on("session_shutdown", async (event: { reason: string }) => {
+    if (event.reason === "reload") return;
     const path = panePath();
     if (path && existsSync(path)) {
       rmSync(path, { force: true });
