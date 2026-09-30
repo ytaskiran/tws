@@ -1996,6 +1996,21 @@ impl App {
             &live_panes,
             scan_started_at,
         );
+        crate::core::status::prune_stale_files(
+            &crate::core::status::permissions_dir(),
+            &live_panes,
+            scan_started_at,
+        );
+        crate::core::status::prune_stale_files(
+            &crate::core::status::inflight_dir(),
+            &live_panes,
+            scan_started_at,
+        );
+        crate::core::status::prune_stale_files(
+            &crate::core::status::heartbeat_dir(),
+            &live_panes,
+            scan_started_at,
+        );
 
         // After prune so no write lands on a doomed file, before the load so a
         // flip shows this frame.
@@ -2003,7 +2018,12 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        crate::core::status::expire_stale_working(&crate::core::status::agents_dir(), now);
+        crate::core::status::expire_stale_working(
+            &crate::core::status::agents_dir(),
+            &crate::core::status::inflight_dir(),
+            &crate::core::status::heartbeat_dir(),
+            now,
+        );
 
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);

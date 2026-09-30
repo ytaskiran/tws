@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p' "$INSTALL_SH")"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##')"
 
 export HOME
 HOME="$(mktemp -d)"
@@ -23,13 +23,34 @@ trap 'rm -rf "$HOME"' EXIT
 
 failures=0
 
-# A tmux that answers the pane query with a pane the caller does not own — the
+# A tmux that answers a bare pane query with a pane the caller does not own — the
 # real one answers for the current client's active pane, which is the same
-# thing from the hook's point of view.
+# thing from the hook's point of view. A query scoped with -t to the caller's
+# pane (%7) answers with FAKE_TMUX_STATE, the three flags a hook reads:
+# pane_active, window_active and session_attached. "fail" (the default) makes
+# the query fail, as it does when no server answers. A query scoped to any other
+# pane fails too, so a hook that asks about the wrong pane cannot pass.
 FAKE_BIN="$HOME/fake-bin"
 mkdir -p "$FAKE_BIN"
-printf '#!/bin/sh\necho "%%99"\n' > "$FAKE_BIN/tmux"
+cat > "$FAKE_BIN/tmux" <<'FAKE_TMUX_EOF'
+#!/bin/sh
+echo x >> "$FAKE_TMUX_CALLS"
+target=""
+while [ $# -gt 0 ]; do
+    if [ "$1" = -t ]; then target="${2:-}"; shift; fi
+    shift
+done
+if [ -z "$target" ]; then
+    echo "%99"
+elif [ "$target" = "%7" ] && [ "${FAKE_TMUX_STATE:-fail}" != fail ]; then
+    echo "$FAKE_TMUX_STATE"
+else
+    exit 1
+fi
+FAKE_TMUX_EOF
 chmod +x "$FAKE_BIN/tmux"
+# The fake tmux counts its calls, so a check can assert a hook never starts tmux.
+export FAKE_TMUX_CALLS="$HOME/tmux-calls"
 
 # A jq that counts its calls, so a check can assert a hook runs it once at most.
 REAL_JQ="$(command -v jq)"
@@ -39,22 +60,52 @@ mkdir -p "$SPY_BIN"
 printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_CALLS" "$REAL_JQ" > "$SPY_BIN/jq"
 chmod +x "$SPY_BIN/jq"
 
+# A cksum that counts its calls, so a check can assert a hook skips the hash.
+CKSUM_CALLS="$HOME/cksum-calls"
+printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$CKSUM_CALLS" "$(command -v cksum)" > "$SPY_BIN/cksum"
+chmod +x "$SPY_BIN/cksum"
+
+# An mv that logs source, destination and the source's content, then does the
+# move. It shows that a status word reaches its file only by a rename.
+MV_CALLS="$HOME/mv-calls"
+cat > "$SPY_BIN/mv" <<'MV_EOF'
+#!/bin/sh
+src=""; dst=""
+for a in "$@"; do
+    case "$a" in -*) ;; *) src="$dst"; dst="$a" ;; esac
+done
+printf '%s\t%s\t%s\n' "$src" "$dst" "$(cat "$src" 2>/dev/null)" >> "$MV_CALLS_FILE"
+exec "$REAL_MV" "$@"
+MV_EOF
+chmod +x "$SPY_BIN/mv"
+export MV_CALLS_FILE="$MV_CALLS" REAL_MV
+REAL_MV="$(command -v mv)"
+
 # A jq that is not there, as sh reports it. Put first on PATH with JQ_BROKEN=1.
 BROKEN_BIN="$HOME/broken-bin"
 mkdir -p "$BROKEN_BIN"
 printf '#!/bin/sh\nexit 127\n' > "$BROKEN_BIN/jq"
 chmod +x "$BROKEN_BIN/jq"
 
+# Lines in a spy log. An absent log means the spy never ran: zero calls. The
+# guard is a test and not a `2>/dev/null` on wc, because the shell reports a
+# failed `<` redirect before that stderr redirect takes effect.
+count_lines() {
+    if [ -e "$1" ]; then wc -l < "$1" | tr -d ' '; else printf 0; fi
+}
+
 # Runs a hook command with a JSON payload on stdin, as Claude Code does. With
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
-# inherit, and a tmux standing by to answer if the command asks.
+# inherit. The fake tmux is on the PATH either way, so the real server is never
+# asked. Set FAKE_TMUX_STATE to choose what the fake tmux says about the pane.
 run_command() {
     local json="$1" command="$2" broken=""
     [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
+    local state="FAKE_TMUX_STATE=${FAKE_TMUX_STATE:-fail}"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
     else
-        printf '%s' "$json" | env "PATH=$broken$SPY_BIN:$PATH" sh -c "$command"
+        printf '%s' "$json" | env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
     fi
 }
 
@@ -88,7 +139,7 @@ subagent_event() {
 }
 
 # The events, named as the state machine names them.
-prompt_submit()   { fire working "" ; }
+prompt_submit()   { fire working "" prompt ; }
 tool_call()       { fire working "^(?!AskUserQuestion$).*" live ; }
 question_shown()  { fire waiting "^AskUserQuestion$" ; }
 question_answered() { fire working "^AskUserQuestion$" ; }
@@ -97,6 +148,8 @@ turn_end()        { fire review "" ; }
 
 SUB_JSON='{"agent_id":"a1","tool_name":"Bash","tool_use_id":"t1"}'
 MAIN_JSON='{"tool_name":"Bash","tool_use_id":"t2"}'
+POST_M='{"tool_use_id":"t2","tool_name":"Bash","tool_input":{}}'
+POST_S='{"agent_id":"a1","tool_use_id":"t1","tool_name":"Bash","tool_input":{}}'
 TOOL_MATCHER='^(?!AskUserQuestion$).*'
 sub_tool_call()    { fire_in "$SUB_JSON" working "$TOOL_MATCHER" tool ; }
 main_tool_call()   { fire_in "$MAIN_JSON" working "$TOOL_MATCHER" tool ; }
@@ -105,6 +158,38 @@ sub_stop()         { subagent_event stop '{"agent_id":"a1","agent_type":"general
 claude_stop()      { fire review "" stop ; }
 permission_prompt() { fire waiting "permission_prompt" alert ; }
 idle_prompt()      { fire waiting "idle_prompt" idle_alert ; }
+compact_end()      { fire review "manual" stop ; }
+claude_session_start() { fire idle "startup|resume|clear" reset ; }
+codex_session_start()  { fire idle "startup|resume|clear" rest ; }
+codex_interrupt()      { fire idle "" interrupt ; }
+codex_permission_request() { fire waiting "" alert ; }
+codex_stop()           { fire review "" stop keep ; }
+
+# PermissionRequest and the tool-done events carry the same tool_name and
+# tool_input, but the rest of the payload differs, and so does the key order.
+POST_MATCHER='^(?!AskUserQuestion$).*'
+REQ_X='{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"description":"make x","command":"mkdir x"}}'
+REQ_Y='{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"description":"make y","command":"mkdir y"}}'
+DONE_X='{"tool_response":{"stdout":""},"tool_use_id":"t1","tool_input":{"command":"mkdir x","description":"make x"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+DONE_Y='{"tool_response":{"stdout":""},"tool_use_id":"t2","tool_input":{"command":"mkdir y","description":"make y"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+DONE_Z='{"tool_use_id":"t3","tool_input":{"command":"ls","description":"list"},"tool_name":"Bash","hook_event_name":"PostToolUse"}'
+# An open request, planted directly, so a clearing check does not depend on permit.
+seed_key()    { mkdir -p "$PERM_DIR" && : > "$PERM_DIR/planted"; }
+permit()      { fire_in "$1" waiting "$POST_MATCHER" permit ; }
+tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
+tool_failed() { fire_in "$1" working "" granted ; }
+PERM_DIR="$HOME/.config/tws/permissions/%7"
+
+# Codex tool hooks carry a tool_use_id too. PreToolUse records the call and
+# PostToolUse ends it.
+codex_pre_tool()  { fire_in "$1" working "" begin ; }
+codex_post_tool() { fire_in "$1" working "" done ; }
+INFLIGHT_DIR="$HOME/.config/tws/inflight/%7"
+HEARTBEAT="$HOME/.config/tws/heartbeat/%7"
+
+# What tmux says about the pane: the visible pane of an attached session, and
+# the four ways to be out of sight.
+VISIBLE=111
 
 MARKER="$HOME/.config/tws/subagents/%7/a1"
 OLD_TIME=200001010000
@@ -121,6 +206,49 @@ mtime() {
         ''|*[!0-9]*) printf 'cannot read mtime of %s\n' "$1" >&2; exit 1 ;;
         *) printf '%s' "$t" ;;
     esac
+}
+
+# The mtime of a file that may be absent: 0 when it is.
+mtime_or_zero() { if [ -e "$1" ]; then mtime "$1"; else printf 0; fi; }
+
+# check_heartbeat NAME EVENT: a working pane's tool call, run as the function
+# EVENT, touches the heartbeat file and leaves the status file alone. The status
+# mtime is the state entry time, which the agent row shows as the turn age.
+check_heartbeat() {
+    local name="$1" event="$2" st_before hb_before st_after hb_after
+    reset
+    prompt_submit
+    "$event"
+    if [ ! -e "$HEARTBEAT" ]; then
+        printf '  FAIL %s — no heartbeat file\n' "$name"
+        failures=$((failures + 1))
+        return
+    fi
+    st_before="$(mtime_or_zero "$STATUS_FILE")"
+    hb_before="$(mtime_or_zero "$HEARTBEAT")"
+    sleep 1.1
+    "$event"
+    st_after="$(mtime_or_zero "$STATUS_FILE")"
+    hb_after="$(mtime_or_zero "$HEARTBEAT")"
+    if [ "$hb_after" -gt "$hb_before" ] && [ "$st_after" = "$st_before" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — heartbeat %s -> %s, status %s -> %s\n' \
+            "$name" "$hb_before" "$hb_after" "$st_before" "$st_after"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_heartbeat present|absent NAME
+expect_heartbeat() {
+    local want="$1" name="$2" got=absent
+    [ -e "$HEARTBEAT" ] && got=present
+    if [ "$got" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want heartbeat %s, got %s\n' "$name" "$want" "$got"
+        failures=$((failures + 1))
+    fi
 }
 
 expect() {
@@ -142,6 +270,30 @@ expect_marker() {
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — want marker %s, got %s\n' "$name" "$want" "$got"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_keys N NAME: how many open permission requests the pane has.
+expect_keys() {
+    local want="$1" name="$2" got
+    got="$(find "$PERM_DIR" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
+    if [ "${got:-0}" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want %s key file(s), got %s\n' "$name" "$want" "${got:-0}"
+        failures=$((failures + 1))
+    fi
+}
+
+# expect_inflight "NAMES" NAME: the marker files in the pane's in-flight directory.
+expect_inflight() {
+    local want="$1" name="$2" got
+    got="$(ls -A "$INFLIGHT_DIR" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//' || true)"
+    if [ "$got" = "$want" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — want [%s], got [%s]\n' "$name" "$want" "$got"
         failures=$((failures + 1))
     fi
 }
@@ -188,16 +340,32 @@ notification;   expect review  "idle_prompt must not downgrade review"
 printf '\nliveness\n'
 reset
 tool_call;      expect working "an empty file is claimed by the first tool call"
-before="$(mtime "$STATUS_FILE")"
-sleep 1.1
-tool_call
-after="$(mtime "$STATUS_FILE")"
-if [ "$after" -gt "$before" ]; then
-    printf '  ok   the heartbeat refreshes mtime\n'
+now="$(date +%s)"
+if [ "$(( now - $(mtime "$STATUS_FILE") ))" -le 2 ]; then
+    printf '  ok   and the claim stamps the status file with the entry time\n'
 else
-    printf '  FAIL the heartbeat refreshes mtime — %s did not advance past %s\n' "$after" "$before"
+    printf '  FAIL and the claim stamps the status file with the entry time\n'
     failures=$((failures + 1))
 fi
+check_heartbeat "a live tool call touches the heartbeat and not the status file" tool_call
+check_heartbeat "a Claude main-thread tool call does the same" main_tool_call
+check_heartbeat "a Claude subagent tool call does the same" sub_tool_call
+codex_begin() { codex_pre_tool "$MAIN_JSON"; }
+check_heartbeat "a Codex PreToolUse does the same" codex_begin
+reset
+prompt_submit
+tool_call
+if [ -d "$(dirname "$HEARTBEAT")" ]; then
+    printf '  ok   the heartbeat directory is made on the first tool call\n'
+else
+    printf '  FAIL the heartbeat directory is made on the first tool call\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_stop
+tool_call
+expect_heartbeat absent "a tool call over review does not start a heartbeat"
+expect review "and does not change review"
 
 printf '\nsubagents keep the pane working\n'
 reset
@@ -267,10 +435,10 @@ prompt_submit
 backdate "$STATUS_FILE"
 old="$(mtime "$STATUS_FILE")"
 main_tool_call
-if [ "$(mtime "$STATUS_FILE")" -gt "$old" ]; then
-    printf '  ok   a main-thread tool call refreshes a working pane\n'
+if [ "$(mtime "$STATUS_FILE")" = "$old" ] && [ -e "$HEARTBEAT" ]; then
+    printf '  ok   a main-thread tool call over working touches the heartbeat only\n'
 else
-    printf '  FAIL a main-thread tool call refreshes a working pane\n'
+    printf '  FAIL a main-thread tool call over working touches the heartbeat only\n'
     failures=$((failures + 1))
 fi
 reset
@@ -297,6 +465,203 @@ prompt_submit; claude_stop
 fire_in '{ not json' working "$TOOL_MATCHER" tool
 expect review "bad JSON leaves review"
 
+
+TRIGGER="$HOME/.config/tws/agent.trigger"
+printf '\na permission grant resumes the turn\n'
+reset
+prompt_submit
+permit "$REQ_X"
+expect waiting "a permission request raises waiting"
+expect_keys 1 "and records one key file"
+tool_done "$DONE_X"
+expect working "the grant's PostToolUse resumes the turn"
+expect_keys 0 "and removes the key file"
+
+reset
+prompt_submit
+permit "$REQ_X"; permit "$REQ_Y"
+expect_keys 2 "two requests make two key files"
+tool_done "$DONE_X"
+expect waiting "one grant leaves the other request open"
+expect_keys 1 "and removes only its own key"
+tool_done "$DONE_Y"
+expect working "the last grant resumes the turn"
+
+reset
+prompt_submit
+permit "$REQ_X"
+tool_done "$DONE_Z"
+expect waiting "a tool that never asked leaves the request open"
+expect_keys 1 "and keeps its key"
+
+reset
+prompt_submit
+permit "$REQ_X"
+tool_failed "$DONE_X"
+expect working "PostToolUseFailure also resumes the turn"
+expect_keys 0 "and removes the key file"
+
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+expect_keys 2 "a request is open before the turn ends"
+claude_stop
+expect review "a denied tool ends the turn at review"
+expect_keys 0 "and Stop clears the request"
+if [ ! -e "$PERM_DIR" ]; then
+    printf '  ok   and the pane directory\n'
+else
+    printf '  FAIL and the pane directory\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a denied tool in the visible pane ends the turn read"
+expect_keys 0 "and Stop clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+fire review "" stop
+expect_keys 0 "StopFailure clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+claude_session_start
+expect_keys 0 "SessionStart clears the request"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+session_end
+expect_keys 0 "SessionEnd clears the request"
+
+printf '\na denied request is cleared by the next prompt\n'
+reset
+prompt_submit
+permit "$REQ_X"
+expect waiting "a request raises waiting"
+expect_keys 1 "and the denial leaves its key, because it fires no Stop"
+prompt_submit
+expect working "the next prompt resumes the turn"
+expect_keys 0 "and clears the key of the denied request"
+permit "$REQ_Y"
+tool_done "$DONE_Y"
+expect working "a later grant resumes the turn again"
+expect_keys 0 "and leaves no key"
+reset
+prompt_submit
+permit "$REQ_X"; seed_key
+prompt_submit
+if [ ! -e "$PERM_DIR" ]; then
+    printf '  ok   the next prompt removes the pane permissions directory\n'
+else
+    printf '  FAIL the next prompt removes the pane permissions directory\n'
+    failures=$((failures + 1))
+fi
+
+reset
+prompt_submit; turn_end
+permit "$REQ_X"
+expect review "a permission request never downgrades review"
+reset
+permit "$REQ_X"
+expect waiting "a permission request over an empty file raises waiting"
+reset
+prompt_submit; question_shown
+tool_done "$DONE_X"
+expect waiting "a tool with no open request leaves a question alone"
+reset
+prompt_submit; turn_end
+permit "$REQ_X"
+tool_done "$DONE_X"
+expect review "a grant never overwrites review"
+reset
+prompt_submit
+permit "$REQ_X"
+notification
+tool_done "$DONE_X"
+expect working "the Notification backstop does not stop the grant resuming"
+reset
+prompt_submit
+permit "$REQ_X"; rm -f "$TRIGGER"
+tool_done "$DONE_X"
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a grant that resumes the turn rings the trigger\n'
+else
+    printf '  FAIL a grant that resumes the turn rings the trigger\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na tool with no open request runs one jq and no cksum\n'
+# The tool_use_id needs one jq call, so the call is no longer skipped. The hash
+# and the key compare stay behind the "is a request open" test.
+reset
+prompt_submit
+rm -f "$JQ_CALLS" "$CKSUM_CALLS"
+tool_done "$DONE_X"
+tool_failed "$DONE_X"
+calls="$(count_lines "$JQ_CALLS")"
+if [ "${calls:-0}" = 2 ]; then
+    printf '  ok   no permissions directory: one jq call per hook\n'
+else
+    printf '  FAIL no permissions directory: %s jq call(s) for two hooks\n' "${calls:-0}"
+    failures=$((failures + 1))
+fi
+if [ ! -e "$CKSUM_CALLS" ]; then
+    printf '  ok   and no cksum call\n'
+else
+    printf '  FAIL and no cksum call\n'
+    failures=$((failures + 1))
+fi
+expect working "and the status stays as it was"
+mkdir -p "$PERM_DIR"
+rm -f "$JQ_CALLS" "$CKSUM_CALLS"
+tool_done "$DONE_X"
+calls="$(count_lines "$JQ_CALLS")"
+if [ "${calls:-0}" = 1 ] && [ ! -e "$CKSUM_CALLS" ]; then
+    printf '  ok   an empty permissions directory: one jq call and no cksum\n'
+else
+    printf '  FAIL an empty permissions directory: %s jq call(s), cksum %s\n' "${calls:-0}" "$([ -e "$CKSUM_CALLS" ] && echo run || echo skipped)"
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+permit "$REQ_X"
+rm -f "$CKSUM_CALLS"
+tool_done "$DONE_X"
+if [ -e "$CKSUM_CALLS" ]; then
+    printf '  ok   a pane with an open request still hashes the call\n'
+else
+    printf '  FAIL a pane with an open request still hashes the call\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na pane with no TMUX_PANE keeps out of the permission files\n'
+reset
+prompt_submit
+permit "$REQ_X"
+before="$(find "$HOME/.config/tws" -type f | sort | tr '\n' ' ')"
+PANE_LESS=1 permit "$REQ_Y"
+PANE_LESS=1 tool_done "$DONE_X"
+PANE_LESS=1 tool_failed "$DONE_X"
+after="$(find "$HOME/.config/tws" -type f | sort | tr '\n' ' ')"
+if [ "$before" = "$after" ]; then
+    printf '  ok   the permission commands with no TMUX_PANE write and remove nothing\n'
+else
+    printf '  FAIL the permission commands with no TMUX_PANE changed the files\n'
+    failures=$((failures + 1))
+fi
+expect waiting "and the status is unchanged"
+reset
+PANE_LESS=1 permit "$REQ_X"
+if [ ! -e "$HOME/.config/tws/permissions" ]; then
+    printf '  ok   a pane-less request makes no directory\n'
+else
+    printf '  FAIL a pane-less request makes no directory\n'
+    failures=$((failures + 1))
+fi
+
 printf '\nidle_prompt yields to a live subagent\n'
 reset
 prompt_submit; sub_start
@@ -321,13 +686,340 @@ fi
 expect working "and changes no status"
 expect_marker present "and leaves the other markers alone"
 
+printf '\na turn that ends in the visible pane is read\n'
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "Stop in the visible pane marks it read"
+reset
+prompt_submit
+FAKE_TMUX_STATE=112 claude_stop
+expect idle "two attached clients still count as in view"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE fire review "" stop
+expect idle "StopFailure shares the visibility check"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE compact_end
+expect idle "a manual compaction that ends in the visible pane is read"
+reset
+prompt_submit
+compact_end
+expect review "a compaction in a pane out of sight stays review"
+reset
+prompt_submit
+FAKE_TMUX_STATE=$VISIBLE turn_end
+expect review "a plain set-mode write never asks tmux"
+
+for state in 101 011 110 001 000 fail; do
+    case "$state" in
+        101) why="the window is not the active window" ;;
+        011) why="the pane is not the active pane" ;;
+        110) why="no client is attached" ;;
+        001) why="only a client is attached" ;;
+        000) why="nothing is active" ;;
+        fail) why="the tmux query fails" ;;
+    esac
+    reset
+    prompt_submit
+    FAKE_TMUX_STATE=$state claude_stop
+    expect review "Stop stays review when $why"
+done
+reset
+prompt_submit
+FAKE_TMUX_STATE=garbage claude_stop
+expect review "and when tmux answers with something else"
+
+reset
+prompt_submit; sub_start
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect working "a live subagent keeps a visible pane working"
+reset
+prompt_submit; sub_start; permission_prompt
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect waiting "a live subagent keeps an open prompt in a visible pane"
+reset
+prompt_submit; sub_start; backdate "$MARKER"
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a stale marker does not hold a visible pane"
+reset
+prompt_submit; sub_start
+sub_stop
+FAKE_TMUX_STATE=$VISIBLE claude_stop
+expect idle "a visible pane is read once the subagents are done"
+
+printf '\na new Claude session starts idle\n'
+for stale in review working waiting idle; do
+    reset
+    prompt_submit
+    printf '%s' "$stale" > "$STATUS_FILE"
+    claude_session_start
+    expect idle "a stale $stale file becomes idle"
+done
+reset
+claude_session_start
+expect idle "a missing file becomes idle"
+reset
+mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
+claude_session_start
+expect idle "an empty file becomes idle"
+reset
+prompt_submit; sub_start; turn_end
+expect_marker present "a marker is in place before the session starts"
+claude_session_start
+expect_marker absent "SessionStart removes the pane's subagent markers"
+if [ ! -e "$(dirname "$MARKER")" ]; then
+    printf '  ok   and the marker directory\n'
+else
+    printf '  FAIL and the marker directory\n'
+    failures=$((failures + 1))
+fi
+TRIGGER="$HOME/.config/tws/agent.trigger"
+reset
+prompt_submit; rm -f "$TRIGGER"
+claude_session_start
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a changed word rings the trigger\n'
+else
+    printf '  FAIL a changed word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_session_start; rm -f "$TRIGGER"
+claude_session_start
+expect idle "a second start keeps idle"
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   an unchanged word leaves the trigger alone\n'
+else
+    printf '  FAIL an unchanged word leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; sub_start; backdate "$MARKER"; claude_session_start
+prompt_submit; claude_stop
+expect review "a turn after the reset ends normally"
+
+printf '\na nested Claude session does not reset a busy pane\n'
+reset
+prompt_submit; sub_start
+claude_session_start
+expect working "working with a fresh marker stays working"
+expect_marker present "and the marker stays"
+claude_stop
+expect working "and the parent Stop still finds the marker"
+reset
+prompt_submit; sub_start; main_tool_call
+claude_session_start
+expect_inflight "m.t2" "a skipped reset keeps the in-flight marker of the running tool"
+reset
+prompt_submit
+claude_session_start
+expect idle "working without markers becomes idle"
+reset
+prompt_submit; sub_start; backdate "$MARKER"
+claude_session_start
+expect idle "working with a stale marker becomes idle"
+reset
+prompt_submit; sub_start; turn_end
+claude_session_start
+expect idle "a stale review becomes idle"
+expect_marker absent "and its markers go"
+reset
+prompt_submit; sub_start
+rm -f "$TRIGGER"
+claude_session_start
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   a skipped reset leaves the trigger alone\n'
+else
+    printf '  FAIL a skipped reset leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na Codex session start never overwrites a live state\n'
+reset
+prompt_submit
+codex_session_start;  expect working "working stays working"
+reset
+prompt_submit; permission_prompt
+codex_session_start;  expect waiting "waiting stays waiting"
+reset
+prompt_submit; claude_session_start
+codex_session_start;  expect idle "idle stays idle"
+reset
+prompt_submit; turn_end
+codex_session_start;  expect idle "review becomes idle"
+reset
+codex_session_start;  expect idle "a missing file becomes idle"
+reset
+mkdir -p "$(dirname "$STATUS_FILE")"; : > "$STATUS_FILE"
+codex_session_start;  expect idle "an empty file becomes idle"
+reset
+prompt_submit; sub_start
+codex_session_start
+expect_marker present "a Codex session start leaves the subagent markers"
+reset
+prompt_submit; rm -f "$TRIGGER"
+codex_session_start
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   a Codex start that changes nothing leaves the trigger alone\n'
+else
+    printf '  FAIL a Codex start that changes nothing leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; turn_end; rm -f "$TRIGGER"
+codex_session_start
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   a Codex start that changes the word rings the trigger\n'
+else
+    printf '  FAIL a Codex start that changes the word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe SessionStart wiring\n'
+# Runs the real configure_* functions against a throwaway HOME, twice. The fork
+# pointer entry stays; the reset entry is a second one; a user's own hook and a
+# second run change nothing.
+wire_home="$HOME/wiring"
+rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
+# The seed also holds a user's PostCompact and PreCompact hooks, and an old tws
+# one of each (the auto matcher, and the PreCompact write), which the first run
+# must remove.
+seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}],"PreCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual","hooks":[{"type":"command","command":"echo oldpre >> $HOME/.config/tws/y"}]}],"Interrupt":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}'
+printf '%s' "$seed" > "$wire_home/.claude/settings.json"
+printf '%s' "$seed" > "$wire_home/.codex/hooks.json"
+wire() (
+    HOME="$wire_home"
+    read() { answer=y; }
+    info() { :; }; ok() { :; }; warn() { :; }
+    hooks_configured=0
+    configure_claude_hooks
+    configure_codex_hooks
+)
+if declare -F configure_claude_hooks >/dev/null; then
+    wire >/dev/null; wire >/dev/null
+    settings="$wire_home/.claude/settings.json"
+    hooks="$wire_home/.codex/hooks.json"
+    # count_where FILE FILTER: how many SessionStart entries pass FILTER.
+    count_where() { jq "[.hooks.SessionStart[] | select($2)] | length" "$1"; }
+    check_count() {
+        local file="$1" filter="$2" want="$3" name="$4" got
+        got="$(count_where "$file" "$filter")"
+        if [ "$got" = "$want" ]; then
+            printf '  ok   %s\n' "$name"
+        else
+            printf '  FAIL %s — want %s, got %s\n' "$name" "$want" "$got"
+            failures=$((failures + 1))
+        fi
+    }
+    is_tws='(.hooks[0].command | test("config/tws/"))'
+    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the fork pointer plus the reset entry"
+    check_count "$settings" "$is_tws and .matcher == \"\"" 1 "and the fork pointer entry keeps the empty matcher"
+    check_count "$settings" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
+        "and the reset entry matches exactly startup|resume|clear"
+    check_count "$settings" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    check_count "$hooks" "$is_tws" 1 "Codex SessionStart holds one tws entry"
+    check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
+        "and it matches exactly startup|resume|clear"
+    check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    # count_event FILE EVENT FILTER: how many entries of EVENT pass FILTER.
+    count_event() { jq "[(.hooks.$2 // [])[] | select($3)] | length" "$1"; }
+    check_event() {
+        local file="$1" event="$2" filter="$3" want="$4" name="$5" got
+        got="$(count_event "$file" "$event" "$filter")"
+        if [ "$got" = "$want" ]; then
+            printf '  ok   %s\n' "$name"
+        else
+            printf '  FAIL %s — want %s, got %s\n' "$name" "$want" "$got"
+            failures=$((failures + 1))
+        fi
+    }
+    printf '\nthe permission wiring\n'
+    check_event "$settings" PostToolUse "$is_tws" 2 "Claude PostToolUse holds exactly the two tws entries after two runs"
+    check_event "$settings" PostToolUse "$is_tws and .matcher == \"^AskUserQuestion\$\"" 1 \
+        "and one is the question entry"
+    check_event "$settings" PostToolUse "$is_tws and .matcher == \"^(?!AskUserQuestion\$).*\"" 1 \
+        "and the other is the permission entry"
+    for tool in AskUserQuestion Bash Agent Write; do
+        n="$(jq --arg t "$tool" '[.hooks.PostToolUse[] | select(.hooks[0].command | test("config/tws/")) | .matcher as $m | select($t | test($m))] | length' "$settings")"
+        want=1
+        if [ "$n" = "$want" ]; then
+            printf '  ok   PostToolUse matchers match %s exactly once\n' "$tool"
+        else
+            printf '  FAIL PostToolUse matchers match %s %s time(s)\n' "$tool" "$n"
+            failures=$((failures + 1))
+        fi
+    done
+    check_event "$settings" PermissionRequest "$is_tws" 1 "Claude PermissionRequest holds one tws entry"
+    # AskUserQuestion fires PermissionRequest too, and no hook removes its key. The
+    # permit entry must skip it, exactly as the granted entry does.
+    perm_matcher="$(jq -c '[.hooks.PermissionRequest[] | select(.hooks[0].command | test("config/tws/")) | .matcher]' "$settings")"
+    post_matcher="$(jq -c '[.hooks.PostToolUse[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher != "^AskUserQuestion$") | .matcher]' "$settings")"
+    if [ "$perm_matcher" = "$post_matcher" ] && [ "$perm_matcher" != "[]" ]; then
+        printf '  ok   the PermissionRequest matcher equals the non-question PostToolUse matcher\n'
+    else
+        printf '  FAIL the PermissionRequest matcher %s differs from the PostToolUse matcher %s\n' "$perm_matcher" "$post_matcher"
+        failures=$((failures + 1))
+    fi
+    # Runs the wired command of EVENT for a payload, only if Claude would: the
+    # tool name must match the wired matcher.
+    fire_wired() {
+        local event="$1" json="$2" tool entry
+        tool="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
+        entry="$(jq -c --arg t "$tool" '[.hooks.'"$event"'[] | select(.hooks[0].command | test("config/tws/")) | select(.matcher as $m | $t | test($m))][0] // empty' "$settings")"
+        [ -n "$entry" ] || return 0
+        run_command "$json" "$(printf '%s' "$entry" | jq -r '.hooks[0].command')"
+    }
+    ASK_REQ='{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"which?"}]}}'
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$ASK_REQ"
+    expect working "a question request does not raise waiting"
+    expect_keys 0 "and leaves no key file"
+    fire_wired PermissionRequest "$REQ_X"
+    expect waiting "an ordinary request still raises waiting"
+    expect_keys 1 "and records its key"
+    fire_wired PostToolUse "$DONE_X"
+    expect working "and its grant resumes the turn, with no question key left over"
+    expect_keys 0 "and removes its key"
+    # The wired UserPromptSubmit entry clears a denied request.
+    reset
+    prompt_submit
+    fire_wired PermissionRequest "$REQ_X"
+    fire_wired UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"next"}'
+    expect_keys 0 "the wired UserPromptSubmit entry clears a denied request"
+    fire_wired PermissionRequest "$REQ_Y"
+    fire_wired PostToolUse "$DONE_Y"
+    expect working "and a later grant resumes the turn"
+    check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure holds one tws entry"
+    check_event "$settings" PostToolUseFailure "$is_tws and .matcher == \"\"" 1 "and it matches every tool"
+    check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
+    check_event "$hooks" PermissionRequest "$is_tws" 1 "Codex PermissionRequest keeps its one tws entry"
+    for source in compact fork; do
+        if [[ "$source" =~ ^(startup|resume|clear)$ ]]; then
+            printf '  FAIL the SessionStart matcher must not match %s\n' "$source"
+            failures=$((failures + 1))
+        else
+            printf '  ok   the SessionStart matcher does not match %s\n' "$source"
+        fi
+    done
+else
+    printf '  FAIL %s has no configure_claude_hooks to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
 printf '\neach hook runs jq at most once\n'
 reset
-for call in main_tool_call sub_tool_call sub_start sub_stop; do
+permit_x()    { permit "$REQ_X" ; }
+done_x()      { tool_done "$DONE_X" ; }
+failed_x()    { tool_failed "$DONE_X" ; }
+for call in main_tool_call sub_tool_call sub_start sub_stop permit_x done_x failed_x; do
     prompt_submit
+    case "$call" in done_x|failed_x) permit "$REQ_X" ;; esac
     rm -f "$JQ_CALLS"
     "$call"
-    calls="$(wc -l < "$JQ_CALLS" 2>/dev/null | tr -d ' ' || true)"
+    calls="$(count_lines "$JQ_CALLS")"
     if [ "${calls:-0}" -le 1 ]; then
         printf '  ok   %s runs jq %s time(s)\n' "$call" "${calls:-0}"
     else
@@ -362,6 +1054,12 @@ PANE_LESS=1 fire_in "$MAIN_JSON" working "$TOOL_MATCHER" tool
 PANE_LESS=1 fire_in "$SUB_JSON" working "$TOOL_MATCHER" tool
 fire_pane_less review "" stop
 fire_pane_less waiting "idle_prompt" idle_alert
+fire_pane_less idle "startup|resume|clear" reset
+fire_pane_less idle "startup|resume|clear" rest
+FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "" stop
+FAKE_TMUX_STATE=$VISIBLE fire_pane_less review "manual" stop
+fire_pane_less working "manual"
+fire_pane_less idle "" interrupt
 files="$(find "$HOME/.config/tws" -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
 if [ "${files:-0}" = 1 ] && [ -e "$MARKER" ]; then
     printf '  ok   the subagent commands with no TMUX_PANE write nothing\n'
@@ -391,13 +1089,927 @@ else
     failures=$((failures + 1))
 fi
 
+# A query scoped with -t to $TMUX_PANE reads facts about the caller's own pane,
+# and it is allowed. Any other display-message call is a pane-identity guess.
+# Each call is judged alone, so a scoped call cannot excuse an unscoped one that
+# shares its line. A call ends at `)`, `;`, `|` or `&`.
+unscoped_queries() {
+    { grep -o 'display-message[^);|&]*' || true; } \
+        | { grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true; }
+}
+
 reset
-guesses="$(grep -c 'display-message' "$INSTALL_SH" || true)"
+sample='tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"
+execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])
+a=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"); b=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")'
+if [ -z "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
+    printf '  ok   the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
+else
+    printf '  FAIL the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
+    failures=$((failures + 1))
+fi
+for sample in \
+    'tmux display-message -p "#{pane_id}"' \
+    'tmux display-message -p -t "$OTHER" "#{pane_id}"' \
+    'p=$(tmux display-message -p "#{pane_id}"); v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")' \
+    'tmux display-message -p "#{pane_id}"; tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"]); execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"])'; do
+    if [ -n "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
+        printf '  ok   the pane-identity check rejects: %s\n' "$sample"
+    else
+        printf '  FAIL the pane-identity check rejects: %s\n' "$sample"
+        failures=$((failures + 1))
+    fi
+done
+
+guesses="$(unscoped_queries < "$INSTALL_SH" | wc -l | tr -d ' ')"
 if [ "$guesses" = "0" ]; then
     printf '  ok   no hook resolves its pane by asking tmux\n'
 else
     printf '  FAIL no hook resolves its pane by asking tmux — %s occurrence(s) in %s\n' \
         "$guesses" "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+printf '\nupgrade cleanup\n'
+cleanup="$(sed -n '/^configure_agent_hooks()/,/^}/p' "$INSTALL_SH")"
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/permissions"'; then
+    printf '  ok   the upgrade cleanup clears the permissions directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the permissions directory\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nstatus writes are atomic\n'
+# `printf word > "$f"` truncates first. A hook that reads in that gap sees an
+# empty file, and `live` mode claims an empty file as `working`. Every write goes
+# to a dot file in the same directory and renames into place.
+has_direct_write() { grep -Eq '>[[:space:]]*"\$f"'; }
+
+if printf 'printf x > "$f"' | has_direct_write \
+    && ! printf 'printf x > "$t" && mv -f "$t" "$f"' | has_direct_write; then
+    printf '  ok   the direct-write check tells the two shapes apart\n'
+else
+    printf '  FAIL the direct-write check tells the two shapes apart\n'
+    failures=$((failures + 1))
+fi
+
+# Claude and Codex both use status_hook_entry, so this covers both.
+for mode in set prompt live alert tool stop idle_alert reset rest permit granted interrupt begin done; do
+    cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
+    if printf '%s' "$cmd" | has_direct_write; then
+        printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
+        failures=$((failures + 1))
+    else
+        printf '  ok   %s mode never redirects straight into "$f"\n' "$mode"
+    fi
+done
+
+# expect_rename NAME WORD: the last mv moved a dot file holding WORD onto the status file.
+expect_rename() {
+    local name="$1" word="$2" line src="" dst="" content="" dot=0
+    line="$(tail -n 1 "$MV_CALLS" 2>/dev/null || true)"
+    IFS=$'\t' read -r src dst content <<< "$line" || true
+    case "$(basename "$src")" in .*) dot=1 ;; esac
+    if [ "$dst" = "$STATUS_FILE" ] && [ "$content" = "$word" ] \
+        && [ "$(dirname "$src")" = "$(dirname "$STATUS_FILE")" ] && [ "$dot" = 1 ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — last mv was [%s]\n' "$name" "$line"
+        failures=$((failures + 1))
+    fi
+}
+
+expect_no_temp() {
+    local name="$1" left
+    left="$(find "$HOME/.config/tws/agents" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -z "$left" ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — left [%s]\n' "$name" "$left"
+        failures=$((failures + 1))
+    fi
+}
+
+reset; : > "$MV_CALLS"
+prompt_submit;  expect_rename "prompt mode writes through a rename" working
+expect_no_temp "and leaves no temp file"
+claude_stop;    expect_rename "stop mode writes through a rename" review
+expect_no_temp "and leaves no temp file"
+main_tool_call; expect_rename "tool mode resumes a turn through a rename" working
+expect_no_temp "and leaves no temp file"
+notification;   expect_rename "alert mode writes through a rename" waiting
+expect_no_temp "and leaves no temp file"
+reset
+tool_call;      expect_rename "live mode claims an empty file through a rename" working
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+idle_prompt;    expect_rename "idle_alert mode writes through a rename" waiting
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit; turn_end
+compact_end;    expect_rename "PostCompact writes through a rename" review
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+claude_session_start; expect_rename "reset mode writes through a rename" idle
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit; turn_end
+codex_session_start; expect_rename "rest mode writes through a rename" idle
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+permit "$REQ_X" ;  expect_rename "permit mode raises waiting through a rename" waiting
+expect_no_temp "and leaves no temp file"
+tool_done "$DONE_X"; expect_rename "granted mode resumes the turn through a rename" working
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit
+codex_interrupt; expect_rename "interrupt mode writes through a rename" idle
+expect_no_temp "and leaves no temp file"
+reset
+prompt_submit; sub_start; sub_tool_call; sub_stop; session_end
+expect_no_temp "the subagent and session-end hooks leave no temp file"
+reset
+prompt_submit
+: > "$MV_CALLS"
+tool_call
+if [ ! -s "$MV_CALLS" ] && [ -e "$HEARTBEAT" ]; then
+    printf '  ok   the heartbeat touches its own file and does not rename\n'
+else
+    printf '  FAIL the heartbeat touches its own file and does not rename\n'
+    failures=$((failures + 1))
+fi
+
+printf '\ncompaction\n'
+# A manual /compact fires PreCompact, SubagentStop, SessionStart(compact) and
+# PostCompact, and no UserPromptSubmit or Stop. A cancelled, failed or blocked
+# /compact fires no PostCompact either, so a PreCompact `working` would have no
+# exit: PreCompact has no tws hook. An auto compaction happens in a turn, and
+# that turn's Stop ends it, so it has no hook too. These checks run the wired
+# entries, the way an agent picks them by event and trigger.
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    # wired_fire FILE EVENT TRIGGER [JSON]: runs each entry of EVENT whose matcher matches
+    # TRIGGER. An empty matcher matches everything; any other is a whole-string regex.
+    wired_fire() {
+        local file="$1" event="$2" trigger="$3" json='{}' command
+        [ -z "${4:-}" ] || json="$4"
+        while IFS= read -r command; do
+            if [ -n "$command" ]; then run_command "$json" "$command"; fi
+        done < <(jq -r --arg t "$trigger" ".hooks.$event // [] | .[]
+            | select(.matcher as \$m | \$m == \"\" or (\$t | test(\"^(\" + \$m + \")\$\")))
+            | .hooks[0].command" "$file")
+    }
+    for agent in claude codex; do
+        case "$agent" in
+            claude) file="$wire_home/.claude/settings.json" ;;
+            codex)  file="$wire_home/.codex/hooks.json" ;;
+        esac
+        reset
+        prompt_submit
+        turn_end
+        wired_fire "$file" PreCompact manual
+        expect review "$agent: PreCompact manual changes nothing, so a cancelled /compact leaves the pane as it was"
+        reset
+        wired_fire "$file" PreCompact manual
+        expect "<absent>" "$agent: and creates no status file"
+        reset
+        prompt_submit
+        wired_fire "$file" PreCompact auto
+        expect working "$agent: PreCompact auto changes nothing"
+
+        reset
+        prompt_submit
+        wired_fire "$file" PostCompact auto
+        expect working "$agent: auto compaction in a turn does not end the turn"
+        reset
+        prompt_submit
+        turn_end
+        wired_fire "$file" PostCompact auto
+        expect review "$agent: and does not change review"
+
+        reset
+        prompt_submit; turn_end
+        wired_fire "$file" PreCompact manual
+        wired_fire "$file" PostCompact manual
+        expect review "$agent: a manual compaction out of sight ends at review"
+        reset
+        prompt_submit; turn_end
+        wired_fire "$file" PreCompact manual
+        FAKE_TMUX_STATE=$VISIBLE wired_fire "$file" PostCompact manual
+        expect idle "$agent: a manual compaction in the visible pane ends read"
+        reset
+        prompt_submit; sub_start
+        wired_fire "$file" PreCompact manual
+        FAKE_TMUX_STATE=$VISIBLE wired_fire "$file" PostCompact manual
+        expect working "$agent: a live subagent keeps the pane working after compaction"
+        reset
+        prompt_submit; seed_key
+        wired_fire "$file" PostCompact manual
+        expect_keys 0 "$agent: PostCompact manual clears the permission keys"
+
+        reset
+        PANE_LESS=1 wired_fire "$file" PreCompact manual
+        PANE_LESS=1 wired_fire "$file" PostCompact manual
+        expect_panes "" "$agent: the compaction hooks with no TMUX_PANE write nothing"
+
+        n="$(jq '[(.hooks.PreCompact // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
+        if [ "$n" = 0 ]; then
+            printf '  ok   %s: PreCompact holds no tws entry\n' "$agent"
+        else
+            printf '  FAIL %s: PreCompact holds %s tws entries, want none\n' "$agent" "$n"
+            failures=$((failures + 1))
+        fi
+        n="$(jq '[(.hooks.PreCompact // [])[] | select(.hooks[0].command == "echo mine")] | length' "$file")"
+        if [ "$n" = 1 ]; then
+            printf '  ok   %s: a user PreCompact hook survives two runs\n' "$agent"
+        else
+            printf '  FAIL %s: a user PreCompact hook survives two runs — %s left\n' "$agent" "$n"
+            failures=$((failures + 1))
+        fi
+        if grep -q 'echo oldpre' "$file"; then
+            printf '  FAIL %s: an old tws PreCompact entry survives the run\n' "$agent"
+            failures=$((failures + 1))
+        else
+            printf '  ok   %s: an old tws PreCompact entry is removed\n' "$agent"
+        fi
+        n="$(jq '[(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
+        m="$(jq -r '[(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/")) | .matcher] | join(",")' "$file")"
+        if [ "$n" = 1 ] && [ "$m" = manual ]; then
+            printf '  ok   %s: PostCompact holds one tws entry with the matcher manual\n' "$agent"
+        else
+            printf '  FAIL %s: PostCompact holds %s tws entries with matchers [%s], want one with manual\n' "$agent" "$n" "$m"
+            failures=$((failures + 1))
+        fi
+        if jq -r '(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/")) | .hooks[0].command' "$file" | has_direct_write; then
+            printf '  FAIL %s: PostCompact redirects straight into "$f"\n' "$agent"
+            failures=$((failures + 1))
+        else
+            printf '  ok   %s: PostCompact never redirects straight into "$f"\n' "$agent"
+        fi
+    done
+    n="$(jq '[.hooks.PostCompact[] | select(.hooks[0].command == "echo mine")] | length' "$wire_home/.claude/settings.json")"
+    if [ "$n" = 1 ]; then
+        printf '  ok   a user PostCompact hook survives two runs\n'
+    else
+        printf '  FAIL a user PostCompact hook survives two runs — %s left\n' "$n"
+        failures=$((failures + 1))
+    fi
+    if grep -q 'echo old' "$wire_home/.claude/settings.json" "$wire_home/.codex/hooks.json"; then
+        printf '  FAIL an old tws PostCompact entry survives the run\n'
+        failures=$((failures + 1))
+    else
+        printf '  ok   an old tws PostCompact entry is replaced\n'
+    fi
+else
+    printf '  FAIL the wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+# Pi names the kind of compaction in the event. Only "manual" is outside a turn.
+pi_ext="$(sed -n '/PI_EXT_EOF/,/^PI_EXT_EOF/p' "$INSTALL_SH")"
+if printf '%s' "$pi_ext" | grep -Eq 'session_compact", async \(event[^)]*\) => \{' \
+    && printf '%s' "$pi_ext" | grep -Fq 'if (event.reason === "manual") settle();'; then
+    printf '  ok   Pi ends a turn at session_compact only for a manual compaction\n'
+else
+    printf '  FAIL Pi ends a turn at session_compact only for a manual compaction\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nCodex interrupt ends the turn\n'
+# An ESC interrupt fires Interrupt and no Stop. The turn gave no result, so the
+# pane rests at idle and not review. The command must finish inside the 1 s
+# timeout, so it starts neither jq nor tmux.
+reset
+prompt_submit
+codex_interrupt; expect idle "a working pane goes idle"
+reset
+prompt_submit; permission_prompt
+codex_interrupt; expect idle "a waiting pane goes idle"
+reset
+prompt_submit; rm -f "$TRIGGER"
+codex_interrupt
+if [ -e "$TRIGGER" ]; then
+    printf '  ok   an interrupt that changes the word rings the trigger\n'
+else
+    printf '  FAIL an interrupt that changes the word rings the trigger\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit; claude_session_start; rm -f "$TRIGGER"
+codex_interrupt; expect idle "an idle pane stays idle"
+if [ ! -e "$TRIGGER" ]; then
+    printf '  ok   an interrupt that changes nothing leaves the trigger alone\n'
+else
+    printf '  FAIL an interrupt that changes nothing leaves the trigger alone\n'
+    failures=$((failures + 1))
+fi
+reset
+codex_interrupt; expect idle "an interrupt over an empty pane still writes idle"
+# Codex raises `waiting` with PermissionRequest in alert mode and writes no key
+# file, so the interrupt is what ends an approval wait.
+reset
+prompt_submit; codex_permission_request
+expect waiting "a Codex approval request is in place"
+codex_interrupt
+expect idle "an interrupt ends a Codex approval wait"
+# Codex stops the subagents of an interrupted turn, and they send no SubagentStop.
+# A kept marker would make the next Stop write working for up to 15 minutes.
+reset
+prompt_submit; sub_start
+codex_interrupt
+expect_marker absent "an interrupt removes the subagent markers"
+expect idle "and still writes idle"
+reset
+prompt_submit; sub_start
+codex_interrupt
+prompt_submit; codex_stop
+expect review "the next turn's Stop ends at review, not working"
+reset
+prompt_submit; sub_start
+codex_interrupt
+codex_post_tool "$POST_M"
+expect working "a subagent that survives repaints working at the next PostToolUse"
+reset
+prompt_submit; sub_start
+FAKE_TMUX_STATE=$VISIBLE codex_interrupt
+expect idle "an interrupt in the visible pane writes idle too"
+reset
+prompt_submit
+PANE_LESS=1 codex_interrupt
+expect working "an interrupt with no TMUX_PANE changes nothing"
+reset
+prompt_submit; sub_start
+PANE_LESS=1 codex_interrupt
+expect_marker present "and removes no subagent marker"
+reset
+prompt_submit
+rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+codex_interrupt
+calls="$(count_lines "$JQ_CALLS")"
+if [ "${calls:-0}" = 0 ]; then
+    printf '  ok   an interrupt starts no jq\n'
+else
+    printf '  FAIL an interrupt starts jq %s time(s)\n' "$calls"
+    failures=$((failures + 1))
+fi
+calls="$(count_lines "$FAKE_TMUX_CALLS")"
+if [ "${calls:-0}" = 0 ]; then
+    printf '  ok   an interrupt starts no tmux\n'
+else
+    printf '  FAIL an interrupt starts tmux %s time(s)\n' "$calls"
+    failures=$((failures + 1))
+fi
+if [ -f "$wire_home/.codex/hooks.json" ] && [ -f "$wire_home/.claude/settings.json" ]; then
+    hooks="$wire_home/.codex/hooks.json"
+    settings="$wire_home/.claude/settings.json"
+    check_event "$hooks" Interrupt "$is_tws" 1 "Codex Interrupt holds exactly one tws entry after two runs"
+    check_event "$hooks" Interrupt "$is_tws and .matcher == \"\"" 1 "and it matches every interrupt"
+    check_event "$hooks" Interrupt "(.hooks[0].command == \"echo mine\")" 1 "and the user's own Interrupt hook survives two runs"
+    check_event "$settings" Interrupt "$is_tws" 0 "Claude has no Interrupt hook, so it gets no tws entry"
+    reset
+    prompt_submit; sub_start
+    wired_fire "$hooks" Interrupt ""
+    expect idle "the wired Interrupt entry ends a working turn"
+    expect_marker absent "and removes the subagent markers"
+    reset
+    prompt_submit
+    PANE_LESS=1 wired_fire "$hooks" Interrupt ""
+    expect working "the wired Interrupt entry with no TMUX_PANE writes nothing"
+else
+    printf '  FAIL the Interrupt wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nlong tool calls leave an in-flight marker\n'
+# A tool call that runs longer than the stale window sends no heartbeat. Its
+# marker tells tws that the pane is busy. The prefix names the caller: m for the
+# main loop, s for a subagent. Stop drops m.* and keeps s.*, because background
+# subagents work on after the main loop ends its turn.
+reset
+prompt_submit
+main_tool_call
+expect_inflight "m.t2" "a main-thread PreToolUse creates m.<id>"
+sub_tool_call
+expect_inflight "m.t2 s.t1" "a subagent PreToolUse creates s.<id>"
+tool_done "$POST_M"
+expect_inflight "s.t1" "PostToolUse removes the marker of its call"
+tool_done "$POST_S"
+expect_inflight "" "and the marker of a subagent call"
+reset
+prompt_submit
+main_tool_call
+tool_failed "$POST_M"
+expect_inflight "" "PostToolUseFailure removes the marker"
+reset
+prompt_submit
+main_tool_call
+tool_done '{"tool_use_id":"t9","tool_name":"Bash","tool_input":{}}'
+expect_inflight "m.t2" "a PostToolUse for another call leaves the marker"
+
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+claude_stop
+expect_inflight "s.t1" "Stop removes m.* and keeps s.*"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+fire review "" stop
+expect_inflight "s.t1" "StopFailure does the same"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+claude_session_start
+expect_inflight "" "SessionStart clears the whole directory"
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+session_end
+expect_inflight "" "SessionEnd clears the whole directory"
+if [ ! -e "$INFLIGHT_DIR" ]; then
+    printf '  ok   and the directory itself\n'
+else
+    printf '  FAIL and the directory itself\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+main_tool_call; sub_tool_call
+codex_interrupt
+expect_inflight "" "Codex Interrupt clears the whole directory"
+reset
+prompt_submit
+main_tool_call
+fire review "manual" stop
+expect_inflight "" "a manual compaction end also drops m.*"
+
+printf '\na tool call in flight is a marker for the right pane only\n'
+reset
+prompt_submit
+main_tool_call
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 tool_done "$POST_M"
+PANE_LESS=1 tool_failed "$POST_M"
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+PANE_LESS=1 codex_post_tool "$POST_M"
+PANE_LESS=1 claude_stop
+PANE_LESS=1 claude_session_start
+PANE_LESS=1 codex_interrupt
+PANE_LESS=1 session_end
+expect_inflight "m.t2" "the commands with no TMUX_PANE write and remove nothing"
+reset
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a pane-less PreToolUse makes no directory\n'
+else
+    printf '  FAIL a pane-less PreToolUse makes no directory\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nan unsafe tool_use_id makes no marker\n'
+# Only [A-Za-z0-9_-]+ names a marker. The modes decode the id in two ways (`@tsv`
+# in `tool`, a `-c` JSON string in `granted`), so an id with a quote or a control
+# character could get a marker that `granted` never removes.
+id_json() { jq -nc --arg id "$1" '{tool_use_id: $id, tool_name: "Bash", tool_input: {}}'; }
+id_json_sub() { jq -nc --arg id "$1" '{agent_id: "a1", tool_use_id: $id, tool_name: "Bash", tool_input: {}}'; }
+for id in '../x' '.x' '..' 'a/b' '' 'a\\b' 'q"x' 'a b' 'a'$'\t''b' 'a'$'\n''b' 'a.b' 'a:b' 'é'; do
+    reset
+    prompt_submit
+    fire_in "$(id_json "$id")" working "$TOOL_MATCHER" tool
+    fire_in "$(id_json_sub "$id")" working "$TOOL_MATCHER" tool
+    codex_pre_tool "$(id_json "$id")"
+    left="$(find "$HOME/.config/tws/inflight" 2>/dev/null | wc -l | tr -d ' ' || true)"
+    if [ "${left:-0}" = 0 ]; then
+        printf '  ok   tool_use_id [%s] creates nothing\n' "$id"
+    else
+        printf '  FAIL tool_use_id [%s] created %s path(s)\n' "$id" "$left"
+        failures=$((failures + 1))
+    fi
+done
+# A rejected id removes nothing either: a marker that has the same name stays.
+for id in 'q"x' 'a b' '.x' '..' 'a.b'; do
+    for remover in tool_done tool_failed codex_post_tool; do
+        reset
+        prompt_submit
+        mkdir -p "$INFLIGHT_DIR"
+        : > "$INFLIGHT_DIR/m.$id"
+        : > "$INFLIGHT_DIR/s.$id"
+        "$remover" "$(id_json "$id")"
+        if [ -e "$INFLIGHT_DIR/m.$id" ] && [ -e "$INFLIGHT_DIR/s.$id" ]; then
+            printf '  ok   %s with id [%s] removes nothing\n' "$remover" "$id"
+        else
+            printf '  FAIL %s with id [%s] removed a marker\n' "$remover" "$id"
+            failures=$((failures + 1))
+        fi
+    done
+done
+for id in 'toolu_01AbC-9' 'call_ABC123' 'x' 'T-1_a'; do
+    reset
+    prompt_submit
+    fire_in "$(id_json "$id")" working "$TOOL_MATCHER" tool
+    fire_in "$(id_json_sub "$id")" working "$TOOL_MATCHER" tool
+    expect_inflight "m.$id s.$id" "a safe id [$id] makes both markers"
+    tool_done "$(id_json "$id")"
+    expect_inflight "" "and PostToolUse removes them"
+    codex_pre_tool "$(id_json "$id")"
+    expect_inflight "m.$id" "a safe id [$id] makes a Codex marker"
+    codex_post_tool "$(id_json "$id")"
+    expect_inflight "" "and Codex PostToolUse removes it"
+done
+reset
+prompt_submit
+fire_in '{"tool_name":"Bash"}' working "$TOOL_MATCHER" tool
+codex_pre_tool '{"tool_name":"Bash"}'
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a payload with no tool_use_id creates nothing\n'
+else
+    printf '  FAIL a payload with no tool_use_id creates nothing\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+JQ_BROKEN=1 main_tool_call
+JQ_BROKEN=1 sub_tool_call
+JQ_BROKEN=1 codex_pre_tool "$MAIN_JSON"
+fire_in '{ not json' working "$TOOL_MATCHER" tool
+if [ ! -e "$HOME/.config/tws/inflight" ]; then
+    printf '  ok   a failed jq creates no marker\n'
+else
+    printf '  FAIL a failed jq creates no marker\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+main_tool_call
+JQ_BROKEN=1 tool_done "$POST_M"
+expect_inflight "m.t2" "and a failed jq removes none"
+
+printf '\nCodex tool calls leave the same marker\n'
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+expect_inflight "m.t2" "Codex PreToolUse creates m.<id>"
+expect working "and the pane stays working"
+codex_post_tool "$POST_M"
+expect_inflight "" "Codex PostToolUse removes it"
+expect working "and the pane stays working"
+reset
+prompt_submit; turn_end
+codex_pre_tool "$MAIN_JSON"
+expect review "Codex PreToolUse still never resumes review"
+codex_post_tool "$POST_M"
+expect working "and Codex PostToolUse still resumes the turn"
+# Codex tool hooks carry no agent_id, so a Codex subagent call gets the m prefix
+# too. A Stop that removed m.* would drop the marker of a subagent that still
+# runs a long tool, and tws would expire the pane after 15 minutes.
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+expect_inflight "m.t2" "Codex Stop keeps the marker of a call in flight"
+expect review "and still writes review"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+fire review "manual" stop keep
+expect_inflight "m.t2" "Codex PostCompact keeps it too"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+seed_key
+codex_stop
+expect_keys 0 "Codex Stop still clears the permission key files"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+codex_post_tool "$POST_M"
+expect_inflight "" "a kept marker ends at its PostToolUse"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+codex_interrupt
+expect_inflight "" "or at Interrupt"
+reset
+prompt_submit
+codex_pre_tool "$MAIN_JSON"
+codex_stop
+session_end
+expect_inflight "" "or at SessionEnd"
+reset
+prompt_submit
+main_tool_call
+claude_stop
+expect_inflight "" "Claude Stop still removes m.*"
+reset
+codex_pre_tool "$MAIN_JSON"
+expect working "Codex PreToolUse claims an empty file"
+
+printf '\nthe in-flight wiring\n'
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    settings="$wire_home/.claude/settings.json"
+    hooks="$wire_home/.codex/hooks.json"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Claude PreToolUse creates the main marker"
+    wired_fire "$settings" PreToolUse Bash "$SUB_JSON"
+    expect_inflight "m.t2 s.t1" "and the subagent marker"
+    wired_fire "$settings" PostToolUse Bash "$POST_M"
+    expect_inflight "s.t1" "wired Claude PostToolUse removes a marker"
+    wired_fire "$settings" PostToolUseFailure Bash "$POST_S"
+    expect_inflight "" "wired Claude PostToolUseFailure removes a marker"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse AskUserQuestion "$MAIN_JSON"
+    expect_inflight "" "the question tool makes no marker"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex PreToolUse creates the marker"
+    wired_fire "$hooks" PostToolUse Bash "$POST_M"
+    expect_inflight "" "wired Codex PostToolUse removes it"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" Stop "" "$MAIN_JSON"
+    expect_inflight "" "wired Claude Stop removes m.*"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" Interrupt ""
+    expect_inflight "" "wired Codex Interrupt clears the directory"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" Stop "" "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex Stop keeps the marker"
+    reset
+    prompt_submit
+    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$hooks" PostCompact manual "$MAIN_JSON"
+    expect_inflight "m.t2" "wired Codex PostCompact keeps the marker"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" PostCompact manual "$MAIN_JSON"
+    expect_inflight "" "wired Claude PostCompact removes m.*"
+    reset
+    prompt_submit
+    wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
+    wired_fire "$settings" StopFailure "" "$MAIN_JSON"
+    expect_inflight "" "wired Claude StopFailure removes m.*"
+    check_event "$hooks" PreToolUse "$is_tws" 1 "Codex PreToolUse keeps its one tws entry"
+    check_event "$hooks" PostToolUse "$is_tws" 1 "Codex PostToolUse keeps its one tws entry"
+    check_event "$settings" PostToolUse "$is_tws" 2 "Claude PostToolUse still holds two tws entries"
+    check_event "$settings" PostToolUseFailure "$is_tws" 1 "Claude PostToolUseFailure still holds one tws entry"
+else
+    printf '  FAIL the in-flight wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe in-flight commands run jq at most once\n'
+for call in codex_begin codex_done main_pre sub_pre main_post sub_post main_failed; do
+    reset
+    prompt_submit
+    permit "$REQ_X"
+    rm -f "$JQ_CALLS"
+    case "$call" in
+        codex_begin) codex_pre_tool "$MAIN_JSON" ;;
+        codex_done)  codex_post_tool "$POST_M" ;;
+        main_pre)    main_tool_call ;;
+        sub_pre)     sub_tool_call ;;
+        main_post)   tool_done "$POST_M" ;;
+        sub_post)    tool_done "$POST_S" ;;
+        main_failed) tool_failed "$POST_M" ;;
+    esac
+    calls="$(count_lines "$JQ_CALLS")"
+    if [ "${calls:-0}" = 1 ]; then
+        printf '  ok   %s runs jq once\n' "$call"
+    else
+        printf '  FAIL %s runs jq %s time(s), want 1\n' "$call" "${calls:-0}"
+        failures=$((failures + 1))
+    fi
+done
+reset
+prompt_submit
+rm -f "$JQ_CALLS"
+codex_interrupt; claude_session_start; claude_stop; session_end
+if [ ! -e "$JQ_CALLS" ]; then
+    printf '  ok   the clearing commands run no jq\n'
+else
+    printf '  FAIL the clearing commands run jq\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na finished call leaves the permission key work as it was\n'
+reset
+prompt_submit
+permit "$REQ_X"
+main_tool_call
+tool_done "$DONE_X"
+expect working "a grant still resumes the turn"
+expect_keys 0 "and removes its key"
+expect_inflight "m.t2" "and it leaves the marker of another call"
+reset
+prompt_submit
+mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.t1"
+permit "$REQ_X"
+tool_done "$DONE_X"
+expect working "the grant of a call that has a marker resumes the turn"
+expect_inflight "" "and removes that marker"
+
+printf '\nthe heartbeat is its own file\n'
+# The status file changes only when the word changes, so its mtime is the state
+# entry time. A tool call touches ~/.config/tws/heartbeat/$TMUX_PANE instead.
+reset
+prompt_submit
+tool_call
+expect_heartbeat present "a tool call in a working pane leaves a heartbeat file"
+session_end
+expect_heartbeat absent "SessionEnd removes the heartbeat"
+reset
+prompt_submit
+tool_call
+claude_session_start
+expect_heartbeat absent "Claude SessionStart (reset) removes the heartbeat"
+reset
+prompt_submit
+tool_call
+mkdir -p "$(dirname "$HEARTBEAT")"; : > "$(dirname "$HEARTBEAT")/%9"
+session_end
+if [ -e "$(dirname "$HEARTBEAT")/%9" ]; then
+    printf '  ok   and SessionEnd leaves the heartbeat of another pane\n'
+else
+    printf '  FAIL and SessionEnd leaves the heartbeat of another pane\n'
+    failures=$((failures + 1))
+fi
+reset
+prompt_submit
+tool_call
+PANE_LESS=1 session_end
+expect_heartbeat present "a SessionEnd with no TMUX_PANE removes no heartbeat"
+PANE_LESS=1 claude_session_start
+expect_heartbeat present "nor does a reset with no TMUX_PANE"
+reset
+PANE_LESS=1 tool_call
+PANE_LESS=1 main_tool_call
+PANE_LESS=1 sub_tool_call
+PANE_LESS=1 codex_pre_tool "$MAIN_JSON"
+if [ ! -e "$HOME/.config/tws/heartbeat" ]; then
+    printf '  ok   a tool call with no TMUX_PANE makes no heartbeat\n'
+else
+    printf '  FAIL a tool call with no TMUX_PANE makes no heartbeat\n'
+    failures=$((failures + 1))
+fi
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/heartbeat"'; then
+    printf '  ok   the upgrade cleanup clears the heartbeat directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the heartbeat directory\n'
+    failures=$((failures + 1))
+fi
+
+# Pi has no shell command to run, so the extension text is the check. beat()
+# must name the heartbeat directory and must not touch the status file. Node runs
+# the real extension below when it can strip types.
+if printf '%s' "$pi_ext" | grep -Fq 'HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`' \
+    && printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'HEARTBEAT_DIR' \
+    && ! printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'utimesSync(path'; then
+    printf '  ok   Pi beat() touches the heartbeat file and not the status file\n'
+else
+    printf '  FAIL Pi beat() touches the heartbeat file and not the status file\n'
+    failures=$((failures + 1))
+fi
+if printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'writeFileSync'; then
+    printf '  ok   and beat() creates the file when it is absent\n'
+else
+    printf '  FAIL and beat() creates the file when it is absent\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nupgrade cleanup clears the in-flight directory\n'
+if printf '%s' "$cleanup" | grep -q 'rm -rf "\$HOME/.config/tws/inflight"'; then
+    printf '  ok   the upgrade cleanup clears the in-flight directory\n'
+else
+    printf '  FAIL the upgrade cleanup clears the in-flight directory\n'
+    failures=$((failures + 1))
+fi
+
+printf '\na new prompt stamps the turn start\n'
+# After an Esc in Claude Code no Stop and no interrupt hook fires, so the file
+# still says `working` with the old turn's mtime. A tool call touches only the
+# heartbeat, so a prompt that wrote only on a word change would leave the new
+# turn with the old turn's age. The prompt entries always write.
+prompt_fired() { [ -e "$TRIGGER" ]; }
+
+# check_prompt_age LABEL FIRE...: FIRE is the command that submits a prompt.
+check_prompt_age() {
+    local label="$1" old now after
+    shift
+    reset
+    prompt_submit
+    backdate "$STATUS_FILE"
+    old="$(mtime "$STATUS_FILE")"
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label keeps the word working"
+    after="$(mtime "$STATUS_FILE")"
+    now="$(date +%s)"
+    if [ "$after" -gt "$old" ] && [ "$(( now - after ))" -le 3 ]; then
+        printf '  ok   %s stamps a fresh mtime over an old working turn\n' "$label"
+    else
+        printf '  FAIL %s left the mtime at %s (old %s, now %s)\n' "$label" "$after" "$old" "$now"
+        failures=$((failures + 1))
+    fi
+    if prompt_fired; then
+        printf '  FAIL %s rings the trigger although the word did not change\n' "$label"
+        failures=$((failures + 1))
+    else
+        printf '  ok   and %s does not ring the trigger\n' "$label"
+    fi
+    reset
+    prompt_submit; turn_end
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label over review writes working"
+    if prompt_fired; then
+        printf '  ok   and %s rings the trigger when the word changed\n' "$label"
+    else
+        printf '  FAIL %s does not ring the trigger when the word changed\n' "$label"
+        failures=$((failures + 1))
+    fi
+    reset
+    rm -f "$TRIGGER"
+    "$@"
+    expect working "$label over an empty file writes working"
+    if prompt_fired; then
+        printf '  ok   and %s rings the trigger then\n' "$label"
+    else
+        printf '  FAIL %s does not ring the trigger over an empty file\n' "$label"
+        failures=$((failures + 1))
+    fi
+}
+check_prompt_age "Claude UserPromptSubmit" prompt_submit
+prompt_submit; expect_rename "a prompt over the same word still writes through a rename" working
+
+# The same turn-start stamp for the wired entries, so the wiring cannot drift
+# from the mode. Codex uses the same mode for its UserPromptSubmit.
+if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
+    wired_prompt_claude() { wired_fire "$wire_home/.claude/settings.json" UserPromptSubmit ""; }
+    wired_prompt_codex()  { wired_fire "$wire_home/.codex/hooks.json" UserPromptSubmit ""; }
+    check_prompt_age "the wired Claude UserPromptSubmit" wired_prompt_claude
+    check_prompt_age "the wired Codex UserPromptSubmit" wired_prompt_codex
+else
+    printf '  FAIL the prompt wiring check made no settings to run\n'
+    failures=$((failures + 1))
+fi
+
+# ESC, then a new prompt, then tool calls: the age is the new prompt's age.
+# The one sleep makes a touch by a tool call visible to a one-second mtime.
+for agent in claude codex; do
+    case "$agent" in
+        claude) submit=wired_prompt_claude ;;
+        codex)  submit=wired_prompt_codex ;;
+    esac
+    reset
+    prompt_submit
+    backdate "$STATUS_FILE"
+    before="$(date +%s)"
+    "$submit"
+    at_prompt="$(mtime "$STATUS_FILE")"
+    sleep 1.1
+    if [ "$agent" = claude ]; then
+        main_tool_call; sub_tool_call; tool_call
+    else
+        codex_pre_tool "$MAIN_JSON"
+    fi
+    if [ "$at_prompt" -ge "$before" ] && [ "$(mtime "$STATUS_FILE")" = "$at_prompt" ]; then
+        printf '  ok   %s: a tool call after the new prompt leaves the mtime at the prompt time\n' "$agent"
+    else
+        printf '  FAIL %s: the prompt stamped %s (want at least %s), and the status mtime is now %s\n' "$agent" "$at_prompt" "$before" "$(mtime "$STATUS_FILE")"
+        failures=$((failures + 1))
+    fi
+done
+
+# The question-answered PostToolUse resumes the same turn, so it keeps the mtime.
+reset
+prompt_submit
+backdate "$STATUS_FILE"
+old="$(mtime "$STATUS_FILE")"
+question_answered
+expect working "a question answered over working stays working"
+if [ "$(mtime "$STATUS_FILE")" = "$old" ]; then
+    printf '  ok   and it keeps the turn start\n'
+else
+    printf '  FAIL the question-answered entry moved the mtime\n'
     failures=$((failures + 1))
 fi
 
