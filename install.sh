@@ -214,10 +214,12 @@ configure_path() {
 #   interrupt Codex Interrupt. An ESC interrupt fires no Stop, so this event ends the
 #          turn. It writes the word (`idle`) over any state, and rings the trigger
 #          only if the word changed. The turn gave no result, so there is nothing
-#          to review. It deletes the pane's permission keys, because a pending
-#          approval dies with the turn. It keeps the subagent markers: the docs do
-#          not say that an interrupt stops subagents. It starts no jq and no tmux,
-#          because the hook timeout is 1 s.
+#          to review. This also ends an approval wait: Codex PermissionRequest
+#          uses `alert` and writes no key file. It removes the pane's subagent
+#          markers, so the next Stop does not see a fresh marker of a stopped
+#          subagent and write `working`. If a subagent survives, its next
+#          PostToolUse repaints `working` within seconds. It starts no jq and no
+#          tmux, because the hook timeout is 1 s.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -284,7 +286,7 @@ status_hook_entry() {
             cmd+="&& { put $word; $trig; }; :"
             ;;
         interrupt)
-            cmd+='rm -rf "$pd"; '
+            cmd+='rm -rf "$sd"; '
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)

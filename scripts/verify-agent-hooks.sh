@@ -148,6 +148,9 @@ compact_end()      { fire review "manual" stop ; }
 claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 codex_interrupt()      { fire idle "" interrupt ; }
+codex_permission_request() { fire waiting "" alert ; }
+codex_post_tool()      { fire working "" ; }
+codex_stop()           { fire review "" stop ; }
 
 # PermissionRequest and the tool-done events carry the same tool_name and
 # tool_input, but the rest of the payload differs, and so does the key order.
@@ -1289,18 +1292,32 @@ else
 fi
 reset
 codex_interrupt; expect idle "an interrupt over an empty pane still writes idle"
+# Codex raises `waiting` with PermissionRequest in alert mode and writes no key
+# file, so the interrupt is what ends an approval wait.
 reset
-prompt_submit; permit "$REQ_X"; seed_key
-expect_keys 2 "two open requests are in place"
+prompt_submit; codex_permission_request
+expect waiting "a Codex approval request is in place"
 codex_interrupt
-expect_keys 0 "an interrupt clears the pane's open permission requests"
+expect idle "an interrupt ends a Codex approval wait"
+# Codex stops the subagents of an interrupted turn, and they send no SubagentStop.
+# A kept marker would make the next Stop write working for up to 15 minutes.
 reset
 prompt_submit; sub_start
 codex_interrupt
-expect_marker present "an interrupt keeps the subagent markers"
+expect_marker absent "an interrupt removes the subagent markers"
 expect idle "and still writes idle"
 reset
-prompt_submit; sub_start; seed_key
+prompt_submit; sub_start
+codex_interrupt
+prompt_submit; codex_stop
+expect review "the next turn's Stop ends at review, not working"
+reset
+prompt_submit; sub_start
+codex_interrupt
+codex_post_tool
+expect working "a subagent that survives repaints working at the next PostToolUse"
+reset
+prompt_submit; sub_start
 FAKE_TMUX_STATE=$VISIBLE codex_interrupt
 expect idle "an interrupt in the visible pane writes idle too"
 reset
@@ -1308,9 +1325,9 @@ prompt_submit
 PANE_LESS=1 codex_interrupt
 expect working "an interrupt with no TMUX_PANE changes nothing"
 reset
-prompt_submit; seed_key
+prompt_submit; sub_start
 PANE_LESS=1 codex_interrupt
-expect_keys 1 "and deletes no permission key"
+expect_marker present "and removes no subagent marker"
 reset
 prompt_submit
 rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
@@ -1337,10 +1354,10 @@ if [ -f "$wire_home/.codex/hooks.json" ] && [ -f "$wire_home/.claude/settings.js
     check_event "$hooks" Interrupt "(.hooks[0].command == \"echo mine\")" 1 "and the user's own Interrupt hook survives two runs"
     check_event "$settings" Interrupt "$is_tws" 0 "Claude has no Interrupt hook, so it gets no tws entry"
     reset
-    prompt_submit; seed_key
+    prompt_submit; sub_start
     wired_fire "$hooks" Interrupt ""
     expect idle "the wired Interrupt entry ends a working turn"
-    expect_keys 0 "and clears the permission keys"
+    expect_marker absent "and removes the subagent markers"
     reset
     prompt_submit
     PANE_LESS=1 wired_fire "$hooks" Interrupt ""
