@@ -154,10 +154,7 @@ fn identify_agent(command: &str) -> Option<AgentType> {
         "codex" => Some(AgentType::Codex),
         "pi" | "pi-coding-agent" => Some(AgentType::Pi),
         // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
-        // Nix-installed Pi runs as: deno run ... /nix/store/...-pi-coding-agent-.../dist/cli.js
-        // Claude Code: @anthropic-ai/claude-code  →  path component "claude-code" or "claude"
-        // Codex:       @openai/codex              →  path component "codex"
-        // Pi:          @earendil-works/pi-coding-agent → path component containing "pi-coding-agent"
+        // Nix-installed Pi runs as: deno run ... /nix/store/.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
         "node" | "deno" => identify_agent_script(tokens),
         _ => None,
     }
@@ -170,26 +167,43 @@ fn is_native_claude_path(exe: &str) -> bool {
         .any(|w| w[0] == "claude" && w[1] == "versions" && !w[2].is_empty())
 }
 
-fn identify_agent_script<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
-    for token in tokens {
+/// A script identifies an agent only by its npm package name. A directory
+/// name such as `code/pi/` also appears in dev-server paths deep in a pane.
+fn identify_agent_script<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
+    tokens.find_map(|token| {
+        if let Some(spec) = token.strip_prefix("npm:") {
+            return npm_specifier_agent(spec);
+        }
         let components: Vec<&str> = token.split('/').collect();
-        if components.contains(&"codex") {
-            return Some(AgentType::Codex);
-        }
-        if components
-            .iter()
-            .any(|&c| c == "claude" || c == "claude-code")
-        {
-            return Some(AgentType::ClaudeCode);
-        }
-        if components
-            .iter()
-            .any(|&c| c == "pi" || c == "pi-coding-agent")
-        {
-            return Some(AgentType::Pi);
-        }
+        (0..components.len())
+            .filter(|&i| components[i] == "node_modules")
+            .find_map(|i| package_agent(&components[i + 1..]))
+    })
+}
+
+/// `parts` starts at the package directory: `[@scope, name, ..]` or `[name, ..]`.
+fn package_agent(parts: &[&str]) -> Option<AgentType> {
+    let (scope, name) = match parts {
+        [scope, name, ..] if scope.starts_with('@') => (Some(*scope), *name),
+        [name, ..] => (None, *name),
+        [] => return None,
+    };
+    match (scope, name) {
+        (None | Some("@anthropic-ai"), "claude-code") => Some(AgentType::ClaudeCode),
+        (None | Some("@openai"), "codex") => Some(AgentType::Codex),
+        (_, "pi-coding-agent") => Some(AgentType::Pi),
+        _ => None,
     }
-    None
+}
+
+/// Handles `npm:<pkg>[@version][/subpath]` and `npm:@scope/<pkg>[@version]`.
+fn npm_specifier_agent(spec: &str) -> Option<AgentType> {
+    let mut parts: Vec<&str> = spec.split('/').collect();
+    let name_index = usize::from(spec.starts_with('@'));
+    let name = parts.get_mut(name_index)?;
+    // The version follows the package name. A leading `@` marks a scope.
+    *name = name.split('@').next().unwrap_or_default();
+    package_agent(&parts)
 }
 
 /// Strip agent-specific prefixes from pane titles to get a clean display name.
@@ -501,6 +515,52 @@ mod tests {
             None
         );
         assert_eq!(identify_agent("node"), None);
+    }
+
+    #[test]
+    fn identify_agent_deno_npm_specifier() {
+        assert_eq!(
+            identify_agent("deno run npm:@anthropic-ai/claude-code"),
+            Some(AgentType::ClaudeCode)
+        );
+        assert_eq!(
+            identify_agent("deno run --allow-all npm:@openai/codex@1.2"),
+            Some(AgentType::Codex)
+        );
+        assert_eq!(
+            identify_agent("deno run npm:pi-coding-agent@0.78.0/cli"),
+            Some(AgentType::Pi)
+        );
+        assert_eq!(identify_agent("deno run npm:@other/claude-code"), None);
+        assert_eq!(identify_agent("deno run npm:vite"), None);
+        assert_eq!(identify_agent("deno run npm:@scope/pi"), None);
+    }
+
+    #[test]
+    fn identify_agent_script_ignores_directory_names() {
+        assert_eq!(identify_agent("node /Users/me/code/codex/server.js"), None);
+        assert_eq!(identify_agent("node /Users/me/claude/app.js"), None);
+        assert_eq!(identify_agent("node /Users/me/pi/index.js"), None);
+        assert_eq!(identify_agent("node /Users/me/claude-code/server.js"), None);
+        assert_eq!(
+            identify_agent("node /x/node_modules/some-pkg/pi/cli.js"),
+            None
+        );
+        assert_eq!(
+            identify_agent("node /x/node_modules/@other/claude-code/cli.js"),
+            None
+        );
+    }
+
+    #[test]
+    fn find_agent_ignores_dev_server_in_project_named_pi() {
+        let t = table(&[
+            (100, 1, "zsh"),
+            (200, 100, "npm run dev"),
+            (300, 200, "sh -c vite"),
+            (400, 300, "node /Users/me/code/pi/node_modules/.bin/vite"),
+        ]);
+        assert_eq!(find_agent(&t, 100), None);
     }
 
     #[test]
