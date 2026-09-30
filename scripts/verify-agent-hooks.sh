@@ -483,13 +483,17 @@ fi
 
 # A query scoped with -t to $TMUX_PANE reads facts about the caller's own pane,
 # and it is allowed. Any other display-message call is a pane-identity guess.
+# Each call is judged alone, so a scoped call cannot excuse an unscoped one that
+# shares its line. A call ends at `)`, `;`, `|` or `&`.
 unscoped_queries() {
-    grep 'display-message' | grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true
+    { grep -o 'display-message[^);|&]*' || true; } \
+        | { grep -v -e '-t "\$TMUX_PANE"' -e '"-t", pane,' || true; }
 }
 
 reset
 sample='tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"
-execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])'
+execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])
+a=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"); b=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")'
 if [ -z "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
     printf '  ok   the pane-identity check allows a query scoped to the caller'"'"'s pane\n'
 else
@@ -499,6 +503,9 @@ fi
 for sample in \
     'tmux display-message -p "#{pane_id}"' \
     'tmux display-message -p -t "$OTHER" "#{pane_id}"' \
+    'p=$(tmux display-message -p "#{pane_id}"); v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}")' \
+    'tmux display-message -p "#{pane_id}"; tmux display-message -p -t "$TMUX_PANE" "#{pane_active}"' \
+    'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"]); execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}"])' \
     'execFileSync("tmux", ["display-message", "-p", "#{pane_id}"])'; do
     if [ -n "$(printf '%s\n' "$sample" | unscoped_queries)" ]; then
         printf '  ok   the pane-identity check rejects: %s\n' "$sample"
