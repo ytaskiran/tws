@@ -378,7 +378,7 @@ configure_claude_hooks() {
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
-    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail e_precompact
+    local e_substart e_substop e_sessionstart e_permit e_granted e_granted_fail
     # Submitting a prompt is the only event that starts a turn, so it is the only
     # unconditional route back to `working`.
     e_prompt=$(status_hook_entry working "" prompt)
@@ -406,11 +406,11 @@ configure_claude_hooks() {
     e_granted_fail=$(status_hook_entry working "" granted)
     e_idle=$(status_hook_entry waiting "idle_prompt" idle_alert)
     e_stop=$(status_hook_entry review "" stop)
-    # A manual /compact fires no UserPromptSubmit and no Stop: PreCompact starts
-    # the work and PostCompact ends the turn. An auto compaction happens in a turn,
-    # and the Stop of that turn ends it, so it has no hook. StopFailure is the
-    # API error event.
-    e_precompact=$(status_hook_entry working "manual")
+    # A manual /compact fires no UserPromptSubmit and no Stop, so PostCompact ends
+    # it. There is no PreCompact write: a /compact that is cancelled, fails or is
+    # blocked fires no PostCompact, so a `working` from PreCompact would have no
+    # exit. An auto compaction happens in a turn, and the Stop of that turn ends
+    # it, so it has no hook. StopFailure is the API error event.
     e_compact=$(status_hook_entry review "manual" stop)
     e_fail=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
@@ -434,7 +434,6 @@ configure_claude_hooks() {
         --argjson substart "$e_substart" \
         --argjson substop "$e_substop" \
         --argjson stop "$e_stop" \
-        --argjson precompact "$e_precompact" \
         --argjson compact "$e_compact" \
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
@@ -458,7 +457,6 @@ configure_claude_hooks() {
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
         .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
-        .hooks.PreCompact       = ((.hooks.PreCompact // []) + $precompact) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
@@ -516,7 +514,7 @@ configure_codex_hooks() {
 
     local tmp
     tmp="$(mktemp)"
-    local e_work e_pretool e_wait e_review e_precompact e_compact e_end e_substart e_substop e_sessionstart
+    local e_work e_pretool e_wait e_review e_compact e_end e_substart e_substop e_sessionstart
     e_work=$(status_hook_entry working "")
     e_pretool=$(status_hook_entry working "" live)
     e_wait=$(status_hook_entry waiting "" alert)
@@ -524,17 +522,17 @@ configure_codex_hooks() {
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     # Codex has no API-error event, so stale expiry is the only backstop there.
-    # Compaction follows the Claude rule: a manual /compact has its own hooks, and
-    # an auto compaction is ended by the Stop of its turn.
-    e_precompact=$(status_hook_entry working "manual")
+    # Compaction follows the Claude rule: PostCompact ends a manual /compact, and
+    # PreCompact writes nothing because a cancelled /compact has no exit event. An
+    # auto compaction is ended by the Stop of its turn.
     e_compact=$(status_hook_entry review "manual" stop)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
 
     jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson wait "$e_wait" \
-        --argjson review "$e_review" --argjson precompact "$e_precompact" \
-        --argjson compact "$e_compact" --argjson end "$e_end" \
+        --argjson review "$e_review" --argjson compact "$e_compact" \
+        --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
         --argjson sessionstart "$e_sessionstart" '
         # A tws hook entry is identified by the config/tws/ path in its command.
@@ -554,7 +552,6 @@ configure_codex_hooks() {
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
         # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
         .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
-        .hooks.PreCompact         = ((.hooks.PreCompact // []) + $precompact) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).

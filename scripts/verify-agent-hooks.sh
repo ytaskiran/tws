@@ -141,7 +141,6 @@ sub_stop()         { subagent_event stop '{"agent_id":"a1","agent_type":"general
 claude_stop()      { fire review "" stop ; }
 permission_prompt() { fire waiting "permission_prompt" alert ; }
 idle_prompt()      { fire waiting "idle_prompt" idle_alert ; }
-compact_start()    { fire working "manual" ; }
 compact_end()      { fire review "manual" stop ; }
 claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
@@ -761,9 +760,10 @@ printf '\nthe SessionStart wiring\n'
 # second run change nothing.
 wire_home="$HOME/wiring"
 rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
-# The seed also holds a user's PostCompact hook and an old tws one (the auto
-# matcher), which the first run must replace.
-seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}]}}'
+# The seed also holds a user's PostCompact and PreCompact hooks, and an old tws
+# one of each (the auto matcher, and the PreCompact write), which the first run
+# must remove.
+seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}],"PreCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual","hooks":[{"type":"command","command":"echo oldpre >> $HOME/.config/tws/y"}]}]}}'
 printf '%s' "$seed" > "$wire_home/.claude/settings.json"
 printf '%s' "$seed" > "$wire_home/.codex/hooks.json"
 wire() (
@@ -1086,8 +1086,6 @@ idle_prompt;    expect_rename "idle_alert mode writes through a rename" waiting
 expect_no_temp "and leaves no temp file"
 reset
 prompt_submit; turn_end
-compact_start;  expect_rename "PreCompact writes through a rename" working
-expect_no_temp "and leaves no temp file"
 compact_end;    expect_rename "PostCompact writes through a rename" review
 expect_no_temp "and leaves no temp file"
 reset
@@ -1120,9 +1118,11 @@ fi
 
 printf '\ncompaction\n'
 # A manual /compact fires PreCompact, SubagentStop, SessionStart(compact) and
-# PostCompact, and no UserPromptSubmit or Stop. An auto compaction happens in a
-# turn, and that turn's Stop ends it, so it must have no hook. These checks run
-# the wired entries, the way an agent picks them by event and trigger.
+# PostCompact, and no UserPromptSubmit or Stop. A cancelled, failed or blocked
+# /compact fires no PostCompact either, so a PreCompact `working` would have no
+# exit: PreCompact has no tws hook. An auto compaction happens in a turn, and
+# that turn's Stop ends it, so it has no hook too. These checks run the wired
+# entries, the way an agent picks them by event and trigger.
 if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.json" ]; then
     # wired_fire FILE EVENT TRIGGER: runs each entry of EVENT whose matcher matches
     # TRIGGER. An empty matcher matches everything; any other is a whole-string regex.
@@ -1143,10 +1143,10 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
         prompt_submit
         turn_end
         wired_fire "$file" PreCompact manual
-        expect working "$agent: PreCompact manual shows the compaction as work"
+        expect review "$agent: PreCompact manual changes nothing, so a cancelled /compact leaves the pane as it was"
         reset
         wired_fire "$file" PreCompact manual
-        expect working "$agent: PreCompact manual over an empty file"
+        expect "<absent>" "$agent: and creates no status file"
         reset
         prompt_submit
         wired_fire "$file" PreCompact auto
@@ -1163,12 +1163,12 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
         expect review "$agent: and does not change review"
 
         reset
-        prompt_submit
+        prompt_submit; turn_end
         wired_fire "$file" PreCompact manual
         wired_fire "$file" PostCompact manual
         expect review "$agent: a manual compaction out of sight ends at review"
         reset
-        prompt_submit
+        prompt_submit; turn_end
         wired_fire "$file" PreCompact manual
         FAKE_TMUX_STATE=$VISIBLE wired_fire "$file" PostCompact manual
         expect idle "$agent: a manual compaction in the visible pane ends read"
@@ -1187,22 +1187,40 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
         PANE_LESS=1 wired_fire "$file" PostCompact manual
         expect_panes "" "$agent: the compaction hooks with no TMUX_PANE write nothing"
 
-        for event in PreCompact PostCompact; do
-            n="$(jq --arg e "$event" '[(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
-            m="$(jq -r --arg e "$event" '[(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/")) | .matcher] | join(",")' "$file")"
-            if [ "$n" = 1 ] && [ "$m" = manual ]; then
-                printf '  ok   %s: %s holds one tws entry with the matcher manual\n' "$agent" "$event"
-            else
-                printf '  FAIL %s: %s holds %s tws entries with matchers [%s], want one with manual\n' "$agent" "$event" "$n" "$m"
-                failures=$((failures + 1))
-            fi
-            if jq -r --arg e "$event" '(.hooks[$e] // [])[] | select(.hooks[0].command | test("config/tws/")) | .hooks[0].command' "$file" | has_direct_write; then
-                printf '  FAIL %s: %s redirects straight into "$f"\n' "$agent" "$event"
-                failures=$((failures + 1))
-            else
-                printf '  ok   %s: %s never redirects straight into "$f"\n' "$agent" "$event"
-            fi
-        done
+        n="$(jq '[(.hooks.PreCompact // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
+        if [ "$n" = 0 ]; then
+            printf '  ok   %s: PreCompact holds no tws entry\n' "$agent"
+        else
+            printf '  FAIL %s: PreCompact holds %s tws entries, want none\n' "$agent" "$n"
+            failures=$((failures + 1))
+        fi
+        n="$(jq '[(.hooks.PreCompact // [])[] | select(.hooks[0].command == "echo mine")] | length' "$file")"
+        if [ "$n" = 1 ]; then
+            printf '  ok   %s: a user PreCompact hook survives two runs\n' "$agent"
+        else
+            printf '  FAIL %s: a user PreCompact hook survives two runs — %s left\n' "$agent" "$n"
+            failures=$((failures + 1))
+        fi
+        if grep -q 'echo oldpre' "$file"; then
+            printf '  FAIL %s: an old tws PreCompact entry survives the run\n' "$agent"
+            failures=$((failures + 1))
+        else
+            printf '  ok   %s: an old tws PreCompact entry is removed\n' "$agent"
+        fi
+        n="$(jq '[(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/"))] | length' "$file")"
+        m="$(jq -r '[(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/")) | .matcher] | join(",")' "$file")"
+        if [ "$n" = 1 ] && [ "$m" = manual ]; then
+            printf '  ok   %s: PostCompact holds one tws entry with the matcher manual\n' "$agent"
+        else
+            printf '  FAIL %s: PostCompact holds %s tws entries with matchers [%s], want one with manual\n' "$agent" "$n" "$m"
+            failures=$((failures + 1))
+        fi
+        if jq -r '(.hooks.PostCompact // [])[] | select(.hooks[0].command | test("config/tws/")) | .hooks[0].command' "$file" | has_direct_write; then
+            printf '  FAIL %s: PostCompact redirects straight into "$f"\n' "$agent"
+            failures=$((failures + 1))
+        else
+            printf '  ok   %s: PostCompact never redirects straight into "$f"\n' "$agent"
+        fi
     done
     n="$(jq '[.hooks.PostCompact[] | select(.hooks[0].command == "echo mine")] | length' "$wire_home/.claude/settings.json")"
     if [ "$n" = 1 ]; then
