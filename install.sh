@@ -98,48 +98,21 @@ install_binary() {
     fi
 
     ok "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
+}
 
-    # PATH check
-    case ":$PATH:" in
-        *":$INSTALL_DIR:"*) ;;
-        *)
-            warn "$INSTALL_DIR is not in your PATH"
-            configure_path
-            ;;
+PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+
+# Prints "<rc file> <profile file>" for the user's shell, or nothing for a shell
+# the installer does not know.
+shell_rc_files() {
+    case "$(basename "${SHELL:-}")" in
+        zsh)  printf '%s %s\n' "$HOME/.zshrc" "$HOME/.zprofile" ;;
+        bash) printf '%s %s\n' "$HOME/.bashrc" "$HOME/.bash_profile" ;;
     esac
 }
 
 configure_path() {
-    local export_line='export PATH="$HOME/.local/bin:$PATH"'
-
-    # Detect shell rc and profile files
-    local rc_file="" profile_file=""
-    case "$(basename "$SHELL")" in
-        zsh)
-            rc_file="$HOME/.zshrc"
-            profile_file="$HOME/.zprofile"
-            ;;
-        bash)
-            rc_file="$HOME/.bashrc"
-            profile_file="$HOME/.bash_profile"
-            ;;
-    esac
-
-    if [ -z "$rc_file" ]; then
-        info "Add this to your shell rc and profile:"
-        echo "  $export_line"
-        return
-    fi
-
-    printf '%s' "Add $INSTALL_DIR to PATH in $rc_file and $profile_file? [y/N] "
-    read -r answer < /dev/tty
-
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped. Add this manually to $rc_file and $profile_file:"
-        echo "  $export_line"
-        return
-    fi
-
+    local rc_file="$1" profile_file="$2" export_line="$PATH_EXPORT_LINE"
     for file in "$rc_file" "$profile_file"; do
         if grep -q '$HOME/.local/bin' "$file" 2>/dev/null; then
             ok "PATH entry already exists in $file — skipping"
@@ -455,13 +428,6 @@ configure_claude_hooks() {
         return
     fi
 
-    printf '%s' "Configure/update Claude Code agent status hooks for tws? [y/N] "
-    read -r answer < /dev/tty
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped Claude Code hooks"
-        return
-    fi
-
     local tmp
     tmp="$(mktemp)"
     local e_prompt e_pretool e_question e_posttool e_notify e_idle e_stop e_compact e_fail e_end
@@ -587,13 +553,7 @@ configure_codex_hooks() {
 
     if ! command -v jq &>/dev/null; then
         warn "jq not found — cannot auto-configure Codex hooks"
-        return
-    fi
-
-    printf '%s' "Configure/update Codex agent status hooks for tws? [y/N] "
-    read -r answer < /dev/tty
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped Codex hooks"
+        info "Install jq, then re-run install, or add hooks manually"
         return
     fi
 
@@ -664,13 +624,6 @@ configure_pi_hooks() {
 
     if [ ! -d "$HOME/.pi" ]; then
         info "Pi config not found — skipping agent hooks"
-        return
-    fi
-
-    printf '%s' "Configure/update Pi agent status hooks for tws? [y/N] "
-    read -r answer < /dev/tty
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped Pi hooks"
         return
     fi
 
@@ -812,10 +765,12 @@ PI_EXT_EOF
     hooks_configured=1
 }
 
+# Configures the agents that scan_plan found. The user already approved them
+# with the single plan question, so nothing here asks.
 configure_agent_hooks() {
-    configure_claude_hooks
-    configure_codex_hooks
-    configure_pi_hooks
+    if [ "$plan_claude" -eq 1 ]; then configure_claude_hooks; fi
+    if [ "$plan_codex" -eq 1 ]; then configure_codex_hooks; fi
+    if [ "$plan_pi" -eq 1 ]; then configure_pi_hooks; fi
 
     # Agents snapshot hook config at session start, so a file already stuck at
     # `working` would outlive this upgrade. Live panes rewrite theirs on the next
@@ -832,7 +787,7 @@ configure_agent_hooks() {
     fi
 }
 
-# --- 5. Optional: tmux fork binding (experimental) ---
+# --- 5. tmux config ---
 
 # Idempotent: drop any earlier marked block, then append the new one. The text
 # goes back into the existing file, because mv would replace a symlinked
@@ -856,78 +811,47 @@ rewrite_conf_block() {
     rm -f "$tmp"
 }
 
-# tmux does not expand #{pane_id} in a split-window command, but run-shell
-# expands it first, so the fork pane learns which pane is its parent.
-FORK_BINDING='bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""'
-FORK_MARKER='# tws fork binding'
-# Matches a bind or bind-key line that targets the plain key F, with any
-# number of leading flags (e.g. "bind F ...", "bind-key -r F ...",
-# "bind-key -r -T prefix F ..."). Anchored at the start of the line (after
-# optional leading whitespace), so a commented-out line never matches.
-FORK_KEY_PATTERN='^[[:space:]]*bind(-key)?[[:space:]]+(-[[:alnum:]]+[[:space:]]+|-T[[:space:]]+[^[:space:]]+[[:space:]]+)*F([[:space:]]|$)'
-# A bind with -n, or with -T root, targets the ROOT key table, not the
-# prefix table, so it can never collide with prefix+F. Lines that match
-# FORK_KEY_PATTERN but also match this are excluded from the conflict check.
-FORK_ROOT_TABLE_PATTERN='(^|[[:space:]])-n([[:space:]]|$)|-T[[:space:]]+root([[:space:]]|$)'
-
-configure_fork_binding() {
-    local conf="$HOME/.tmux.conf"
-
-    if [ ! -f "$conf" ]; then
-        info "No ~/.tmux.conf — skipping fork binding"
-        return
-    fi
-
-    # hooks_configured turns 1 when any agent's hooks install succeeds, but the
-    # SessionStart hook that prefix+F needs comes only from configure_claude_hooks.
-    # We accept that looseness here: it matches how the rest of the installer
-    # already reads this shared flag, and a false positive just offers a binding
-    # that finds no session to fork, which is harmless.
-    if [ "$hooks_configured" -ne 1 ]; then
-        info "Claude Code agent hooks are not configured — prefix+F needs them to find a session to fork"
-        info "Skipping fork binding. Re-run install and accept the Claude Code hooks step, then add it manually with:"
-        printf '  %s\n' "$FORK_BINDING"
-        return
-    fi
-
-    printf '%s' "Add tws fork binding (prefix+F) to ~/.tmux.conf? [EXPERIMENTAL] [y/N] "
-    read -r answer < /dev/tty
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped fork binding — add it manually with:"
-        printf '  %s\n' "$FORK_BINDING"
-        return
-    fi
-
-    # A conflict can come from the live tmux server (already-loaded config)
-    # or from the file text itself (added by hand but not yet sourced).
-    # Either source counts. Our own previously written marker+binding lines
-    # are excluded from the file check, so re-runs stay idempotent.
-    local live_conflict=0 file_conflict=0
-    # `list-keys -T prefix` only ever lists prefix-table bindings, so a -n /
-    # -T root exclusion isn't needed here — those never show up in this table.
-    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)'; then
-        live_conflict=1
-    fi
-    if grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" \
-        | grep -vE "$FORK_ROOT_TABLE_PATTERN" \
-        | grep -qE "$FORK_KEY_PATTERN"; then
-        file_conflict=1
-    fi
-
-    if { [ "$live_conflict" -eq 1 ] || [ "$file_conflict" -eq 1 ]; } \
-        && ! grep -qF "$FORK_MARKER" "$conf"; then
-        warn "prefix+F is already bound to something else — not overwriting"
-        info "Add this manually under a different key if you want it:"
-        printf '  %s\n' "$FORK_BINDING"
-        return
-    fi
-
-    rewrite_conf_block "$conf" "$FORK_MARKER" "tws fork-pane" "$FORK_MARKER"$'\n'"$FORK_BINDING"
-    ok "Added fork binding (prefix+F) — EXPERIMENTAL"
-    info "Run: tmux source-file ~/.tmux.conf"
+# Prints the config file that tmux reads, in tmux's own search order, or
+# nothing when none exists.
+tmux_conf_path() {
+    local conf
+    for conf in "$HOME/.tmux.conf" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" \
+        "$HOME/.config/tmux/tmux.conf"; do
+        if [ -f "$conf" ]; then
+            printf '%s\n' "$conf"
+            return
+        fi
+    done
 }
 
-# --- 5b. Optional: tmux ack hooks ---
+# Like tmux_conf_path, but creates ~/.tmux.conf when no config exists, so the
+# blocks below always have a file to go into.
+tmux_conf_for_write() {
+    local conf
+    conf="$(tmux_conf_path)"
+    if [ -z "$conf" ]; then
+        conf="$HOME/.tmux.conf"
+        : > "$conf"
+    fi
+    printf '%s\n' "$conf"
+}
+
+# Loads a block into a running tmux server, so no source-file step is needed.
+# Only the block is sourced: a second source of the whole config can repeat the
+# user's own commands.
+load_into_tmux() {
+    local block="$1" tmp status
+    tmux list-sessions >/dev/null 2>&1 || return 1
+    tmp="$(mktemp)"
+    printf '%s\n' "$block" > "$tmp"
+    tmux source-file "$tmp" 2>/dev/null
+    status=$?
+    rm -f "$tmp"
+    return "$status"
+}
+
+# --- 5a. tmux ack hooks (part of the agent hooks) ---
 
 ACK_MARKER='# tws ack hooks'
 # A fixed hook index makes a reload replace the tws entry. The -ga flags would
@@ -936,7 +860,7 @@ ACK_HOOK_INDEX=89
 
 # tmux splits the run-shell string with its own quoting and expands #{...} in
 # it, so a path with one of these characters breaks the hook line. A broken
-# line can stop tmux from loading the rest of ~/.tmux.conf.
+# line can stop tmux from loading the rest of the config.
 ack_path_is_safe() {
     case "$1" in
         *[[:space:]\'\"\\\$\#\;]*) return 1 ;;
@@ -964,69 +888,256 @@ write_ack_hooks() {
     rewrite_conf_block "$1" "$ACK_MARKER" "tws ack-pane" "$(ack_hook_block)"
 }
 
+# The hooks only clear the `review` state that the agent hooks write, so they
+# come with that step. They make a pane you move into with plain tmux count as
+# read.
 configure_ack_hooks() {
-    local conf="$HOME/.tmux.conf"
-
-    if [ ! -f "$conf" ]; then
-        info "No ~/.tmux.conf — skipping ack hooks"
-        return
-    fi
-
-    if [ "$hooks_configured" -ne 1 ]; then
-        info "Agent hooks are not configured — the ack hooks have no status to clear"
-        info "Skipping ack hooks. Re-run install and accept the agent hooks step, then add them manually with:"
-        ack_hook_block | sed 's/^/  /'
-        return
-    fi
+    [ "$hooks_configured" -eq 1 ] || return 0
 
     if ! ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
-        warn "The binary path has a space or one of ' \" \\ \$ # ; — not writing the ack hooks"
+        warn "The binary path has a space or one of ' \" \\ \$ # ; — not writing the tmux ack hooks"
         info "Put the binary at a path without these characters, then add the hooks manually with:"
         ack_hook_block | sed 's/^/  /'
         return
     fi
 
-    printf '%s' "Mark a pane as read when you move into it with tmux, and add ack hooks to ~/.tmux.conf? [y/N] "
-    read -r answer < /dev/tty
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped ack hooks — add them manually with:"
-        ack_hook_block | sed 's/^/  /'
-        return
-    fi
+    local conf
+    conf="$(tmux_conf_for_write)"
 
     write_ack_hooks "$conf"
-    ok "Added ack hooks to ~/.tmux.conf"
-    info "Run: tmux source-file ~/.tmux.conf"
+    ok "Added tmux ack hooks to $conf (a pane you move into counts as read)"
+    if load_into_tmux "$(ack_hook_block)"; then
+        ok "Loaded them into the running tmux server"
+    fi
 }
 
-# --- 6. Optional: glow (rich markdown rendering) ---
+# --- 5b. tmux fork binding (experimental, part of the agent hooks) ---
 
-configure_glow() {
-    if command -v glow &>/dev/null; then
-        ok "glow found — rich markdown rendering enabled"
+# tmux does not expand #{pane_id} in a split-window command, but run-shell
+# expands it first, so the fork pane learns which pane is its parent.
+FORK_BINDING='bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""'
+FORK_MARKER='# tws fork binding'
+# Matches a bind or bind-key line that targets the plain key F, with any
+# number of leading flags (e.g. "bind F ...", "bind-key -r F ...",
+# "bind-key -r -T prefix F ..."). Anchored at the start of the line (after
+# optional leading whitespace), so a commented-out line never matches.
+FORK_KEY_PATTERN='^[[:space:]]*bind(-key)?[[:space:]]+(-[[:alnum:]]+[[:space:]]+|-T[[:space:]]+[^[:space:]]+[[:space:]]+)*F([[:space:]]|$)'
+# A bind with -n, or with -T root, targets the ROOT key table, not the
+# prefix table, so it can never collide with prefix+F. Lines that match
+# FORK_KEY_PATTERN but also match this are excluded from the conflict check.
+FORK_ROOT_TABLE_PATTERN='(^|[[:space:]])-n([[:space:]]|$)|-T[[:space:]]+root([[:space:]]|$)'
+
+configure_fork_binding() {
+    # hooks_configured turns 1 when any agent's hooks install succeeds, but the
+    # SessionStart hook that prefix+F needs comes only from configure_claude_hooks.
+    # We accept that looseness here: it matches how the rest of the installer
+    # already reads this shared flag, and a false positive just adds a binding
+    # that finds no session to fork, which is harmless.
+    [ "$hooks_configured" -eq 1 ] || return 0
+
+    local conf
+    conf="$(tmux_conf_for_write)"
+
+    if fork_key_taken "$conf"; then
+        warn "prefix+F is already bound to something else — not overwriting"
+        info "Add this manually under a different key if you want it:"
+        printf '  %s\n' "$FORK_BINDING"
         return
     fi
 
-    warn "glow not found — notes will use basic markdown rendering"
-    printf '%s' "Install glow for rich markdown preview? [y/N] "
-    read -r answer < /dev/tty
+    rewrite_conf_block "$conf" "$FORK_MARKER" "tws fork-pane" "$FORK_MARKER"$'\n'"$FORK_BINDING"
+    ok "Added fork binding (prefix+F) to $conf — EXPERIMENTAL"
+    if load_into_tmux "$FORK_BINDING"; then
+        ok "Loaded it into the running tmux server"
+    fi
+}
 
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped. Install later: brew install glow (macOS) or go install github.com/charmbracelet/glow@latest"
-        return
+# Succeeds when prefix+F is bound to something that is not the tws binding.
+# A conflict can come from the live tmux server (already-loaded config) or from
+# the file text itself (added by hand but not yet sourced). Our own marked block
+# is no conflict, so re-runs stay idempotent. `conf` may not exist yet.
+fork_key_taken() {
+    local conf="$1"
+    if [ -f "$conf" ] && grep -qF "$FORK_MARKER" "$conf"; then
+        return 1
+    fi
+    # `list-keys -T prefix` only ever lists prefix-table bindings, so a -n /
+    # -T root exclusion isn't needed here — those never show up in this table.
+    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)'; then
+        return 0
+    fi
+    [ -f "$conf" ] || return 1
+    grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" \
+        | grep -vE "$FORK_ROOT_TABLE_PATTERN" \
+        | grep -qE "$FORK_KEY_PATTERN"
+}
+
+# --- 6. glow (rich markdown rendering) ---
+
+GLOW_GO_PKG='github.com/charmbracelet/glow@latest'
+
+install_glow() {
+    case "$plan_glow_via" in
+        brew)
+            info "Installing glow via Homebrew..."
+            brew install glow && ok "glow installed" || warn "glow installation failed — notes will use basic rendering"
+            ;;
+        go)
+            info "Installing glow via Go..."
+            go install "$GLOW_GO_PKG" && ok "glow installed" || warn "glow installation failed — notes will use basic rendering"
+            ;;
+    esac
+}
+
+# --- 7. Scan, plan, and the one question ---
+
+# The scan only reads. It records what the installer can change in plan_*
+# flags, and what it found but leaves alone in plan_notes. The user then
+# answers one question for the whole plan.
+plan_path=0 plan_claude=0 plan_codex=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_glow=0
+plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
+plan_found=()
+plan_notes=()
+
+# Shows a path with ~ for $HOME, so the plan stays short.
+tilde() {
+    local home_mark="~"
+    printf '%s\n' "${1/#$HOME/$home_mark}"
+}
+
+scan_plan() {
+    local have_jq=0
+    command -v jq &>/dev/null && have_jq=1
+
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *)
+            local rc_files
+            rc_files="$(shell_rc_files)"
+            if [ -n "$rc_files" ]; then
+                plan_rc="${rc_files% *}"
+                plan_profile="${rc_files#* }"
+                # A past run already added the line; this shell only has not read it.
+                if grep -q '$HOME/.local/bin' "$plan_rc" 2>/dev/null \
+                    && grep -q '$HOME/.local/bin' "$plan_profile" 2>/dev/null; then
+                    plan_notes+=("$(tilde "$INSTALL_DIR") is in $(tilde "$plan_rc") — restart your shell to use it")
+                else
+                    plan_path=1
+                fi
+            else
+                plan_notes+=("$(tilde "$INSTALL_DIR") is not on PATH — add this to your shell profile: $PATH_EXPORT_LINE")
+            fi
+            ;;
+    esac
+
+    if [ -f "$HOME/.claude/settings.json" ]; then
+        plan_found+=("Claude Code")
+        if [ "$have_jq" -eq 1 ]; then plan_claude=1; else plan_notes+=("Claude Code hooks need jq — install jq, then run install again"); fi
+    fi
+    if [ -d "$HOME/.codex" ]; then
+        plan_found+=("Codex")
+        if [ "$have_jq" -eq 1 ]; then plan_codex=1; else plan_notes+=("Codex hooks need jq — install jq, then run install again"); fi
+    fi
+    if [ -d "$HOME/.pi" ]; then
+        plan_found+=("Pi")
+        plan_pi=1
     fi
 
-    if command -v brew &>/dev/null; then
-        info "Installing glow via Homebrew..."
-        brew install glow && ok "glow installed" || warn "glow installation failed — notes will use basic rendering"
-    elif command -v go &>/dev/null; then
-        info "Installing glow via Go..."
-        go install github.com/charmbracelet/glow@latest && ok "glow installed" || warn "glow installation failed"
+    plan_conf="$(tmux_conf_path)"
+    if [ -n "$plan_conf" ]; then
+        plan_found+=("tmux config $(tilde "$plan_conf")")
+    fi
+
+    # The tmux steps only make sense next to agent hooks: the ack hooks clear the
+    # review state that they write, and prefix+F needs the Claude session pointer.
+    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ]; then
+        if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
+            plan_ack=1
+        else
+            plan_notes+=("tmux ack hooks — the binary path has a space or one of ' \" \\ \$ # ;")
+        fi
+    fi
+    if [ "$plan_claude" -eq 1 ]; then
+        if fork_key_taken "${plan_conf:-$HOME/.tmux.conf}"; then
+            plan_notes+=("tmux fork binding — prefix+F is already bound to something else")
+        else
+            plan_fork=1
+        fi
+    fi
+
+    if ! command -v glow &>/dev/null; then
+        if command -v brew &>/dev/null; then
+            plan_glow=1 plan_glow_via=brew
+        elif command -v go &>/dev/null; then
+            plan_glow=1 plan_glow_via=go
+        else
+            plan_notes+=("glow is missing and neither brew nor go is available — notes use basic rendering")
+        fi
+    fi
+}
+
+print_plan() {
+    local conf_label row
+    conf_label="$(tilde "${plan_conf:-$HOME/.tmux.conf}")"
+    [ -n "$plan_conf" ] || conf_label="$conf_label (new file)"
+
+    echo ""
+    if [ "${#plan_found[@]}" -gt 0 ]; then
+        info "Found: $(IFS=,; printf '%s' "${plan_found[*]}" | sed 's/,/, /g')"
     else
-        warn "Could not auto-install glow. Install manually:"
-        echo "  macOS:  brew install glow"
-        echo "  Linux:  go install github.com/charmbracelet/glow@latest"
+        info "Found no agent and no tmux config"
     fi
+
+    if plan_is_empty; then
+        info "Nothing else to set up"
+    else
+        info "tws will set up or update:"
+        if [ "$plan_claude" -eq 1 ]; then plan_row "Claude Code status hooks" "$(tilde "$HOME/.claude/settings.json")"; fi
+        if [ "$plan_codex" -eq 1 ]; then plan_row "Codex status hooks" "$(tilde "$HOME/.codex/hooks.json"), $(tilde "$HOME/.codex/config.toml")"; fi
+        if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
+        if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
+        if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
+        if [ "$plan_path" -eq 1 ]; then plan_row "add $(tilde "$INSTALL_DIR") to PATH" "$(tilde "$plan_rc"), $(tilde "$plan_profile")"; fi
+        if [ "$plan_glow" -eq 1 ]; then
+            if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
+        fi
+    fi
+
+    if [ "${#plan_notes[@]}" -gt 0 ]; then
+        info "Not changed:"
+        for row in "${plan_notes[@]}"; do
+            printf '   • %s\n' "$row"
+        done
+    fi
+}
+
+# One line of the plan: what changes, and where.
+plan_row() {
+    printf '   • %-32s %s\n' "$1" "$2"
+}
+
+plan_is_empty() {
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_ack + plan_fork + plan_glow)) -eq 0 ]
+}
+
+# The one question. No terminal (a piped install with no tty) counts as no, so
+# such a run changes nothing outside the binary.
+confirm_plan() {
+    local answer=""
+    printf '%s' "Apply these changes? [Y/n] "
+    if ! read -r answer 2>/dev/null < /dev/tty; then
+        echo ""
+        return 1
+    fi
+    [[ ! "$answer" =~ ^[Nn] ]]
+}
+
+apply_plan() {
+    if [ "$plan_path" -eq 1 ]; then configure_path "$plan_rc" "$plan_profile"; fi
+    configure_agent_hooks
+    if [ "$plan_ack" -eq 1 ]; then configure_ack_hooks; fi
+    if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
+    if [ "$plan_glow" -eq 1 ]; then install_glow; fi
 }
 
 # --- Main ---
@@ -1041,10 +1152,16 @@ main() {
     info "Detected platform: $target"
 
     install_binary "$target"
-    configure_agent_hooks
-    configure_fork_binding
-    configure_ack_hooks
-    configure_glow
+
+    scan_plan
+    print_plan
+    if ! plan_is_empty; then
+        if confirm_plan; then
+            apply_plan
+        else
+            info "No changes made. Run install again to set them up later."
+        fi
+    fi
 
     echo ""
     ok "Done!"
