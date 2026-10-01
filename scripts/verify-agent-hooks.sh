@@ -1434,6 +1434,16 @@ codex_interrupt
 codex_post_tool "$POST_M"
 expect working "a subagent that survives repaints working at the next PostToolUse"
 reset
+# Codex shows the stderr of a hook in the TUI, so a stray error prints after every tool.
+prompt_submit
+err="$(codex_post_tool "$POST_M" 2>&1 >/dev/null)"
+if [ -z "$err" ]; then
+    printf '  ok   %s\n' "codex: PostToolUse writes nothing to stderr"
+else
+    printf '  FAIL %s — got %s\n' "codex: PostToolUse writes nothing to stderr" "$err"
+    failures=$((failures + 1))
+fi
+reset
 prompt_submit; sub_start
 FAKE_TMUX_STATE=$VISIBLE codex_interrupt
 expect idle "an interrupt in the visible pane writes idle too"
