@@ -827,28 +827,53 @@ rewrite_conf_block() {
     rm -f "$tmp"
 }
 
-# Prints the config file that tmux reads, in tmux's own search order, or
-# nothing when none exists.
+# The config files that tmux reads, in tmux's own search order.
+tmux_conf_candidates() {
+    printf '%s\n' "$HOME/.tmux.conf" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" \
+        "$HOME/.config/tmux/tmux.conf"
+}
+
+# Prints the first config file that exists, or nothing.
 tmux_conf_path() {
     local conf
-    for conf in "$HOME/.tmux.conf" \
-        "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" \
-        "$HOME/.config/tmux/tmux.conf"; do
+    while IFS= read -r conf; do
         if [ -f "$conf" ]; then
             printf '%s\n' "$conf"
             return
         fi
-    done
+    done <<< "$(tmux_conf_candidates)"
+}
+
+# Prints a dangling symlink that comes before any real config file, for example
+# a dotfiles link whose repo is not cloned yet. A write through it fails, so the
+# tmux steps must not run.
+tmux_conf_broken_link() {
+    local conf
+    while IFS= read -r conf; do
+        if [ -f "$conf" ]; then return; fi
+        if [ -L "$conf" ]; then
+            printf '%s\n' "$conf"
+            return
+        fi
+    done <<< "$(tmux_conf_candidates)"
+}
+
+# Succeeds when the config loads other files or runs plugins (source-file, run).
+# With no tmux server running, the keys that those bind cannot be seen without
+# starting a server, and starting one runs the user's config.
+tmux_conf_loads_more() {
+    [ -f "$1" ] && grep -E '^[[:space:]]*(source(-file)?|run(-shell)?)([[:space:]]|$)' "$1" >/dev/null
 }
 
 # Like tmux_conf_path, but creates ~/.tmux.conf when no config exists, so the
-# blocks below always have a file to go into.
+# blocks below always have a file to go into. Fails when it cannot create it.
 tmux_conf_for_write() {
     local conf
     conf="$(tmux_conf_path)"
     if [ -z "$conf" ]; then
         conf="$HOME/.tmux.conf"
-        : > "$conf"
+        : > "$conf" 2>/dev/null || return 1
     fi
     printf '%s\n' "$conf"
 }
@@ -922,7 +947,10 @@ configure_ack_hooks() {
     [ "$hooks_configured" -eq 1 ] || return 0
 
     local conf
-    conf="$(tmux_conf_for_write)"
+    if ! conf="$(tmux_conf_for_write)"; then
+        warn "Could not create $HOME/.tmux.conf — skipping this tmux step"
+        return
+    fi
 
     write_ack_hooks "$conf"
     ok "Added tmux ack hooks to $conf (a pane you move into counts as read)"
@@ -954,7 +982,10 @@ configure_fork_binding() {
     [ "$claude_configured" -eq 1 ] || return 0
 
     local conf
-    conf="$(tmux_conf_for_write)"
+    if ! conf="$(tmux_conf_for_write)"; then
+        warn "Could not create $HOME/.tmux.conf — skipping this tmux step"
+        return
+    fi
 
     if fork_key_taken "$conf"; then
         warn "prefix+F is already bound to something else — not overwriting"
@@ -1050,13 +1081,28 @@ scan_plan() {
             ;;
     esac
 
-    if [ -f "$HOME/.claude/settings.json" ]; then
+    # A file that jq cannot parse goes under "Not changed", so the plan never
+    # lists a step that the apply step then cannot do.
+    local settings="$HOME/.claude/settings.json" codex_hooks="$HOME/.codex/hooks.json"
+    if [ -f "$settings" ]; then
         plan_found+=("Claude Code")
-        if [ "$have_jq" -eq 1 ]; then plan_claude=1; else plan_notes+=("Claude Code hooks need jq — install jq, then run install again"); fi
+        if [ "$have_jq" -eq 0 ]; then
+            plan_notes+=("Claude Code hooks need jq — install jq, then run install again")
+        elif ! jq empty "$settings" >/dev/null 2>&1; then
+            plan_notes+=("Claude Code hooks — $(tilde "$settings") is not valid JSON; fix it, then run install again")
+        else
+            plan_claude=1
+        fi
     fi
     if [ -d "$HOME/.codex" ]; then
         plan_found+=("Codex")
-        if [ "$have_jq" -eq 1 ]; then plan_codex=1; else plan_notes+=("Codex hooks need jq — install jq, then run install again"); fi
+        if [ "$have_jq" -eq 0 ]; then
+            plan_notes+=("Codex hooks need jq — install jq, then run install again")
+        elif [ -f "$codex_hooks" ] && ! jq empty "$codex_hooks" >/dev/null 2>&1; then
+            plan_notes+=("Codex hooks — $(tilde "$codex_hooks") is not valid JSON; fix it, then run install again")
+        else
+            plan_codex=1
+        fi
     fi
     if [ -d "$HOME/.pi" ]; then
         plan_found+=("Pi")
@@ -1070,16 +1116,31 @@ scan_plan() {
 
     # The tmux steps only make sense next to agent hooks: the ack hooks clear the
     # review state that they write, and prefix+F needs the Claude session pointer.
-    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ]; then
+    # A note that starts with a tab is a detail line under the note before it.
+    local broken_link conf
+    broken_link="$(tmux_conf_broken_link)"
+    conf="${plan_conf:-$HOME/.tmux.conf}"
+    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ] && [ -n "$broken_link" ]; then
+        plan_notes+=("tmux ack hooks and fork binding — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
+    fi
+    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ] && [ -z "$broken_link" ]; then
         if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
             plan_ack=1
         else
             plan_notes+=("tmux ack hooks — the binary path has a space or one of ' \" \\ \$ # ;")
+            plan_notes+=($'\t'"Put the binary at a path without these characters, then add these to your tmux config:")
+            local line
+            while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
         fi
     fi
-    if [ "$plan_claude" -eq 1 ]; then
-        if fork_key_taken "${plan_conf:-$HOME/.tmux.conf}"; then
+    if [ "$plan_claude" -eq 1 ] && [ -z "$broken_link" ]; then
+        if fork_key_taken "$conf"; then
             plan_notes+=("tmux fork binding — prefix+F is already bound to something else")
+            plan_notes+=($'\t'"To use it on another key, change F in this line and add it to your tmux config:")
+            plan_notes+=($'\t'"  $FORK_BINDING")
+        elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more "$conf"; then
+            plan_notes+=("tmux fork binding — your tmux config loads other files or plugins, and their prefix+F keys")
+            plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
         else
             plan_fork=1
         fi
@@ -1126,7 +1187,10 @@ print_plan() {
     if [ "${#plan_notes[@]}" -gt 0 ]; then
         info "Not changed:"
         for row in "${plan_notes[@]}"; do
-            printf '   • %s\n' "$row"
+            case "$row" in
+                $'\t'*) printf '     %s\n' "${row#$'\t'}" ;;
+                *) printf '   • %s\n' "$row" ;;
+            esac
         done
     fi
 }
@@ -1163,6 +1227,10 @@ apply_plan() {
 # After a "no", show the user what to add by hand. The agent hooks are left out:
 # they are long JSON, and running install again is the way to get them.
 print_manual_steps() {
+    if [ $((plan_path + plan_ack + plan_fork + plan_glow)) -eq 0 ]; then
+        info "No changes made. Run install again to set them up."
+        return
+    fi
     info "No changes made. Run install again to set them up, or add these by hand:"
     if [ "$plan_path" -eq 1 ]; then
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"

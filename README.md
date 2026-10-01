@@ -139,7 +139,7 @@ setup and shows all the changes it can make in one list. It asks one question,
 `Apply these changes? [Y/n]`. The list can hold:
 
 - agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`), and Pi (`~/.pi/agent/extensions/`),
-- the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use,
+- the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. If your config loads other files or plugins and no tmux server runs, it cannot see their keys, so it skips the fork binding and asks you to start tmux and run install again,
 - a `PATH` line for `~/.local/bin` in your shell rc and profile, if your shell does not find it,
 - `glow`, with `brew` or `go`, if it is missing.
 
