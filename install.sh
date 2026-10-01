@@ -6,6 +6,7 @@ INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
 tmpdir=""
 hooks_configured=0
+claude_configured=0
 # Minutes a subagent marker counts as live. Equals STALE_WORKING_SECS (15 min) in
 # src/core/status.rs: tws expires a silent `working` pane after that long, so an
 # older marker must not hold the pane working.
@@ -102,12 +103,13 @@ install_binary() {
 
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
-# Prints "<rc file> <profile file>" for the user's shell, or nothing for a shell
-# the installer does not know.
-shell_rc_files() {
+# Sets plan_rc and plan_profile for the user's shell, and leaves them empty for
+# a shell the installer does not know. Two variables, not one split string,
+# because $HOME can hold a space.
+find_shell_rc_files() {
     case "$(basename "${SHELL:-}")" in
-        zsh)  printf '%s %s\n' "$HOME/.zshrc" "$HOME/.zprofile" ;;
-        bash) printf '%s %s\n' "$HOME/.bashrc" "$HOME/.bash_profile" ;;
+        zsh)  plan_rc="$HOME/.zshrc";  plan_profile="$HOME/.zprofile" ;;
+        bash) plan_rc="$HOME/.bashrc"; plan_profile="$HOME/.bash_profile" ;;
     esac
 }
 
@@ -474,7 +476,10 @@ configure_claude_hooks() {
     e_forkptr=$(fork_pointer_entry)
     e_forkptr_end=$(fork_pointer_end_entry)
 
-    jq \
+    # An `&&` list does not trip `set -e`, so a jq failure (a settings.json it
+    # cannot parse) must be caught here, or the installer reports success and
+    # writes the tmux steps for hooks that do not exist.
+    if jq \
         --argjson prompt "$e_prompt" \
         --argjson pretool "$e_pretool" \
         --argjson question "$e_question" \
@@ -515,9 +520,15 @@ configure_claude_hooks() {
         .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
-    ' "$settings" > "$tmp" && mv "$tmp" "$settings"
-    ok "Configured Claude Code agent status hooks"
-    hooks_configured=1
+    ' "$settings" > "$tmp"; then
+        mv "$tmp" "$settings"
+        ok "Configured Claude Code agent status hooks"
+        hooks_configured=1
+        claude_configured=1
+    else
+        rm -f "$tmp"
+        warn "Could not update $settings (jq failed — is it valid JSON?). Claude Code hooks are not changed."
+    fi
 }
 
 configure_codex_feature_flag() {
@@ -582,7 +593,8 @@ configure_codex_hooks() {
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)
 
-    jq \
+    # See configure_claude_hooks: a jq failure must not count as success.
+    if jq \
         --argjson work "$e_work" --argjson pretool "$e_pretool" --argjson posttool "$e_posttool" --argjson wait "$e_wait" \
         --argjson review "$e_review" --argjson compact "$e_compact" \
         --argjson end "$e_end" \
@@ -611,11 +623,15 @@ configure_codex_hooks() {
         .hooks.Interrupt          = ((.hooks.Interrupt // []) + $interrupt) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
-    ' "$hooks_file" > "$tmp" && mv "$tmp" "$hooks_file"
-    ok "Configured Codex agent status hooks"
-    hooks_configured=1
-
-    configure_codex_feature_flag
+    ' "$hooks_file" > "$tmp"; then
+        mv "$tmp" "$hooks_file"
+        ok "Configured Codex agent status hooks"
+        hooks_configured=1
+        configure_codex_feature_flag
+    else
+        rm -f "$tmp"
+        warn "Could not update $hooks_file (jq failed — is it valid JSON?). Codex hooks are not changed."
+    fi
 }
 
 configure_pi_hooks() {
@@ -837,12 +853,21 @@ tmux_conf_for_write() {
     printf '%s\n' "$conf"
 }
 
+# Most tmux commands start a server when none runs, and a new server loads and
+# runs the user's config (plugin managers, session restore). list-sessions does
+# not start one, so it is the only safe probe. scan_plan sets tmux_live from it
+# once, and every later tmux call checks tmux_live first.
+tmux_live=0
+tmux_server_runs() {
+    tmux list-sessions >/dev/null 2>&1
+}
+
 # Loads a block into a running tmux server, so no source-file step is needed.
 # Only the block is sourced: a second source of the whole config can repeat the
 # user's own commands.
 load_into_tmux() {
     local block="$1" tmp status
-    tmux list-sessions >/dev/null 2>&1 || return 1
+    [ "$tmux_live" -eq 1 ] || return 1
     tmp="$(mktemp)"
     printf '%s\n' "$block" > "$tmp"
     tmux source-file "$tmp" 2>/dev/null
@@ -890,16 +915,11 @@ write_ack_hooks() {
 
 # The hooks only clear the `review` state that the agent hooks write, so they
 # come with that step. They make a pane you move into with plain tmux count as
-# read.
+# read. scan_plan already left out an unsafe binary path. hooks_configured is
+# still checked: it stays 0 when no agent's hooks could be written (for example
+# a settings.json that jq cannot parse), and then the tmux steps have no use.
 configure_ack_hooks() {
     [ "$hooks_configured" -eq 1 ] || return 0
-
-    if ! ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
-        warn "The binary path has a space or one of ' \" \\ \$ # ; — not writing the tmux ack hooks"
-        info "Put the binary at a path without these characters, then add the hooks manually with:"
-        ack_hook_block | sed 's/^/  /'
-        return
-    fi
 
     local conf
     conf="$(tmux_conf_for_write)"
@@ -927,13 +947,11 @@ FORK_KEY_PATTERN='^[[:space:]]*bind(-key)?[[:space:]]+(-[[:alnum:]]+[[:space:]]+
 # FORK_KEY_PATTERN but also match this are excluded from the conflict check.
 FORK_ROOT_TABLE_PATTERN='(^|[[:space:]])-n([[:space:]]|$)|-T[[:space:]]+root([[:space:]]|$)'
 
+# scan_plan plans this step only with the Claude hooks, because prefix+F needs
+# their SessionStart session pointer. claude_configured tells whether the
+# Claude hooks were really written.
 configure_fork_binding() {
-    # hooks_configured turns 1 when any agent's hooks install succeeds, but the
-    # SessionStart hook that prefix+F needs comes only from configure_claude_hooks.
-    # We accept that looseness here: it matches how the rest of the installer
-    # already reads this shared flag, and a false positive just adds a binding
-    # that finds no session to fork, which is harmless.
-    [ "$hooks_configured" -eq 1 ] || return 0
+    [ "$claude_configured" -eq 1 ] || return 0
 
     local conf
     conf="$(tmux_conf_for_write)"
@@ -954,22 +972,26 @@ configure_fork_binding() {
 
 # Succeeds when prefix+F is bound to something that is not the tws binding.
 # A conflict can come from the live tmux server (already-loaded config) or from
-# the file text itself (added by hand but not yet sourced). Our own marked block
-# is no conflict, so re-runs stay idempotent. `conf` may not exist yet.
+# the file text itself (added by hand but not yet sourced). A line or binding
+# with `tws fork-pane` is ours, so re-runs stay idempotent, and a prefix+F that
+# the user adds after an install still counts. `conf` may not exist yet.
+#
+# The pipelines end in `grep … >/dev/null`, not `grep -q`: under pipefail, a
+# `grep -q` that exits at its first match sends SIGPIPE to the writer, and the
+# pipeline then fails although grep matched.
 fork_key_taken() {
     local conf="$1"
-    if [ -f "$conf" ] && grep -qF "$FORK_MARKER" "$conf"; then
-        return 1
-    fi
     # `list-keys -T prefix` only ever lists prefix-table bindings, so a -n /
     # -T root exclusion isn't needed here — those never show up in this table.
-    if tmux list-keys -T prefix 2>/dev/null | grep -qE '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)'; then
+    if [ "$tmux_live" -eq 1 ] && tmux list-keys -T prefix 2>/dev/null \
+        | grep -vF 'tws fork-pane' \
+        | grep -E '^bind-key[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-T[[:space:]]+prefix[[:space:]]+F([[:space:]]|$)' >/dev/null; then
         return 0
     fi
     [ -f "$conf" ] || return 1
-    grep -vF -e "$FORK_MARKER" -e "$FORK_BINDING" "$conf" \
+    grep -vF -e "$FORK_MARKER" -e 'tws fork-pane' "$conf" \
         | grep -vE "$FORK_ROOT_TABLE_PATTERN" \
-        | grep -qE "$FORK_KEY_PATTERN"
+        | grep -E "$FORK_KEY_PATTERN" >/dev/null
 }
 
 # --- 6. glow (rich markdown rendering) ---
@@ -1008,15 +1030,13 @@ tilde() {
 scan_plan() {
     local have_jq=0
     command -v jq &>/dev/null && have_jq=1
+    if tmux_server_runs; then tmux_live=1; fi
 
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *)
-            local rc_files
-            rc_files="$(shell_rc_files)"
-            if [ -n "$rc_files" ]; then
-                plan_rc="${rc_files% *}"
-                plan_profile="${rc_files#* }"
+            find_shell_rc_files
+            if [ -n "$plan_rc" ]; then
                 # A past run already added the line; this shell only has not read it.
                 if grep -q '$HOME/.local/bin' "$plan_rc" 2>/dev/null \
                     && grep -q '$HOME/.local/bin' "$plan_profile" 2>/dev/null; then
@@ -1140,6 +1160,24 @@ apply_plan() {
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
 }
 
+# After a "no", show the user what to add by hand. The agent hooks are left out:
+# they are long JSON, and running install again is the way to get them.
+print_manual_steps() {
+    info "No changes made. Run install again to set them up, or add these by hand:"
+    if [ "$plan_path" -eq 1 ]; then
+        echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
+        echo "    $PATH_EXPORT_LINE"
+    fi
+    if [ $((plan_ack + plan_fork)) -gt 0 ]; then
+        echo "  In $(tilde "${plan_conf:-$HOME/.tmux.conf}"):"
+        if [ "$plan_ack" -eq 1 ]; then ack_hook_block | sed 's/^/    /'; fi
+        if [ "$plan_fork" -eq 1 ]; then echo "    $FORK_BINDING"; fi
+    fi
+    if [ "$plan_glow" -eq 1 ]; then
+        if [ "$plan_glow_via" = brew ]; then echo "  Install glow: brew install glow"; else echo "  Install glow: go install $GLOW_GO_PKG"; fi
+    fi
+}
+
 # --- Main ---
 
 main() {
@@ -1159,7 +1197,7 @@ main() {
         if confirm_plan; then
             apply_plan
         else
-            info "No changes made. Run install again to set them up later."
+            print_manual_steps
         fi
     fi
 
