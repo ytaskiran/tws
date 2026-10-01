@@ -360,7 +360,6 @@ status_hook_entry() {
             cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; '
             cmd+="$unmark"
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
-            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)
             cmd+="case \"\$cur\" in ''|review) put $word; $trig ;; esac; :"
