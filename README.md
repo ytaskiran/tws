@@ -57,7 +57,8 @@ Ask a throwaway question while the parent stays visible. Press `prefix+z` to
 zoom the fork, and press it again to restore the split. Type `/exit` to close
 the fork pane.
 
-`install.sh` adds the hooks and, if you accept, this binding:
+`install.sh` adds the hooks and this binding. It does not overwrite a `prefix+F`
+that you already use:
 
     bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""
 
@@ -72,8 +73,12 @@ the pane with plain tmux, tws cannot see the move. The tmux hooks below close
 that gap. They call `tws ack-pane` for the pane you land on. The command clears
 the review state of that pane and changes nothing else.
 
-`install.sh` adds the hooks if you accept. The hooks use the absolute path of the
-binary, because `run-shell` does not read your shell `PATH`:
+`install.sh` adds the hooks together with the agent status hooks. It writes them
+to your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf` when that is
+the file you use). If you have no tmux config, it creates `~/.tmux.conf`. It also
+loads the hooks into a tmux server that is running, so you do not need to reload.
+The hooks use the absolute path of the binary, because `run-shell` does not read
+your shell `PATH`:
 
     # tws ack hooks
     set-hook -g after-select-pane[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
@@ -82,7 +87,7 @@ binary, because `run-shell` does not read your shell `PATH`:
     set-hook -g window-pane-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
     set-hook -g session-window-changed[89] 'run-shell -b "/home/you/.local/bin/tws ack-pane #{pane_id}"'
 
-Write the full path of your own binary in `~/.tmux.conf`. Do not use `~`. The
+To add them by hand, write the full path of your own binary. Do not use `~`. The
 path must not contain a space or one of these characters: `'` `"` `\` `$` `#` `;`.
 tmux splits the hook line with its own quoting, and a bad path breaks the line.
 `install.sh` does not write the hooks for such a path. It prints them instead.
@@ -94,7 +99,7 @@ two hooks. This is safe, because `ack-pane` does the same thing each time.
 not clear the review state.
 
 The fixed index `89` makes a reload replace the tws entry, and it leaves your own
-hooks at other indexes alone. Reload with `tmux source-file ~/.tmux.conf`.
+hooks at other indexes alone.
 
 ### Notes
 
@@ -129,13 +134,19 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 curl -fsSL https://raw.githubusercontent.com/ytaskiran/tws/main/install.sh | bash
 ```
 
-Downloads the latest release binary to `~/.local/bin`. The script will, **with your confirmation at each step**, also offer to:
+Downloads the latest release binary to `~/.local/bin`. Then the script scans your
+setup and shows all the changes it can make in one list. It asks one question,
+`Apply these changes? [Y/n]`. The list can hold:
 
-- add `~/.local/bin` to your `PATH`,
-- install `glow`,
-- configure agent-detection hooks in `~/.claude/settings.json`, `~/.codex/config.toml`, and/or `~/.pi/agent/extensions/` (so tws can refresh its agent view when an agent starts or stops).
+- agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`), and Pi (`~/.pi/agent/extensions/`),
+- the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
+- a `PATH` line for `~/.local/bin` in your shell rc and profile, if your shell does not find it,
+- `glow`, with `brew` or `go`, if it is missing.
 
-Re-run the same command any time to upgrade.
+Answer `n` to install only the binary. A run with no terminal to answer from
+(for example in CI) also changes nothing else.
+
+Re-run the same command any time to upgrade. A re-run replaces the tws lines in place, so it adds no copies.
 
 ### Build from source
 
