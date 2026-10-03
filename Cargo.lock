@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "tws"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "ansi-to-tui",
  "clap",
