@@ -81,7 +81,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             ];
             // `kind · age` at the right edge, as in the sessions view. The path
             // gives way first, so the meta stays on screen in a narrow pane.
-            let meta = agent_meta::label(a.agent_type, a.status_since, now);
+            let meta = agent_meta::label(a.agent_type, a.status_since, a.subagents, now);
             let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
             let room = width.saturating_sub(used + meta.chars().count() + 3);
             spans.push(Span::styled(
@@ -137,6 +137,7 @@ mod tests {
             status: AgentStatus::Working,
             agent_type: AgentType::ClaudeCode,
             status_since: 0,
+            subagents: 0,
         }
     }
 

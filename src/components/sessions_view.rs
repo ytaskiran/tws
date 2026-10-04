@@ -252,7 +252,7 @@ pub fn render(
                     ),
                     Span::styled(a.display_name.clone(), name_style(theme.agent_name)),
                 ];
-                let meta = agent_meta::label(a.agent_type, a.status_since, now);
+                let meta = agent_meta::label(a.agent_type, a.status_since, a.subagents, now);
                 line(
                     left,
                     vec![Span::styled(meta, theme.meta)],
@@ -305,6 +305,7 @@ mod tests {
             pin_slot: None,
             status: AgentStatus::Working,
             status_since: 0,
+            subagents: 0,
         }
     }
 
