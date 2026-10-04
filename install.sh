@@ -1061,12 +1061,15 @@ fork_key_taken() {
 # --- 5c. tmux status bar (part of the agent hooks) ---
 
 BAR_MARKER='# tws status bar'
+# A config line with this text keeps the installer from adding the bar again.
+BAR_OFF='# tws status bar off'
 BAR_OPTIONS='status-style status-left status-right status-format window-status-format window-status-current-format'
 
 # The window tabs show the agent glyphs of their panes, and the right end shows
 # "thread › session". #() jobs get the tmux server environment, not your shell
-# PATH, so the block names the binary by its absolute path. A line with no
-# binary path carries the marker, so a re-run drops it with the rest of the block.
+# PATH, so the block names the binary by its absolute path. Every line carries
+# the marker, so a re-run drops the block and keeps your own lines, also a line
+# of yours that calls `tws bar`.
 # The tmux default bar is green, and the green working glyph does not show on
 # it, so the block also sets the tws palette bg and fg.
 bar_block() {
@@ -1075,9 +1078,9 @@ bar_block() {
         "set -g status-interval 5  $BAR_MARKER" \
         "set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  $BAR_MARKER" \
         "set -g status-left ' '  $BAR_MARKER" \
-        "set -g window-status-format ' #I #W#($bin bar window #{P:#{pane_id} }) '" \
-        "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain #{P:#{pane_id} }) #[default]'" \
-        "set -g status-right '#($bin bar where #{q:session_name}) '"
+        "set -g window-status-format ' #I #W#($bin bar window #{P:#{pane_id} }) '  $BAR_MARKER" \
+        "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
+        "set -g status-right '#($bin bar where #{q:session_name}) '  $BAR_MARKER"
 }
 
 # Succeeds when the user has a status bar of their own: a config line sets one
@@ -1086,11 +1089,11 @@ bar_block() {
 # block does not count, so a re-run sees the same result. The defaults come
 # from a probe server that reads no config and exits at once.
 tmux_has_own_bar() {
-    local bin="$INSTALL_DIR/$BINARY_NAME" conf opt live ours default pattern
+    local conf opt live ours default pattern
     pattern="(^|[[:space:]])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]]|$)"
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
-        if grep -vF -e "$BAR_MARKER" -e "$bin bar " "$conf" \
+        if grep -vF "$BAR_MARKER" "$conf" \
             | grep -vE '^[[:space:]]*#' \
             | grep -E "$pattern" >/dev/null; then
             return 0
@@ -1107,6 +1110,18 @@ tmux_has_own_bar() {
     return 1
 }
 
+# Succeeds when a config holds the opt-out line.
+tmux_conf_bar_off() {
+    local conf
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -F "$BAR_OFF" "$conf" >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    return 1
+}
+
 configure_status_bar() {
     [ "$hooks_configured" -eq 1 ] || return 0
 
@@ -1116,7 +1131,7 @@ configure_status_bar() {
         return
     fi
 
-    if ! rewrite_conf_block "$conf" "$BAR_MARKER" "$INSTALL_DIR/$BINARY_NAME bar " "$(bar_block)"; then
+    if ! rewrite_conf_block "$conf" "$BAR_MARKER" "$BAR_MARKER" "$(bar_block)"; then
         warn "Could not write $conf — skipping the status bar"
         return
     fi
@@ -1247,7 +1262,7 @@ scan_plan() {
         fi
     fi
     # The bar shows what the agent hooks write, so it comes with the ack hooks.
-    if [ "$plan_ack" -eq 1 ]; then
+    if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
         if [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
             plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
             plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")

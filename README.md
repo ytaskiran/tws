@@ -118,9 +118,9 @@ the installer changes nothing and shows a note.
     set -g status-interval 5  # tws status bar
     set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  # tws status bar
     set -g status-left ' '  # tws status bar
-    set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window #{P:#{pane_id} }) '
-    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain #{P:#{pane_id} }) #[default]'
-    set -g status-right '#(/home/you/.local/bin/tws bar where #{q:session_name}) '
+    set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window #{P:#{pane_id} }) '  # tws status bar
+    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain #{P:#{pane_id} }) #[default]'  # tws status bar
+    set -g status-right '#(/home/you/.local/bin/tws bar where #{q:session_name}) '  # tws status bar
 
 To use your own bar, add the two commands to it. tmux replaces
 `#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
@@ -137,8 +137,11 @@ A `#()` command does not read your shell `PATH`, so write the full path of your
 own binary. tmux runs the commands again once in each `status-interval`, so a new
 agent state can take up to 5 seconds to show.
 
-To remove the bar, delete the `# tws status bar` lines from your tmux config,
-then restart tmux.
+To remove the bar, delete the lines that end with `# tws status bar` from your
+tmux config, then restart tmux. To keep `install.sh` from adding the bar again,
+add this line to your tmux config:
+
+    # tws status bar off
 
 ### Notes
 
