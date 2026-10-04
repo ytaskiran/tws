@@ -7,20 +7,30 @@ use std::path::Path;
 
 use ratatui::style::Color;
 
+use crate::config;
 use crate::config::palette::Palette;
-use crate::config::{self, Config};
 use crate::core::model::{AgentStatus, Collection};
 use crate::core::state::AppState;
 use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
-/// with `#{P:#{pane_id} }`. `plain` leaves out the colors, for the current
-/// tab, whose background tws does not know.
-pub fn window(pane_ids: &[String], plain: bool) {
+/// with `#{P:#{pane_id} }`, and the server start time with `#{start_time}`.
+/// `plain` leaves out the colors, for the current tab, whose background tws
+/// does not know.
+pub fn window(pane_ids: &[String], plain: bool, server_start: i64) {
     let palette = (!plain).then(palette);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     print!(
         "{}",
-        window_glyphs(&status::agents_dir(), pane_ids, palette.as_ref())
+        window_glyphs(
+            &persistence::config_dir(),
+            pane_ids,
+            palette.as_ref(),
+            server_start,
+            now
+        )
     );
 }
 
@@ -53,13 +63,42 @@ fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
 /// A space, then one glyph for each pane with a status file, in argument
 /// order. Empty when no pane has one. No color reset at the end: the glyphs
 /// are the last visible text of the tab.
-fn window_glyphs(dir: &Path, pane_ids: &[String], palette: Option<&Palette>) -> String {
+///
+/// The TUI cleans the status files, so with the TUI closed two kinds of
+/// files are stale. A file older than the tmux server belongs to a pane of
+/// an earlier server that had the same ID, and shows nothing. A `working`
+/// file with no sign of life shows as idle, the change the TUI would write.
+fn window_glyphs(
+    config_dir: &Path,
+    pane_ids: &[String],
+    palette: Option<&Palette>,
+    server_start: i64,
+    now: i64,
+) -> String {
+    let agents = config_dir.join("agents");
     let mut out = String::new();
     for id in pane_ids.iter().filter(|id| is_pane_id(id)) {
-        let Ok(word) = std::fs::read_to_string(dir.join(id)) else {
+        let path = agents.join(id);
+        let (Ok(word), Ok(meta)) = (std::fs::read_to_string(&path), std::fs::metadata(&path))
+        else {
             continue;
         };
-        let st = status::parse_status(&word);
+        let mtime = status::mtime_secs(&meta);
+        if mtime < server_start {
+            continue;
+        }
+        let mut st = status::parse_status(&word);
+        if st == AgentStatus::Working
+            && status::working_is_stale(
+                id,
+                mtime,
+                &config_dir.join("inflight"),
+                &config_dir.join("heartbeat"),
+                now,
+            )
+        {
+            st = AgentStatus::Idle;
+        }
         if let Some(p) = palette {
             out.push_str(&format!("#[fg={}]", hex(status_color(p, st))));
         }
@@ -95,14 +134,10 @@ fn hex(c: Color) -> String {
     }
 }
 
-/// Like `config::load_config`, but a bad `config.toml` gives the default
-/// palette, not an exit: the bar has no place to show an error.
+/// A bad `config.toml` gives the default palette, not an exit: the bar has
+/// no place to show an error.
 fn palette() -> Palette {
-    let cfg: Config = std::fs::read_to_string(persistence::config_dir().join("config.toml"))
-        .ok()
-        .and_then(|t| toml::from_str(&t).ok())
-        .unwrap_or_default();
-    config::resolve_palette(&cfg)
+    config::resolve_palette(&config::try_load_config().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -111,14 +146,36 @@ mod tests {
     use crate::core::model::Thread;
     use uuid::Uuid;
 
+    /// A config dir with `agents/`; each file gets the current mtime.
     fn status_dir(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tws-test-bar-{tag}-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
         for (name, word) in files {
-            std::fs::write(dir.join(name), word).unwrap();
+            std::fs::write(dir.join("agents").join(name), word).unwrap();
         }
         dir
+    }
+
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn age(path: &std::path::Path, secs: u64) {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    fn glyphs(dir: &std::path::Path, args: &[&str], palette: Option<&Palette>) -> String {
+        window_glyphs(dir, &ids(args), palette, 0, now())
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -128,7 +185,7 @@ mod tests {
     #[test]
     fn window_with_no_agent_prints_nothing() {
         let dir = status_dir("none", &[]);
-        assert_eq!(window_glyphs(&dir, &ids(&["%1", "%2"]), None), "");
+        assert_eq!(glyphs(&dir, &["%1", "%2"], None), "");
     }
 
     #[test]
@@ -137,10 +194,7 @@ mod tests {
             "plain",
             &[("%1", "working"), ("%3", "review\n"), ("%4", "idle")],
         );
-        assert_eq!(
-            window_glyphs(&dir, &ids(&["%4", "%2", "%1", "%3"]), None),
-            " ○●◐"
-        );
+        assert_eq!(glyphs(&dir, &["%4", "%2", "%1", "%3"], None), " ○●◐");
     }
 
     #[test]
@@ -156,18 +210,35 @@ mod tests {
             hex(p.accent),
             hex(p.muted)
         );
-        assert_eq!(
-            window_glyphs(&dir, &ids(&["%1", "%2", "%3"]), Some(&p)),
-            want
-        );
+        assert_eq!(glyphs(&dir, &["%1", "%2", "%3"], Some(&p)), want);
     }
 
     #[test]
     fn window_skips_arguments_that_are_not_pane_ids() {
         let dir = status_dir("ids", &[("%1", "working"), ("x", "working")]);
-        std::fs::write(dir.join("..%1"), "working").unwrap();
-        let args = ids(&["x", "../x", "%", "%1a", "..%1", "%1"]);
-        assert_eq!(window_glyphs(&dir, &args, None), " ●");
+        std::fs::write(dir.join("agents").join("..%1"), "working").unwrap();
+        let args = ["x", "../x", "%", "%1a", "..%1", "%1"];
+        assert_eq!(glyphs(&dir, &args, None), " ●");
+    }
+
+    #[test]
+    fn window_skips_files_from_before_the_server_start() {
+        // tmux numbers panes from %0 again after a restart.
+        let dir = status_dir("restart", &[("%0", "review"), ("%1", "working")]);
+        age(&dir.join("agents/%0"), 600);
+        let args = ids(&["%0", "%1"]);
+        assert_eq!(window_glyphs(&dir, &args, None, now() - 60, now()), " ●");
+    }
+
+    #[test]
+    fn window_shows_a_stale_working_pane_as_idle() {
+        let dir = status_dir("stale", &[("%1", "working"), ("%2", "working")]);
+        let old = status::STALE_WORKING_SECS as u64 + 60;
+        age(&dir.join("agents/%1"), old);
+        age(&dir.join("agents/%2"), old);
+        std::fs::create_dir_all(dir.join("heartbeat")).unwrap();
+        std::fs::write(dir.join("heartbeat/%2"), "").unwrap();
+        assert_eq!(glyphs(&dir, &["%1", "%2"], None), " ○●");
     }
 
     #[test]

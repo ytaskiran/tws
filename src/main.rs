@@ -50,6 +50,9 @@ enum BarCommand {
         /// Print the glyphs with no color (for the current tab)
         #[arg(long)]
         plain: bool,
+        /// tmux server start time (#{start_time}); older status files are skipped
+        #[arg(long, default_value_t = 0)]
+        since: i64,
         /// tmux pane ids, e.g. %12 %13
         pane_ids: Vec<String>,
     },
@@ -71,9 +74,14 @@ fn main() -> std::io::Result<()> {
             Ok(())
         }
         Some(Command::Bar {
-            what: BarCommand::Window { plain, pane_ids },
+            what:
+                BarCommand::Window {
+                    plain,
+                    since,
+                    pane_ids,
+                },
         }) => {
-            bar::window(&pane_ids, plain);
+            bar::window(&pane_ids, plain, since);
             Ok(())
         }
         Some(Command::Bar {

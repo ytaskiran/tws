@@ -34,24 +34,21 @@ pub struct KeysConfig {
 /// Load `~/.config/tws/config.toml`. Missing file → default config.
 /// Malformed TOML → print error and exit(1).
 pub fn load_config() -> Config {
+    try_load_config().unwrap_or_else(|e| {
+        eprintln!("tws: {e}");
+        std::process::exit(1);
+    })
+}
+
+/// Like `load_config`, but returns the error, for a caller that has no place
+/// to show it (`tws bar`).
+pub fn try_load_config() -> Result<Config, String> {
     let path = persistence::config_dir().join("config.toml");
     if !path.exists() {
-        return Config::default();
+        return Ok(Config::default());
     }
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("tws: could not read config.toml: {}", e);
-            std::process::exit(1);
-        }
-    };
-    match toml::from_str::<Config>(&text) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("tws: malformed config.toml: {}", e);
-            std::process::exit(1);
-        }
-    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("could not read config.toml: {e}"))?;
+    toml::from_str::<Config>(&text).map_err(|e| format!("malformed config.toml: {e}"))
 }
 
 /// Resolve the effective palette:

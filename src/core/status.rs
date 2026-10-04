@@ -251,19 +251,38 @@ pub fn expire_stale_working(dir: &Path, inflight_dir: &Path, heartbeat_dir: &Pat
             continue;
         }
         let status_mtime = entry.metadata().ok().map(|m| mtime_secs(&m)).unwrap_or(0);
-        let beat_mtime = std::fs::metadata(heartbeat_dir.join(entry.file_name()))
-            .map(|m| mtime_secs(&m))
-            .unwrap_or(0);
-        let mtime = status_mtime.max(beat_mtime);
-        if now - mtime > STALE_WORKING_SECS
-            && !has_tool_in_flight(&inflight_dir.join(entry.file_name()), now)
-        {
+        let pane = entry.file_name();
+        if working_is_stale(
+            &pane.to_string_lossy(),
+            status_mtime,
+            inflight_dir,
+            heartbeat_dir,
+            now,
+        ) {
             write_atomic(&path, status_word(AgentStatus::Idle)).ok();
         }
     }
 }
 
-fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
+/// True for a `working` pane whose status file and heartbeat are both older
+/// than `STALE_WORKING_SECS`, with no tool call in flight: its turn ended
+/// with no hook to say so. `tws bar` uses it to show such a pane as idle
+/// while the TUI, which writes the change, is closed.
+pub fn working_is_stale(
+    pane: &str,
+    status_mtime: i64,
+    inflight_dir: &Path,
+    heartbeat_dir: &Path,
+    now: i64,
+) -> bool {
+    let beat_mtime = std::fs::metadata(heartbeat_dir.join(pane))
+        .map(|m| mtime_secs(&m))
+        .unwrap_or(0);
+    now - status_mtime.max(beat_mtime) > STALE_WORKING_SECS
+        && !has_tool_in_flight(&inflight_dir.join(pane), now)
+}
+
+pub fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -307,7 +326,7 @@ fn is_temp_name(name: &str) -> bool {
 /// Write beside `path` and rename over it. A plain write truncates first, and a
 /// reader that lands in that gap sees an empty file. The hook commands in
 /// `install.sh` use the same temp name shape, so `is_temp_name` covers both.
-fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
     std::fs::write(&tmp, contents)?;

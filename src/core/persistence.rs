@@ -72,9 +72,14 @@ pub fn load() -> io::Result<Vec<Collection>> {
 pub fn save(collections: &[Collection]) -> io::Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
+    save_to(&state_file(), collections)
+}
+
+/// Writes a new file and renames it over the old one, so a reader such as
+/// `tws bar where` never sees a half-written file.
+fn save_to(path: &std::path::Path, collections: &[Collection]) -> io::Result<()> {
     let data = serde_json::to_string_pretty(collections)?;
-    fs::write(state_file(), data)?;
-    Ok(())
+    crate::core::status::write_atomic(path, &data)
 }
 
 #[cfg(test)]
@@ -104,6 +109,27 @@ mod tests {
 
         fs::remove_dir_all(&dir).unwrap();
         f();
+    }
+
+    #[test]
+    fn save_replaces_the_file_and_does_not_rewrite_it() {
+        // A reader such as `tws bar where` must never see a half-written file,
+        // so save writes a new file and renames it over the old one. A hard
+        // link to the old file then keeps the old text.
+        let dir = env::temp_dir().join(format!("tws_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "[]").unwrap();
+        fs::hard_link(&path, dir.join("old.json")).unwrap();
+
+        save_to(&path, &[Collection::new("New")]).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("old.json")).unwrap(), "[]");
+        let loaded: Vec<Collection> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded[0].name, "New");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
