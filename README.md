@@ -101,6 +101,45 @@ not clear the review state.
 The fixed index `89` makes a reload replace the tws entry, and it leaves your own
 hooks at other indexes alone.
 
+### Status bar
+
+The tmux status bar can show your agents, so you do not need to open tws to see
+them. Each window tab shows one glyph for each agent in that window: `●` working,
+`◐` waiting or review, `○` idle. The right end shows the thread and the session.
+
+     0 claude ●   1 zsh   2 review ◐○                         tws › status-bar
+
+`install.sh` adds the block below together with the agent status hooks, but only
+when your tmux config has no status bar of its own. A config that sets a status
+option, or a theme plugin that sets one, has a bar of its own. For such a config,
+the installer changes nothing and shows a note.
+
+    # tws status bar
+    set -g status-interval 5  # tws status bar
+    set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  # tws status bar
+    set -g status-left ' '  # tws status bar
+    set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window #{P:#{pane_id} }) '
+    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain #{P:#{pane_id} }) #[default]'
+    set -g status-right '#(/home/you/.local/bin/tws bar where #{q:session_name}) '
+
+To use your own bar, add the two commands to it. tmux replaces
+`#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
+their glyphs in the tws theme colors. `--plain` prints the glyphs with no color,
+for a tab whose background does not suit the colors. `tws bar where` prints
+`thread › session`. For example, with [tmux-nova](https://github.com/o0th/tmux-nova):
+
+    set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--plain,} #{P:#{pane_id} })'
+    set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where #{q:session_name})'
+    set -g @nova-segment-tws-colors '#c8a882 #121212'
+    set -g @nova-segments-0-right 'tws'
+
+A `#()` command does not read your shell `PATH`, so write the full path of your
+own binary. tmux runs the commands again once in each `status-interval`, so a new
+agent state can take up to 5 seconds to show.
+
+To remove the bar, delete the `# tws status bar` lines from your tmux config,
+then restart tmux.
+
 ### Notes
 
 Each thread and session has its own markdown note, stored as a plain `.md` file under `~/.config/tws/notes/`. Press `Tab` to focus the notes panel, `Enter` to open the current note in `$EDITOR`. Renders with [glow](https://github.com/charmbracelet/glow) if installed, falls back to basic markdown otherwise. Handy for per-workstream scratch notes, todo lists, and command snippets.
