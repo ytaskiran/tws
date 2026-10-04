@@ -49,13 +49,13 @@ Don't use `--follow-tags` (only pushes annotated tags) or `--tags` (pushes all l
 
 ## What This Is
 
-tws is a standalone Rust TUI that replaces tmux's `prefix+s` session picker. It adds a persistent organizational hierarchy on top of ephemeral tmux sessions:
+tws is a standalone Rust TUI that organizes tmux sessions into threads. It adds a persistent layer on top of ephemeral tmux sessions:
 
 ```
-Collection → Thread → Session(s)
+Thread → Session(s)
 ```
 
-Collections and threads are user-created, persisted to `~/.config/tws/state.json`. Sessions are live tmux sessions discovered at runtime. tws detects agent sessions (Claude Code, Codex, Pi) when it scans the process tree of each tmux pane.
+Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live tmux sessions that tws finds at runtime. A session name is `twsr_<thread-slug>_<label>`. tws detects agent sessions (Claude Code, Codex, Pi) when it scans the process tree of each tmux pane.
 
 ## Architecture
 
@@ -69,11 +69,11 @@ Mode::Normal → Mode::Input { purpose, buffer } → confirm → back to Normal
              → Mode::Finder { ... }            → select  → back to Normal
 ```
 
-`InputPurpose` and `ConfirmPurpose` enums capture *what* the modal is for (add collection, rename thread, kill session, etc.) at open time. On confirm, the purpose is consumed via `std::mem::replace` to avoid borrow conflicts on `self.mode`.
+`InputPurpose` and `ConfirmPurpose` enums capture *what* the modal is for (add thread, rename thread, kill session, etc.) at open time. On confirm, the purpose is consumed via `std::mem::replace` to avoid borrow conflicts on `self.mode`.
 
 ### Selection resolution
 
-Selection is a `&[String]` path of identifiers (collection/thread UUIDs, tmux session names, pane IDs), stored in a `tui_tree_widget::TreeState`. `state.rs::resolve_selection()` maps that path into `SelectedItem` — an enum with variants `None | Collection(idx) | Thread(col, thread) | Session(col, thread, sess) | Agent(col, thread, sess, agent)`. This is the bridge between the UI and the domain model.
+Selection is a `&[String]` path of identifiers (thread UUIDs, tmux session names, pane IDs), stored in a `tui_tree_widget::TreeState`. `state.rs::resolve_selection()` maps that path into `SelectedItem` — an enum with variants `None | Thread(thread) | Session(thread, sess) | Agent(thread, sess, agent)`. This is the bridge between the UI and the domain model.
 
 The sessions view (`components/sessions_view.rs`) draws its own rows and does not render the `Tree` widget. `TreeState` only learns the row order from a `Tree` render, so its `key_down`/`key_up` do not work here. Navigation uses `sessions_view::row_paths()` and `sessions_view::step()` instead. Keep the row order in `rows()` only, so the screen and the cursor cannot disagree.
 
@@ -82,14 +82,14 @@ The sessions view (`components/sessions_view.rs`) draws its own rows and does no
 | Module | Role |
 |---|---|
 | `app.rs` | Main loop, mode state machine, key routing, rendering |
-| `core/model.rs` | Data structs: Collection, Thread, Session, AgentSession, AgentType |
+| `core/model.rs` | Data structs: Thread, Session, AgentSession, AgentType |
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command` |
 | `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
-| `theme.rs` | All `Style` constants — warm palette (orange collections, tan threads, sage green sessions) |
+| `theme.rs` | All `Style` constants — warm palette with an orange accent |
 
 ### Rendering
 
@@ -152,7 +152,7 @@ Eight further properties keep this correct, and all eight are easy to break:
 
 **Every status write is atomic.** `printf word > "$f"` truncates the file before it writes. A hook that reads in that gap sees an empty file, and `live` mode claims an empty file as `working`. A subagent tool call can then replace a `review` that `Stop` is still writing. So every mode writes through the `put` helper in `status_hook_entry`: it writes a dot temp file in the same directory, then runs `mv -f`. The Pi extension uses `writeFileSync` and `renameSync`. `write_status_to` and `expire_stale_working` use `std::fs::rename`. tws skips names that start with `.` when it reads statuses, and `prune_stale_files` deletes dot files older than 60 s. The heartbeat touch never truncates and never renames, because it writes no word. Never add a bare `> "$f"`: `scripts/verify-agent-hooks.sh` fails on it.
 
-Hook wiring lives in `install.sh` (`status_hook_entry`, `subagent_hook_entry`, `session_end_hook_entry`). A tws hook entry is any entry whose command contains `config/tws/`, so re-runs replace old entries; keep new commands under that path. The installer asks one question. `scan_plan` reads only: it finds each agent config (`~/.claude/settings.json`, `~/.codex`, `~/.pi`), the tmux config, a missing `PATH` line, a `prefix+F` conflict, and a missing `glow`. `print_plan` shows every change and every item it leaves alone (with the lines to add by hand when a step cannot run), and `confirm_plan` asks `Apply these changes? [Y/n]` one time. `apply_plan` then runs the steps with no more questions. A "no", or no terminal to read the answer from, changes nothing outside the binary. The scan must start no tmux server: most tmux commands start one, and a new server runs the user's config (plugins, session restore). So the scan probes with `list-sessions` one time (`tmux_live`), and `list-keys` and `source-file` run only when a server already runs. With no server, a config that loads other files or plugins hides their keys, so the fork binding is skipped with a note. Editing the hook wiring does **not** reach existing installs — the mappings are copied into `~/.claude/settings.json` at install time, so protocol changes require re-running `install.sh`. Re-running it is not enough on its own: an agent that is already running holds the hook config it read earlier, so a session started before the upgrade keeps reporting the old protocol until you restart it. Neither gap is visible from the tree, so when a single pane misreports state and the rest look right, check that pane's agent age before suspecting the protocol.
+Hook wiring lives in `install.sh` (`status_hook_entry`, `subagent_hook_entry`, `session_end_hook_entry`). A tws hook entry is any entry whose command contains `config/tws/`, so re-runs replace old entries; keep new commands under that path. The installer asks one question. `scan_plan` reads only: it finds each agent config (`~/.claude/settings.json`, `~/.codex`, `~/.pi`), the tmux config, a missing `PATH` line, a `prefix+F` conflict, and a missing `glow`. `print_plan` shows every change and every item it leaves alone (with the lines to add by hand when a step cannot run), and `confirm_plan` asks `Apply these changes? [Y/n]` one time. `apply_plan` then runs the steps with no more questions. A "no", or no terminal to read the answer from, changes nothing outside the binary. Before the question, `migrate_state` silently flattens an old `state.json` that has collections, and keeps `state.json.bak`. The scan must start no tmux server: most tmux commands start one, and a new server runs the user's config (plugins, session restore). So the scan probes with `list-sessions` one time (`tmux_live`), and `list-keys` and `source-file` run only when a server already runs. With no server, a config that loads other files or plugins hides their keys, so the fork binding is skipped with a note. Editing the hook wiring does **not** reach existing installs — the mappings are copied into `~/.claude/settings.json` at install time, so protocol changes require re-running `install.sh`. Re-running it is not enough on its own: an agent that is already running holds the hook config it read earlier, so a session started before the upgrade keeps reporting the old protocol until you restart it. Neither gap is visible from the tree, so when a single pane misreports state and the rest look right, check that pane's agent age before suspecting the protocol.
 
 ## Tests
 
