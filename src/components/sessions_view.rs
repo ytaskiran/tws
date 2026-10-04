@@ -176,6 +176,7 @@ pub fn render(
 ) {
     let width = area.width as usize;
     let now = agent_meta::now();
+    let now_ms = agent_meta::now_ms();
     let tint = if focused {
         theme.highlight
     } else {
@@ -243,7 +244,7 @@ pub fn render(
             Row::Agent(_, a) => {
                 // No pin digit here: in this view 1-5 open recent sessions,
                 // so a digit would promise a key that does something else.
-                let left = vec![
+                let mut left = vec![
                     guide(),
                     Span::raw("  "),
                     Span::styled(
@@ -252,7 +253,22 @@ pub fn render(
                     ),
                     Span::styled(a.display_name.clone(), name_style(theme.agent_name)),
                 ];
-                let meta = agent_meta::label(a.agent_type, a.status_since, a.subagents, now);
+                let meta = agent_meta::label(a.agent_type, a.status_since, now);
+                if a.subagents > 0 {
+                    // The bar, a one-space gap and the two-space right margin
+                    // of `line`. The word goes first, so the meta stays put.
+                    let room = width.saturating_sub(visible_len(&left) + meta.chars().count() + 4);
+                    let sp = agent_meta::spinner(now_ms);
+                    let count = [
+                        format!("  {sp} {}", agent_meta::subagents(a.subagents)),
+                        format!("  {sp} {}", a.subagents),
+                    ]
+                    .into_iter()
+                    .find(|t| t.chars().count() <= room);
+                    if let Some(t) = count {
+                        left.push(Span::styled(t, theme.path_dim));
+                    }
+                }
                 line(
                     left,
                     vec![Span::styled(meta, theme.meta)],
@@ -382,6 +398,62 @@ mod tests {
             row(0)
         );
         assert!(row(2).contains('●'), "agent row lost its dot: {:?}", row(2));
+    }
+
+    /// Row 2 of the fixture is the agent row, drawn `width` columns wide.
+    fn agent_row(state: &AppState, width: u16) -> String {
+        use crate::config::palette::Palette;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|f| render(f, state, &[], true, f.area(), &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 2)].symbol()).collect()
+    }
+
+    #[test]
+    fn agent_row_shows_subagents_after_the_name() {
+        let mut state = fixture();
+        state.agent_sessions[0].subagents = 3;
+        let row = agent_row(&state, 60);
+        let name = row.find("%1").expect("agent name");
+        let count = row.find("3 subagents").expect("count after the name");
+        assert!(name < count, "count is not after the name: {row:?}");
+        assert!(row.trim_end().ends_with("claude"), "meta moved: {row:?}");
+    }
+
+    #[test]
+    fn narrow_agent_row_drops_the_word_before_the_meta() {
+        let mut state = fixture();
+        state.agent_sessions[0].subagents = 3;
+        // Room for `  ⠋ 3` and a one-space gap, but not for the word.
+        let row = agent_row(&state, 24);
+        assert!(!row.contains("subagents"), "word kept: {row:?}");
+        assert!(row.contains(" 3 "), "count dropped too early: {row:?}");
+        assert!(
+            row.trim_end().ends_with("claude"),
+            "meta pushed off: {row:?}"
+        );
+        // Narrower still, the count goes and the meta stays.
+        let row = agent_row(&state, 22);
+        assert!(!row.contains(" 3 "), "count kept with no room: {row:?}");
+        assert!(
+            row.trim_end().ends_with("claude"),
+            "meta pushed off: {row:?}"
+        );
+    }
+
+    #[test]
+    fn agent_row_without_subagents_has_no_count() {
+        let row = agent_row(&fixture(), 60);
+        assert!(
+            !row.contains("subagent"),
+            "count with none running: {row:?}"
+        );
     }
 
     #[test]

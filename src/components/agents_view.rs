@@ -47,11 +47,13 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         .max()
         .unwrap_or(0);
 
-    let lines: Vec<Line<'static>> = agents
-        .iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let selected = i == cursor;
+    let now_ms = agent_meta::now_ms();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // The last line of the selected agent, so its subagent line stays on screen.
+    let mut cursor_line = 0;
+    for (i, a) in agents.iter().enumerate() {
+        let selected = i == cursor;
+        lines.push({
             let bar = if selected {
                 Span::styled("▎", theme.selection_bar)
             } else {
@@ -81,7 +83,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             ];
             // `kind · age` at the right edge, as in the sessions view. The path
             // gives way first, so the meta stays on screen in a narrow pane.
-            let meta = agent_meta::label(a.agent_type, a.status_since, a.subagents, now);
+            let meta = agent_meta::label(a.agent_type, a.status_since, now);
             let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
             let room = width.saturating_sub(used + meta.chars().count() + 3);
             spans.push(Span::styled(
@@ -95,22 +97,50 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             let gap = width.saturating_sub(used + meta.chars().count() + 2).max(1);
             spans.push(Span::raw(" ".repeat(gap)));
             spans.push(Span::styled(meta, theme.meta));
-            if selected {
-                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                if width > used {
-                    spans.push(Span::raw(" ".repeat(width - used)));
-                }
-                let mut line = Line::from(spans);
-                line.style = theme.highlight;
-                line
+            item_line(spans, selected, width, theme)
+        });
+        // The subagent line is part of the agent: same bar, same highlight, and
+        // the cursor does not stop on it. The `↳` sits under the name.
+        if a.subagents > 0 {
+            let bar = if selected {
+                Span::styled("▎", theme.selection_bar)
             } else {
-                Line::from(spans)
-            }
-        })
-        .collect();
+                Span::raw(" ")
+            };
+            let text = format!(
+                "↳ {} {} working",
+                agent_meta::spinner(now_ms),
+                agent_meta::subagents(a.subagents)
+            );
+            let spans = vec![bar, Span::raw("      "), Span::styled(text, theme.path_dim)];
+            lines.push(item_line(spans, selected, width, theme));
+        }
+        if selected {
+            cursor_line = lines.len() - 1;
+        }
+    }
 
-    let scroll = super::scroll_to_keep_visible(cursor, area.height);
+    let scroll = super::scroll_to_keep_visible(cursor_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+}
+
+/// A selected line is padded to the full width, so its tint covers the row.
+fn item_line(
+    mut spans: Vec<Span<'static>>,
+    selected: bool,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    if !selected {
+        return Line::from(spans);
+    }
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if width > used {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    let mut line = Line::from(spans);
+    line.style = theme.highlight;
+    line
 }
 
 #[cfg(test)]
@@ -189,6 +219,55 @@ mod tests {
         let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
         let out = screen(&agents, 9, 3);
         assert!(out.contains("agent-09"), "cursor row scrolled off:\n{out}");
+    }
+
+    #[test]
+    fn subagents_get_their_own_line_under_the_agent() {
+        let mut a = agent(0);
+        a.subagents = 3;
+        let out = screen(&[a, agent(1)], 1, 3);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].contains("agent-00"), "agent line:\n{out}");
+        assert!(
+            lines[1].contains("↳") && lines[1].contains("3 subagents working"),
+            "subagent line:\n{out}"
+        );
+        assert!(lines[2].contains("agent-01"), "next agent:\n{out}");
+        assert!(
+            !lines[0].contains("subagent"),
+            "count on the agent line:\n{out}"
+        );
+    }
+
+    #[test]
+    fn one_subagent_reads_singular() {
+        let mut a = agent(0);
+        a.subagents = 1;
+        let out = screen(&[a], 0, 2);
+        assert!(out.contains("1 subagent working"), "singular:\n{out}");
+    }
+
+    #[test]
+    fn subagent_line_of_the_selected_agent_stays_visible() {
+        let mut agents: Vec<FlatAgent> = (0..10).map(agent).collect();
+        agents[9].subagents = 2;
+        let out = screen(&agents, 9, 3);
+        assert!(out.contains("agent-09"), "cursor row scrolled off:\n{out}");
+        assert!(
+            out.contains("2 subagents working"),
+            "its line scrolled off:\n{out}"
+        );
+    }
+
+    #[test]
+    fn subagent_lines_above_push_the_cursor_down() {
+        let mut agents: Vec<FlatAgent> = (0..4).map(agent).collect();
+        for a in &mut agents[..3] {
+            a.subagents = 1;
+        }
+        // Agent 3 sits on line 6, below a 3-line screen.
+        let out = screen(&agents, 3, 3);
+        assert!(out.contains("agent-03"), "cursor row scrolled off:\n{out}");
     }
 
     #[test]

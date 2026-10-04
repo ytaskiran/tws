@@ -1,6 +1,7 @@
 //! The dim `kind · age` text at the end of an agent row, such as
 //! `claude · 4m`. Both the sessions view and the agents view use it, so the
-//! same agent reads the same way in each view.
+//! same agent reads the same way in each view. The subagent count and its
+//! spinner live here for the same reason.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,17 +36,35 @@ pub fn age(since: i64, now: i64) -> Option<String> {
     })
 }
 
-/// `claude · 4m`, or `claude` alone when the status time is unknown. Running
-/// subagents add a count between them: `claude · ⑂3 · 4m`.
-pub fn label(kind: AgentType, status_since: i64, subagents: usize, now: i64) -> String {
-    let mut s = kind_label(kind).to_string();
-    if subagents > 0 {
-        s += &format!(" · ⑂{subagents}");
+/// `claude · 4m`, or `claude` alone when the status time is unknown.
+pub fn label(kind: AgentType, status_since: i64, now: i64) -> String {
+    match age(status_since, now) {
+        Some(t) => format!("{} · {}", kind_label(kind), t),
+        None => kind_label(kind).to_string(),
     }
-    if let Some(t) = age(status_since, now) {
-        s += &format!(" · {t}");
-    }
-    s
+}
+
+/// Current Unix time in milliseconds, for `spinner`.
+pub fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The app redraws on each 250 ms key poll, so a faster step would skip frames.
+const SPINNER_STEP_MS: u128 = 250;
+
+/// The spinner frame at `now_ms`. The frame comes from the clock, so every
+/// spinner on the screen shows the same frame and none keeps state.
+pub fn spinner(now_ms: u128) -> char {
+    SPINNER[(now_ms / SPINNER_STEP_MS % SPINNER.len() as u128) as usize]
+}
+
+/// `1 subagent`, `3 subagents`.
+pub fn subagents(n: usize) -> String {
+    format!("{n} subagent{}", if n == 1 { "" } else { "s" })
 }
 
 #[cfg(test)]
@@ -63,16 +82,21 @@ mod tests {
 
     #[test]
     fn label_joins_kind_and_age() {
-        assert_eq!(label(AgentType::ClaudeCode, 1000, 0, 1240), "claude · 4m");
-        assert_eq!(label(AgentType::Pi, 0, 0, 1240), "pi");
+        assert_eq!(label(AgentType::ClaudeCode, 1000, 1240), "claude · 4m");
+        assert_eq!(label(AgentType::Pi, 0, 1240), "pi");
     }
 
     #[test]
-    fn label_shows_running_subagents() {
-        assert_eq!(
-            label(AgentType::ClaudeCode, 1000, 3, 1240),
-            "claude · ⑂3 · 4m"
-        );
-        assert_eq!(label(AgentType::ClaudeCode, 0, 1, 1240), "claude · ⑂1");
+    fn spinner_steps_once_per_redraw_tick_and_wraps() {
+        assert_eq!(spinner(0), '⠋');
+        assert_eq!(spinner(249), '⠋');
+        assert_eq!(spinner(250), '⠙');
+        assert_eq!(spinner(10 * 250), '⠋');
+    }
+
+    #[test]
+    fn subagent_count_reads_singular_and_plural() {
+        assert_eq!(subagents(1), "1 subagent");
+        assert_eq!(subagents(3), "3 subagents");
     }
 }
