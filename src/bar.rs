@@ -15,8 +15,8 @@ use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
 /// with `#{P:#{pane_id} }`, and the server start time with `#{start_time}`.
-/// `active` uses dark tones of the colors, for the current tab: its
-/// background is most often a bright accent color.
+/// `active` uses slightly darker tones of the colors, for the current tab:
+/// its background is most often a bright accent color.
 pub fn window(pane_ids: &[String], active: bool, server_start: i64) {
     let palette = if active { dark(&palette()) } else { palette() };
     let now = std::time::SystemTime::now()
@@ -129,11 +129,12 @@ fn glyph(st: AgentStatus) -> &'static str {
     }
 }
 
-/// The palette at 45% brightness, for glyphs on a bright tab.
+/// The palette at 90% brightness, for glyphs on a bright tab. A lower value
+/// makes the green and orange look grey on the tab.
 fn dark(p: &Palette) -> Palette {
     let d = |c: Color| match c {
         Color::Rgb(r, g, b) => {
-            let f = |v: u8| (v as u16 * 45 / 100) as u8;
+            let f = |v: u8| (v as u16 * 90 / 100) as u8;
             Color::Rgb(f(r), f(g), f(b))
         }
         other => other,
@@ -258,7 +259,8 @@ mod tests {
     fn active_tab_uses_dark_tones_of_the_palette() {
         let p = Palette::default();
         let d = dark(&p);
-        assert_eq!(d.green, Color::Rgb(0x3a, 0x51, 0x3a));
+        assert_eq!(d.green, Color::Rgb(0x75, 0xa2, 0x75));
+        assert_eq!(d.accent, Color::Rgb(0xb7, 0x6c, 0x2d));
         assert_ne!(hex(d.accent), hex(p.accent));
         let dir = status_dir("dark", &[("%1", "waiting")]);
         let out = window_glyphs(&dir, &ids(&["%1"]), &d, 0, now());

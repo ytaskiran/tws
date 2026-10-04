@@ -120,21 +120,23 @@ the installer changes nothing and shows a note. The installer leaves out the
     set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  # tws status bar
     set -g status-left ' '  # tws status bar
     set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} }) '  # tws status bar
-    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  # tws status bar
-    set -g status-right '#(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
+    set -g window-status-current-format '#[bg=#e3a273,fg=#121212] #I #W#(/home/you/.local/bin/tws bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  # tws status bar
+    set -g status-right '#[bg=#e3a273,fg=#121212] #(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
 
 To use your own bar, add the two commands to it. tmux replaces
 `#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
-their glyphs in the tws theme colors. `--active` prints dark tones of the
-colors, for the current tab, which most often has a bright background. `--since #{start_time}`
+their glyphs in the tws theme colors. `--active` prints slightly darker
+tones of the colors, for the current tab, which most often has a bright
+background. `--since #{start_time}`
 skips the status files from before the tmux server started. Put the command at
 the end of the tab label: the glyph color stays on for the text after it.
 `tws bar where` prints `thread › session`. For example, with [tmux-nova](https://github.com/o0th/tmux-nova):
 
     set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--active,} --since #{start_time} #{P:#{pane_id} })'
     set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'
-    set -g @nova-segment-tws-colors '#c8a882 #121212'
+    set -g @nova-segment-tws-colors '#e3a273 #121212'
     set -g @nova-segments-0-right 'tws'
+    set -g @nova-status-style-active-bg '#e3a273'
 
 A `#()` command does not read your shell `PATH`, so write the full path of your
 own binary. tmux runs the commands again once in each `status-interval`, so a new

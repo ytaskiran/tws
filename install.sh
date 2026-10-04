@@ -1083,8 +1083,8 @@ bar_block() {
         "set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  $BAR_MARKER" \
         "set -g status-left ' '  $BAR_MARKER" \
         "set -g window-status-format ' #I #W#($bin bar window --since #{start_time} #{P:#{pane_id} }) '  $BAR_MARKER" \
-        "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
-        "set -g status-right '#($bin bar where -- #{q:session_name}) '  $BAR_MARKER"
+        "set -g window-status-current-format '#[bg=#e3a273,fg=#121212] #I #W#($bin bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
+        "set -g status-right '#[bg=#e3a273,fg=#121212] #($bin bar where -- #{q:session_name}) '  $BAR_MARKER"
 }
 
 # Succeeds when the user has a status bar of their own: a config line sets one
