@@ -112,23 +112,26 @@ them. Each window tab shows one glyph for each agent in that window: `●` worki
 `install.sh` adds the block below together with the agent status hooks, but only
 when your tmux config has no status bar of its own. A config that sets a status
 option, or a theme plugin that sets one, has a bar of its own. For such a config,
-the installer changes nothing and shows a note.
+the installer changes nothing and shows a note. The installer leaves out the
+`status-interval` line when your config sets its own value.
 
     # tws status bar
     set -g status-interval 5  # tws status bar
     set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  # tws status bar
     set -g status-left ' '  # tws status bar
-    set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window #{P:#{pane_id} }) '  # tws status bar
-    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain #{P:#{pane_id} }) #[default]'  # tws status bar
+    set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} }) '  # tws status bar
+    set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain --since #{start_time} #{P:#{pane_id} }) #[default]'  # tws status bar
     set -g status-right '#(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
 
 To use your own bar, add the two commands to it. tmux replaces
 `#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
 their glyphs in the tws theme colors. `--plain` prints the glyphs with no color,
-for a tab whose background does not suit the colors. `tws bar where` prints
-`thread › session`. For example, with [tmux-nova](https://github.com/o0th/tmux-nova):
+for a tab whose background does not suit the colors. `--since #{start_time}`
+skips the status files from before the tmux server started. Put the command at
+the end of the tab label: the glyph color stays on for the text after it.
+`tws bar where` prints `thread › session`. For example, with [tmux-nova](https://github.com/o0th/tmux-nova):
 
-    set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--plain,} #{P:#{pane_id} })'
+    set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--plain,} --since #{start_time} #{P:#{pane_id} })'
     set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'
     set -g @nova-segment-tws-colors '#c8a882 #121212'
     set -g @nova-segments-0-right 'tws'

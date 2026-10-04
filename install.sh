@@ -1063,7 +1063,7 @@ fork_key_taken() {
 BAR_MARKER='# tws status bar'
 # A config line with this text keeps the installer from adding the bar again.
 BAR_OFF='# tws status bar off'
-BAR_OPTIONS='status-style status-left status-right status-format window-status-format window-status-current-format'
+BAR_OPTIONS='status-style status-bg status-fg status-justify status-left status-left-style status-right status-right-style status-format window-status-format window-status-current-format window-status-style window-status-current-style'
 
 # The window tabs show the agent glyphs of their panes, and the right end shows
 # "thread › session". #() jobs get the tmux server environment, not your shell
@@ -1071,26 +1071,32 @@ BAR_OPTIONS='status-style status-left status-right status-format window-status-f
 # the marker, so a re-run drops the block and keeps your own lines, also a line
 # of yours that calls `tws bar`.
 # The tmux default bar is green, and the green working glyph does not show on
-# it, so the block also sets the tws palette bg and fg.
+# it, so the block also sets the tws palette bg and fg. The block goes after
+# your lines, so it leaves out status-interval when you set one. --since
+# gives the server start time: an older status file is from a pane of an
+# earlier server with the same ID.
 bar_block() {
     local bin="$INSTALL_DIR/$BINARY_NAME"
-    printf '%s\n' "$BAR_MARKER" \
-        "set -g status-interval 5  $BAR_MARKER" \
+    printf '%s\n' "$BAR_MARKER"
+    tmux_conf_sets_interval || printf '%s\n' "set -g status-interval 5  $BAR_MARKER"
+    printf '%s\n' \
         "set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  $BAR_MARKER" \
         "set -g status-left ' '  $BAR_MARKER" \
-        "set -g window-status-format ' #I #W#($bin bar window #{P:#{pane_id} }) '  $BAR_MARKER" \
-        "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
+        "set -g window-status-format ' #I #W#($bin bar window --since #{start_time} #{P:#{pane_id} }) '  $BAR_MARKER" \
+        "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain --since #{start_time} #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
         "set -g status-right '#($bin bar where -- #{q:session_name}) '  $BAR_MARKER"
 }
 
 # Succeeds when the user has a status bar of their own: a config line sets one
 # of BAR_OPTIONS, or, with a live server, one of them differs from the tmux
 # default (a plugin such as nova sets them at runtime). A value from the tws
-# block does not count, so a re-run sees the same result. The defaults come
-# from a probe server that reads no config and exits at once.
+# block does not count, so a re-run sees the same result. When a config holds
+# the block, the live values can come from an older block, so the live check
+# does not run. The defaults come from a probe server that reads no config
+# and exits at once.
 tmux_has_own_bar() {
     local conf opt live ours default pattern
-    pattern="(^|[[:space:]])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]]|$)"
+    pattern="(^|[[:space:]'\"])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]'\"[]|$)"
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
         if grep -vF "$BAR_MARKER" "$conf" \
@@ -1100,6 +1106,7 @@ tmux_has_own_bar() {
         fi
     done <<< "$(tmux_conf_candidates)"
     [ "$tmux_live" -eq 1 ] || return 1
+    tmux_conf_marked_lines | grep -vF "$BAR_OFF" | grep . >/dev/null && return 1
     for opt in $BAR_OPTIONS; do
         live="$(tmux show-options -gv "$opt" 2>/dev/null)"
         ours="$(bar_block | sed -n "s/^set -g $opt '\(.*\)'.*/\1/p")"
@@ -1107,6 +1114,28 @@ tmux_has_own_bar() {
         default="$(tmux -L tws-defaults -f /dev/null start-server \; show-options -gv "$opt" 2>/dev/null)"
         [ "$live" = "$default" ] || return 0
     done
+    return 1
+}
+
+# Prints the lines of every config that carry the marker.
+tmux_conf_marked_lines() {
+    local conf
+    while IFS= read -r conf; do
+        if [ -f "$conf" ]; then grep -F "$BAR_MARKER" "$conf" || true; fi
+    done <<< "$(tmux_conf_candidates)"
+    return 0
+}
+
+# Succeeds when a config line of yours sets status-interval.
+tmux_conf_sets_interval() {
+    local conf
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' \
+            | grep -E '(^|[[:space:]])status-interval([[:space:]]|$)' >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
     return 1
 }
 
@@ -1244,10 +1273,10 @@ scan_plan() {
     broken_link="$(tmux_conf_broken_link)"
     if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ]; then
         if [ -n "$broken_link" ]; then
-            plan_notes+=("tmux ack hooks and fork binding — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
+            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
             tmux_blocked=1
         elif [ -n "$plan_conf" ] && [ ! -w "$plan_conf" ]; then
-            plan_notes+=("tmux ack hooks and fork binding — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
+            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
             tmux_blocked=1
         fi
     fi
