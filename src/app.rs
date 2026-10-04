@@ -28,23 +28,14 @@ use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
 
 enum InputPurpose {
-    AddCollection,
-    AddThread {
-        collection_idx: usize,
-    },
-    RenameCollection {
-        idx: usize,
-    },
+    AddThread,
     RenameThread {
-        col_idx: usize,
         thread_idx: usize,
     },
     NewSession {
-        col_idx: usize,
         thread_idx: usize,
     },
     RenameSession {
-        col_idx: usize,
         thread_idx: usize,
         old_tmux_name: String,
     },
@@ -54,12 +45,7 @@ enum InputPurpose {
 }
 
 enum ConfirmPurpose {
-    DeleteCollection {
-        idx: usize,
-        name: String,
-    },
     DeleteThread {
-        col_idx: usize,
         thread_idx: usize,
         name: String,
     },
@@ -67,7 +53,6 @@ enum ConfirmPurpose {
         session_name: String,
     },
     KillAllSessions {
-        col_idx: usize,
         thread_idx: usize,
         thread_name: String,
     },
@@ -138,7 +123,6 @@ enum Mode {
     },
     DirPicker {
         picker: DirPicker,
-        col_idx: usize,
         thread_idx: usize,
     },
 }
@@ -323,27 +307,22 @@ impl App {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
             ViewMode::Agents => flat_agents
                 .get(self.agent_list_cursor)
-                .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
+                .map(|a| SelectedItem::Agent(a.thread_idx, a.sess_idx, a.agent_idx))
                 .unwrap_or(SelectedItem::None),
         };
         let show_preview =
             self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
         let sidebar_info: Option<String> = match &selected_item {
             SelectedItem::None => None,
-            SelectedItem::Collection(idx) => Some(self.state.collections[*idx].name.clone()),
-            SelectedItem::Thread(col_idx, thread_idx) => Some(
-                self.state.collections[*col_idx].threads[*thread_idx]
-                    .name
-                    .clone(),
-            ),
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread = &self.state.collections[*col_idx].threads[*thread_idx];
+            SelectedItem::Thread(thread_idx) => Some(self.state.threads[*thread_idx].name.clone()),
+            SelectedItem::Session(thread_idx, sess_idx) => {
+                let thread = &self.state.threads[*thread_idx];
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
             }
-            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => self
+            SelectedItem::Agent(thread_idx, sess_idx, agent_idx) => self
                 .state
-                .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+                .resolve_agent(*thread_idx, *sess_idx, *agent_idx)
                 .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name)),
         };
         let show_sidebar = sidebar_info.is_some() && is_normal;
@@ -575,9 +554,7 @@ impl App {
                 Mode::Normal => {}
                 Mode::Input { purpose, buffer } => {
                     let title = match purpose {
-                        InputPurpose::AddCollection => "New Collection",
-                        InputPurpose::AddThread { .. } => "New Thread",
-                        InputPurpose::RenameCollection { .. } => "Rename Collection",
+                        InputPurpose::AddThread => "New Thread",
                         InputPurpose::RenameThread { .. } => "Rename Thread",
                         InputPurpose::NewSession { .. } => "Session Name",
                         InputPurpose::RenameSession { .. } => "Rename Session",
@@ -587,9 +564,6 @@ impl App {
                 }
                 Mode::Confirm { purpose } => {
                     let message = match purpose {
-                        ConfirmPurpose::DeleteCollection { name, .. } => {
-                            format!("Delete collection \"{}\"?", name)
-                        }
                         ConfirmPurpose::DeleteThread { name, .. } => {
                             format!("Delete thread \"{}\"?", name)
                         }
@@ -626,16 +600,11 @@ impl App {
                         &self.theme,
                     );
                 }
-                Mode::DirPicker {
-                    picker,
-                    col_idx,
-                    thread_idx,
-                } => {
+                Mode::DirPicker { picker, thread_idx } => {
                     let thread_name = self
                         .state
-                        .collections
-                        .get(*col_idx)
-                        .and_then(|c| c.threads.get(*thread_idx))
+                        .threads
+                        .get(*thread_idx)
                         .map(|t| t.name.as_str())
                         .unwrap_or("thread");
                     dir_picker_modal::render(frame, picker, thread_name, area, &self.theme);
@@ -676,9 +645,8 @@ impl App {
                 }
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
-                    SelectedItem::Collection(_) => StatusContext::NormalCollection,
-                    SelectedItem::Thread(_, _) => StatusContext::NormalThread,
-                    SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                    SelectedItem::Thread(_) => StatusContext::NormalThread,
+                    SelectedItem::Session(_, _) => StatusContext::NormalSession,
                     SelectedItem::Agent(..) => StatusContext::NormalAgent,
                 }
             }
@@ -778,12 +746,6 @@ impl App {
                 self.tree_state.select(Vec::new());
             }
             Action::Add => self.start_add(),
-            Action::AddCollection => {
-                self.mode = Mode::Input {
-                    purpose: InputPurpose::AddCollection,
-                    buffer: String::new(),
-                };
-            }
             Action::Rename => self.start_rename(),
             Action::Delete => self.start_delete(),
             Action::KillSession => self.start_kill_session(),
@@ -802,10 +764,10 @@ impl App {
             Action::RecentSession5 => self.attach_recent(4, terminal)?,
             Action::ExpandAll => self.toggle_expand_all(),
             Action::SetDirectory => {
-                if let SelectedItem::Thread(col_idx, thread_idx) =
+                if let SelectedItem::Thread(thread_idx) =
                     self.state.resolve_selection(self.tree_state.selected())
                 {
-                    self.open_dir_picker(col_idx, thread_idx);
+                    self.open_dir_picker(thread_idx);
                 }
             }
             _ => {}
@@ -973,7 +935,7 @@ impl App {
                 let agents = self.state.all_agents_flat();
                 agents
                     .get(self.agent_list_cursor)
-                    .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
+                    .map(|a| SelectedItem::Agent(a.thread_idx, a.sess_idx, a.agent_idx))
                     .unwrap_or(SelectedItem::None)
             }
         }
@@ -1023,23 +985,8 @@ impl App {
     }
 
     fn start_add(&mut self) {
-        let selected = self.state.resolve_selection(self.tree_state.selected());
-        let purpose = match selected {
-            SelectedItem::Collection(idx)
-            | SelectedItem::Thread(idx, _)
-            | SelectedItem::Session(idx, _, _)
-            | SelectedItem::Agent(idx, _, _, _) => InputPurpose::AddThread {
-                collection_idx: idx,
-            },
-            SelectedItem::None => {
-                let col_idx = self.state.ensure_root_collection();
-                InputPurpose::AddThread {
-                    collection_idx: col_idx,
-                }
-            }
-        };
         self.mode = Mode::Input {
-            purpose,
+            purpose: InputPurpose::AddThread,
             buffer: String::new(),
         };
     }
@@ -1051,28 +998,20 @@ impl App {
             None => return,
         };
         let purpose = match selected {
-            SelectedItem::Collection(idx) => InputPurpose::RenameCollection { idx },
-            SelectedItem::Thread(col_idx, thread_idx) => InputPurpose::RenameThread {
-                col_idx,
-                thread_idx,
-            },
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+            SelectedItem::Thread(thread_idx) => InputPurpose::RenameThread { thread_idx },
+            SelectedItem::Session(thread_idx, sess_idx) => {
+                let thread_id = self.state.threads[thread_idx].id;
                 let sessions = self.state.sessions_for_thread(thread_id);
                 match sessions.get(sess_idx) {
                     Some(session) => InputPurpose::RenameSession {
-                        col_idx,
                         thread_idx,
                         old_tmux_name: session.tmux_session_name.clone(),
                     },
                     None => return,
                 }
             }
-            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                match self
-                    .state
-                    .resolve_agent(col_idx, thread_idx, sess_idx, agent_idx)
-                {
+            SelectedItem::Agent(thread_idx, sess_idx, agent_idx) => {
+                match self.state.resolve_agent(thread_idx, sess_idx, agent_idx) {
                     Some(agent) => InputPurpose::RenameAgent {
                         pane_id: agent.pane_id.clone(),
                     },
@@ -1090,16 +1029,9 @@ impl App {
     fn start_delete(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match &selected {
-            SelectedItem::Collection(idx) => {
-                let name = self.state.collections[*idx].name.clone();
-                ConfirmPurpose::DeleteCollection { idx: *idx, name }
-            }
-            SelectedItem::Thread(col_idx, thread_idx) => {
-                let name = self.state.collections[*col_idx].threads[*thread_idx]
-                    .name
-                    .clone();
+            SelectedItem::Thread(thread_idx) => {
+                let name = self.state.threads[*thread_idx].name.clone();
                 ConfirmPurpose::DeleteThread {
-                    col_idx: *col_idx,
                     thread_idx: *thread_idx,
                     name,
                 }
@@ -1112,8 +1044,8 @@ impl App {
     fn start_kill_session(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+            SelectedItem::Session(thread_idx, sess_idx) => {
+                let thread_id = self.state.threads[thread_idx].id;
                 let sessions = self.state.sessions_for_thread(thread_id);
                 if let Some(session) = sessions.get(sess_idx) {
                     let name = session.tmux_session_name.clone();
@@ -1122,15 +1054,10 @@ impl App {
                     };
                 }
             }
-            SelectedItem::Thread(col_idx, thread_idx)
-                if self.state.has_active_session(col_idx, thread_idx) =>
-            {
-                let thread_name = self.state.collections[col_idx].threads[thread_idx]
-                    .name
-                    .clone();
+            SelectedItem::Thread(thread_idx) if self.state.has_active_session(thread_idx) => {
+                let thread_name = self.state.threads[thread_idx].name.clone();
                 self.mode = Mode::Confirm {
                     purpose: ConfirmPurpose::KillAllSessions {
-                        col_idx,
                         thread_idx,
                         thread_name,
                     },
@@ -1142,12 +1069,12 @@ impl App {
 
     fn start_move_session(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
-        let (col_idx, thread_idx, sess_idx) = match selected {
-            SelectedItem::Session(c, t, s) => (c, t, s),
+        let (thread_idx, sess_idx) = match selected {
+            SelectedItem::Session(t, s) => (t, s),
             _ => return,
         };
 
-        let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+        let thread_id = self.state.threads[thread_idx].id;
         let sessions = self.state.sessions_for_thread(thread_id);
         let session = match sessions.get(sess_idx) {
             Some(s) => s,
@@ -1158,10 +1085,11 @@ impl App {
 
         let entries: Vec<(String, String)> = self
             .state
-            .all_threads_display()
-            .into_iter()
-            .filter(|(ci, ti, _)| !(*ci == col_idx && *ti == thread_idx))
-            .map(|(ci, ti, path)| (format!("{}:{}", ci, ti), path))
+            .threads
+            .iter()
+            .enumerate()
+            .filter(|(ti, _)| *ti != thread_idx)
+            .map(|(ti, t)| (ti.to_string(), t.name.clone()))
             .collect();
 
         if entries.is_empty() {
@@ -1179,30 +1107,23 @@ impl App {
     fn start_enter(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
-            SelectedItem::Collection(..) => {}
-            SelectedItem::Thread(col_idx, thread_idx) => {
+            SelectedItem::Thread(thread_idx) => {
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::NewSession {
-                        col_idx,
-                        thread_idx,
-                    },
+                    purpose: InputPurpose::NewSession { thread_idx },
                     buffer: String::new(),
                 };
             }
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+            SelectedItem::Session(thread_idx, sess_idx) => {
                 let sessions = self
                     .state
-                    .sessions_for_thread(self.state.collections[col_idx].threads[thread_idx].id);
+                    .sessions_for_thread(self.state.threads[thread_idx].id);
                 if let Some(session) = sessions.get(sess_idx) {
                     let name = session.tmux_session_name.clone();
                     self.attach_to_session(&name, terminal)?;
                 }
             }
-            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                if let Some(agent) = self
-                    .state
-                    .resolve_agent(col_idx, thread_idx, sess_idx, agent_idx)
-                {
+            SelectedItem::Agent(thread_idx, sess_idx, agent_idx) => {
+                if let Some(agent) = self.state.resolve_agent(thread_idx, sess_idx, agent_idx) {
                     let session_name = agent.tmux_session_name.clone();
                     let window_index = agent.window_index;
                     let pane_id = agent.pane_id.clone();
@@ -1212,12 +1133,9 @@ impl App {
                 }
             }
             SelectedItem::None => {
-                let (col_idx, thread_idx) = self.state.ensure_general_thread();
+                let thread_idx = self.state.ensure_general_thread();
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::NewSession {
-                        col_idx,
-                        thread_idx,
-                    },
+                    purpose: InputPurpose::NewSession { thread_idx },
                     buffer: String::new(),
                 };
             }
@@ -1228,12 +1146,11 @@ impl App {
     /// Opens the picker on the selected thread. Starts at the thread's current
     /// directory when it still exists, then the directory tws was launched
     /// from, then home.
-    fn open_dir_picker(&mut self, col_idx: usize, thread_idx: usize) {
+    fn open_dir_picker(&mut self, thread_idx: usize) {
         let start = self
             .state
-            .collections
-            .get(col_idx)
-            .and_then(|c| c.threads.get(thread_idx))
+            .threads
+            .get(thread_idx)
             .and_then(|t| t.working_dir.clone())
             .filter(|d| d.is_dir())
             // An unset thread launches sessions in home, so the picker starts
@@ -1242,7 +1159,6 @@ impl App {
 
         self.mode = Mode::DirPicker {
             picker: DirPicker::open(start),
-            col_idx,
             thread_idx,
         };
     }
@@ -1286,15 +1202,10 @@ impl App {
                     return;
                 }
                 let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-                if let Mode::DirPicker {
-                    picker,
-                    col_idx,
-                    thread_idx,
-                } = old_mode
-                {
+                if let Mode::DirPicker { picker, thread_idx } = old_mode {
                     let dir = picker.selection();
                     let label = workdir::shorten_home(&dir);
-                    self.state.set_thread_working_dir(col_idx, thread_idx, dir);
+                    self.state.set_thread_working_dir(thread_idx, dir);
                     self.save_state();
                     self.set_flash(&format!("Directory set to {}", label));
                 }
@@ -1440,23 +1351,11 @@ impl App {
             let key = &state.all_entries[idx].0;
             let dest_display = state.all_entries[idx].1.clone();
 
-            let parts: Vec<&str> = key.split(':').collect();
-            if parts.len() != 2 {
+            let Ok(dest_thread) = key.parse::<usize>() else {
                 return;
-            }
-            let dest_col: usize = match parts[0].parse() {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let dest_thread: usize = match parts[1].parse() {
-                Ok(v) => v,
-                Err(_) => return,
             };
 
-            if let Some(new_tmux_name) =
-                self.state
-                    .make_session_name(dest_col, dest_thread, &session_label)
-            {
+            if let Some(new_tmux_name) = self.state.make_session_name(dest_thread, &session_label) {
                 let _ = tmux::rename_session(&session_name, &new_tmux_name);
                 self.notes.rename(&session_name, &new_tmux_name);
                 self.do_refresh_sessions();
@@ -1494,11 +1393,8 @@ impl App {
     }
 
     fn refresh_preview(&mut self, selected: &SelectedItem) {
-        if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
-            if let Some(agent) =
-                self.state
-                    .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
-            {
+        if let SelectedItem::Agent(thread_idx, sess_idx, agent_idx) = selected {
+            if let Some(agent) = self.state.resolve_agent(*thread_idx, *sess_idx, *agent_idx) {
                 let pane_id = agent.pane_id.clone();
                 let pane_changed = self.preview_pane_id.as_deref() != Some(&pane_id);
                 let needs_refresh =
@@ -1526,14 +1422,9 @@ impl App {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
             SelectedItem::None => None,
-            SelectedItem::Collection(idx) => Some(self.state.collections[idx].id.to_string()),
-            SelectedItem::Thread(col_idx, thread_idx) => Some(
-                self.state.collections[col_idx].threads[thread_idx]
-                    .id
-                    .to_string(),
-            ),
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread = &self.state.collections[col_idx].threads[thread_idx];
+            SelectedItem::Thread(thread_idx) => Some(self.state.threads[thread_idx].id.to_string()),
+            SelectedItem::Session(thread_idx, sess_idx) => {
+                let thread = &self.state.threads[thread_idx];
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(sess_idx).map(|s| s.tmux_session_name.clone())
             }
@@ -1594,57 +1485,19 @@ impl App {
                 return Ok(());
             }
             match purpose {
-                InputPurpose::AddCollection => {
-                    self.state.add_collection(trimmed);
-                    self.save_state();
-                    self.set_flash("Collection created");
-                }
-                InputPurpose::AddThread { collection_idx } => {
-                    self.state.add_thread(collection_idx, trimmed);
-                    // Auto-expand the collection so the new thread is visible
-                    let col_id = self.state.collections[collection_idx].id.to_string();
-                    self.tree_state.open(vec![col_id]);
+                InputPurpose::AddThread => {
+                    let thread_idx = self.state.add_thread(trimmed);
                     self.save_state();
                     self.set_flash("Thread added");
                     // The thread exists before the picker opens, so cancelling
                     // leaves a valid directory-less thread rather than
                     // discarding the creation.
-                    let thread_idx = self.state.collections[collection_idx].threads.len() - 1;
-                    self.open_dir_picker(collection_idx, thread_idx);
+                    self.open_dir_picker(thread_idx);
                 }
-                InputPurpose::RenameCollection { idx } => {
+                InputPurpose::RenameThread { thread_idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
-                    let old_sessions: Vec<(String, String, usize)> = self.state.collections[idx]
-                        .threads
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(pi, thread)| {
-                            self.state
-                                .sessions_for_thread(thread.id)
-                                .into_iter()
-                                .map(move |s| {
-                                    (s.tmux_session_name.clone(), s.display_name.clone(), pi)
-                                })
-                        })
-                        .collect();
-                    self.state.rename_collection(idx, trimmed);
-                    for (old_name, label, thread_idx) in &old_sessions {
-                        if let Some(new_name) =
-                            self.state.make_session_name(idx, *thread_idx, label)
-                        {
-                            let _ = tmux::rename_session(old_name, &new_name);
-                        }
-                    }
-                    self.do_refresh_sessions();
-                    self.save_state();
-                    self.set_flash("Collection renamed");
-                }
-                InputPurpose::RenameThread {
-                    col_idx,
-                    thread_idx,
-                } => {
-                    // Collect old tmux session names before the rename changes the prefix.
-                    let old_sessions: Vec<(String, String)> = self.state.collections[col_idx]
+                    let old_sessions: Vec<(String, String)> = self
+                        .state
                         .threads
                         .get(thread_idx)
                         .map(|thread| {
@@ -1655,11 +1508,9 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    self.state.rename_thread(col_idx, thread_idx, trimmed);
+                    self.state.rename_thread(thread_idx, trimmed);
                     for (old_name, label) in &old_sessions {
-                        if let Some(new_name) =
-                            self.state.make_session_name(col_idx, thread_idx, label)
-                        {
+                        if let Some(new_name) = self.state.make_session_name(thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
                         }
                     }
@@ -1667,24 +1518,17 @@ impl App {
                     self.save_state();
                     self.set_flash("Thread renamed");
                 }
-                InputPurpose::NewSession {
-                    col_idx,
-                    thread_idx,
-                } => {
-                    if let Some(session_name) =
-                        self.state.make_session_name(col_idx, thread_idx, &trimmed)
-                    {
+                InputPurpose::NewSession { thread_idx } => {
+                    if let Some(session_name) = self.state.make_session_name(thread_idx, &trimmed) {
                         self.save_state();
-                        self.launch_session(&session_name, col_idx, thread_idx, terminal)?;
+                        self.launch_session(&session_name, thread_idx, terminal)?;
                     }
                 }
                 InputPurpose::RenameSession {
-                    col_idx,
                     thread_idx,
                     old_tmux_name,
                 } => {
-                    if let Some(new_tmux_name) =
-                        self.state.make_session_name(col_idx, thread_idx, &trimmed)
+                    if let Some(new_tmux_name) = self.state.make_session_name(thread_idx, &trimmed)
                     {
                         let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
                         self.do_refresh_sessions();
@@ -1712,48 +1556,10 @@ impl App {
         let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Confirm { purpose } = old_mode {
             match purpose {
-                ConfirmPurpose::DeleteCollection { idx, .. } => {
-                    // Refresh first so active_sessions reflects any sessions created
-                    // since the last 2-second tick.
-                    self.do_refresh_sessions();
-                    let col = &self.state.collections[idx];
-                    let mut note_keys: Vec<String> = vec![col.id.to_string()];
-                    let mut session_names: Vec<String> = Vec::new();
-                    for thread in &col.threads {
-                        note_keys.push(thread.id.to_string());
-                        for s in self.state.sessions_for_thread(thread.id) {
-                            note_keys.push(s.tmux_session_name.clone());
-                            session_names.push(s.tmux_session_name.clone());
-                        }
-                    }
-                    for name in &session_names {
-                        let _ = tmux::kill_session(name);
-                    }
-                    self.notes.remove_all(&note_keys);
-                    self.state.delete_collection(idx);
-                    // Select the item that slid into this position, or the one before
-                    // it, rather than always jumping to the first collection.
-                    let new_sel = self
-                        .state
-                        .collections
-                        .get(idx)
-                        .or_else(|| self.state.collections.last())
-                        .map(|c| vec![c.id.to_string()])
-                        .unwrap_or_default();
-                    self.tree_state.select(new_sel);
-                    self.save_state();
-                    self.do_refresh_sessions();
-                    self.set_flash("Collection deleted");
-                    self.sync_note_editor();
-                }
-                ConfirmPurpose::DeleteThread {
-                    col_idx,
-                    thread_idx,
-                    ..
-                } => {
+                ConfirmPurpose::DeleteThread { thread_idx, .. } => {
                     // Refresh first so active_sessions is current.
                     self.do_refresh_sessions();
-                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                    let thread_id = self.state.threads[thread_idx].id;
                     let mut note_keys: Vec<String> = vec![thread_id.to_string()];
                     let session_names: Vec<String> = self
                         .state
@@ -1768,16 +1574,15 @@ impl App {
                         let _ = tmux::kill_session(&name);
                     }
                     self.notes.remove_all(&note_keys);
-                    self.state.delete_thread(col_idx, thread_idx);
-                    // Select the thread that slid into this position, or the one
-                    // before it, falling back to the collection itself.
-                    let col = &self.state.collections[col_idx];
-                    let new_sel = col
+                    self.state.delete_thread(thread_idx);
+                    // Select the thread that slid into this position, or the one before it.
+                    let new_sel = self
+                        .state
                         .threads
                         .get(thread_idx)
-                        .or_else(|| col.threads.last())
-                        .map(|p| vec![col.id.to_string(), p.id.to_string()])
-                        .unwrap_or_else(|| vec![col.id.to_string()]);
+                        .or_else(|| self.state.threads.last())
+                        .map(|t| vec![t.id.to_string()])
+                        .unwrap_or_default();
                     self.tree_state.select(new_sel);
                     self.save_state();
                     self.do_refresh_sessions();
@@ -1804,12 +1609,8 @@ impl App {
                     self.set_flash("Session killed");
                     self.sync_note_editor();
                 }
-                ConfirmPurpose::KillAllSessions {
-                    col_idx,
-                    thread_idx,
-                    ..
-                } => {
-                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                ConfirmPurpose::KillAllSessions { thread_idx, .. } => {
+                    let thread_id = self.state.threads[thread_idx].id;
                     let names: Vec<String> = self
                         .state
                         .sessions_for_thread(thread_id)
@@ -1822,13 +1623,7 @@ impl App {
                     self.notes.remove_all(&names);
                     self.do_refresh_sessions();
                     // Select the parent thread so the sidebar stays visible.
-                    let col = &self.state.collections[col_idx];
-                    let thread = &col.threads[thread_idx];
-                    let thread_path = if col.is_root {
-                        vec![thread.id.to_string()]
-                    } else {
-                        vec![col.id.to_string(), thread.id.to_string()]
-                    };
+                    let thread_path = vec![self.state.threads[thread_idx].id.to_string()];
                     self.tree_state.select(thread_path);
                     self.set_flash("All sessions killed");
                     self.sync_note_editor();
@@ -1840,15 +1635,13 @@ impl App {
     fn launch_session(
         &mut self,
         session_name: &str,
-        col_idx: usize,
         thread_idx: usize,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
         let configured = self
             .state
-            .collections
-            .get(col_idx)
-            .and_then(|c| c.threads.get(thread_idx))
+            .threads
+            .get(thread_idx)
             .and_then(|t| t.working_dir.clone());
         let (dir, missing) = workdir::resolve_launch_dir(configured.as_deref());
         // `?` only covers a failure to spawn tmux; tmux refusing the request
@@ -2062,56 +1855,27 @@ impl App {
     fn toggle_expand_all(&mut self) {
         let mut all_paths: Vec<Vec<String>> = Vec::new();
 
-        for col in &self.state.collections {
-            if col.is_root {
-                for thread in &col.threads {
-                    if self
+        for thread in &self.state.threads {
+            if !self
+                .state
+                .active_sessions
+                .iter()
+                .any(|s| s.thread_id == thread.id)
+            {
+                continue;
+            }
+            all_paths.push(vec![thread.id.to_string()]);
+            for session in &self.state.active_sessions {
+                if session.thread_id == thread.id
+                    && !self
                         .state
-                        .active_sessions
-                        .iter()
-                        .any(|s| s.thread_id == thread.id)
-                    {
-                        all_paths.push(vec![thread.id.to_string()]);
-                        for session in &self.state.active_sessions {
-                            if session.thread_id == thread.id
-                                && !self
-                                    .state
-                                    .agents_for_session(&session.tmux_session_name)
-                                    .is_empty()
-                            {
-                                all_paths.push(vec![
-                                    thread.id.to_string(),
-                                    session.tmux_session_name.clone(),
-                                ]);
-                            }
-                        }
-                    }
-                }
-            } else {
-                all_paths.push(vec![col.id.to_string()]);
-                for thread in &col.threads {
-                    if self
-                        .state
-                        .active_sessions
-                        .iter()
-                        .any(|s| s.thread_id == thread.id)
-                    {
-                        all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
-                        for session in &self.state.active_sessions {
-                            if session.thread_id == thread.id
-                                && !self
-                                    .state
-                                    .agents_for_session(&session.tmux_session_name)
-                                    .is_empty()
-                            {
-                                all_paths.push(vec![
-                                    col.id.to_string(),
-                                    thread.id.to_string(),
-                                    session.tmux_session_name.clone(),
-                                ]);
-                            }
-                        }
-                    }
+                        .agents_for_session(&session.tmux_session_name)
+                        .is_empty()
+                {
+                    all_paths.push(vec![
+                        thread.id.to_string(),
+                        session.tmux_session_name.clone(),
+                    ]);
                 }
             }
         }
@@ -2131,7 +1895,7 @@ impl App {
     }
 
     fn save_state(&self) {
-        if let Err(e) = persistence::save(&self.state.collections) {
+        if let Err(e) = persistence::save(&self.state.threads) {
             eprintln!("Failed to save state: {}", e);
         }
     }

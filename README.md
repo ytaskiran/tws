@@ -167,7 +167,7 @@ tws scans tmux panes periodically and identifies running AI coding agents by the
 
 ### Importing existing sessions
 
-Already have tmux sessions running? `tws import` walks you through assigning them to threads instead of leaving them orphaned outside the hierarchy.
+Already have tmux sessions running? `tws import` walks you through assigning them to threads, so that they show in the tree.
 
 ## Requirements
 

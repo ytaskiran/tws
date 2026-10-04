@@ -101,6 +101,18 @@ install_binary() {
     ok "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
 }
 
+# Older tws saved threads inside collections. Flatten them into the plain
+# thread array that tws reads now. Silent; does nothing on a new file or without jq.
+migrate_state() {
+    local f="$HOME/.config/tws/state.json"
+    [[ -f "$f" ]] && command -v jq &>/dev/null || return 0
+    jq -e '.[0] | has("threads")' "$f" &>/dev/null || return 0
+    # Write through "$f", so a symlink and the file mode stay. `|| true` keeps
+    # a failure from stopping the installer under `set -e`; .bak holds the data.
+    { jq '[.[].threads[]]' "$f" > "$f.tmp" && cp "$f" "$f.bak" && cat "$f.tmp" > "$f"; } || true
+    rm -f "$f.tmp"
+}
+
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 # Sets plan_rc and plan_profile for the user's shell, and leaves them empty for
@@ -1425,6 +1437,7 @@ main() {
     info "Detected platform: $target"
 
     install_binary "$target"
+    migrate_state
 
     scan_plan
     print_plan

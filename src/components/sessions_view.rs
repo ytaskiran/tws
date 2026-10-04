@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::agent_meta;
-use crate::core::model::{AgentSession, AgentStatus, Collection, Session, Thread};
+use crate::core::model::{AgentSession, AgentStatus, Session, Thread};
 use crate::core::state::AppState;
 use crate::core::status::status_glyph;
 use crate::core::workdir::shorten_home;
@@ -21,7 +21,6 @@ use crate::theme::Theme;
 
 /// One visual row. `Gap` is spacing and is never selectable.
 enum Row<'a> {
-    Collection(Vec<String>, &'a Collection),
     Thread(Vec<String>, &'a Thread),
     IdleThread(Vec<String>, &'a Thread),
     Session(Vec<String>, &'a Session),
@@ -32,27 +31,20 @@ enum Row<'a> {
 impl Row<'_> {
     fn path(&self) -> Option<&[String]> {
         match self {
-            Row::Collection(p, _)
-            | Row::Thread(p, _)
-            | Row::IdleThread(p, _)
-            | Row::Session(p, _)
-            | Row::Agent(p, _) => Some(p),
+            Row::Thread(p, _) | Row::IdleThread(p, _) | Row::Session(p, _) | Row::Agent(p, _) => {
+                Some(p)
+            }
             Row::Gap => None,
         }
     }
 }
 
-/// Push the rows for one list of threads: live groups first, then idle threads.
-fn push_threads<'a>(
-    state: &'a AppState,
-    prefix: &[String],
-    threads: &'a [Thread],
-    out: &mut Vec<Row<'a>>,
-) {
+/// All rows in screen order: live groups first, then idle threads.
+fn rows(state: &AppState) -> Vec<Row<'_>> {
+    let mut out = Vec::new();
     let mut idle = Vec::new();
-    for thread in threads {
-        let mut tpath = prefix.to_vec();
-        tpath.push(thread.id.to_string());
+    for thread in &state.threads {
+        let tpath = vec![thread.id.to_string()];
         let sessions: Vec<&Session> = state
             .active_sessions
             .iter()
@@ -76,24 +68,6 @@ fn push_threads<'a>(
         out.push(Row::Gap);
     }
     out.extend(idle);
-}
-
-/// All rows in screen order. Named collections come first, as in the rest of
-/// the app; root threads follow.
-fn rows(state: &AppState) -> Vec<Row<'_>> {
-    let mut out = Vec::new();
-    for col in state.collections.iter().filter(|c| !c.is_root) {
-        let prefix = vec![col.id.to_string()];
-        out.push(Row::Collection(prefix.clone(), col));
-        push_threads(state, &prefix, &col.threads, &mut out);
-        // A live group already ends with a gap; do not stack a second one.
-        if !matches!(out.last(), Some(Row::Gap)) {
-            out.push(Row::Gap);
-        }
-    }
-    for col in state.collections.iter().filter(|c| c.is_root) {
-        push_threads(state, &[], &col.threads, &mut out);
-    }
     out
 }
 
@@ -201,14 +175,6 @@ pub fn render(
         let sel = is_sel.then_some(tint);
         let l = match row {
             Row::Gap => Line::from(""),
-            Row::Collection(_, c) => line(
-                vec![Span::styled(format!(" {}", c.name), theme.collection)],
-                vec![],
-                width,
-                sel,
-                None,
-                theme,
-            ),
             Row::Thread(_, t) => {
                 // No status summary here: each agent row carries its own dot.
                 let mut left = vec![Span::styled(format!(" {}", t.name), theme.thread_name)];
@@ -315,12 +281,10 @@ mod tests {
         }
     }
 
-    /// Root threads: `a` (idle), `b` (one session, one agent), `c` (one session).
+    /// Threads: `a` (idle), `b` (one session, one agent), `c` (one session).
     fn fixture() -> AppState {
         let mut state = AppState::new();
-        let mut root = Collection::new_root();
-        root.threads = vec![thread(1, "a"), thread(2, "b"), thread(3, "c")];
-        state.collections = vec![root];
+        state.threads = vec![thread(1, "a"), thread(2, "b"), thread(3, "c")];
         state.active_sessions = vec![session("s_b", 2), session("s_c", 3)];
         state.agent_sessions = vec![agent("s_b", "%1")];
         state
@@ -348,20 +312,6 @@ mod tests {
                 p(&[&a]),
             ]
         );
-    }
-
-    #[test]
-    fn named_collections_come_first_with_prefixed_paths() {
-        let mut state = fixture();
-        let mut col = Collection::new("work");
-        col.threads = vec![thread(9, "w")];
-        let col_id = col.id.to_string();
-        state.collections.insert(0, col);
-
-        let paths = row_paths(&state);
-        assert_eq!(paths[0], p(&[&col_id]));
-        assert_eq!(paths[1], p(&[&col_id, &id(9)]));
-        assert_eq!(paths[2], p(&[&id(2)]));
     }
 
     /// The first screen row of the fixture is the band of thread `b`, whose
