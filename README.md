@@ -120,7 +120,7 @@ the installer changes nothing and shows a note.
     set -g status-left ' '  # tws status bar
     set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window #{P:#{pane_id} }) '  # tws status bar
     set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#(/home/you/.local/bin/tws bar window --plain #{P:#{pane_id} }) #[default]'  # tws status bar
-    set -g status-right '#(/home/you/.local/bin/tws bar where #{q:session_name}) '  # tws status bar
+    set -g status-right '#(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
 
 To use your own bar, add the two commands to it. tmux replaces
 `#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
@@ -129,7 +129,7 @@ for a tab whose background does not suit the colors. `tws bar where` prints
 `thread › session`. For example, with [tmux-nova](https://github.com/o0th/tmux-nova):
 
     set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--plain,} #{P:#{pane_id} })'
-    set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where #{q:session_name})'
+    set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'
     set -g @nova-segment-tws-colors '#c8a882 #121212'
     set -g @nova-segments-0-right 'tws'
 

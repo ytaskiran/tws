@@ -1080,7 +1080,7 @@ bar_block() {
         "set -g status-left ' '  $BAR_MARKER" \
         "set -g window-status-format ' #I #W#($bin bar window #{P:#{pane_id} }) '  $BAR_MARKER" \
         "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
-        "set -g status-right '#($bin bar where #{q:session_name}) '  $BAR_MARKER"
+        "set -g status-right '#($bin bar where -- #{q:session_name}) '  $BAR_MARKER"
 }
 
 # Succeeds when the user has a status bar of their own: a config line sets one
