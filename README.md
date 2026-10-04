@@ -120,8 +120,8 @@ the installer changes nothing and shows a note. The installer leaves out the
     set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  # tws status bar
     set -g status-left ' '  # tws status bar
     set -g window-status-format ' #I #W#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} }) '  # tws status bar
-    set -g window-status-current-format '#[bg=#e3a273,fg=#121212] #I #W#(/home/you/.local/bin/tws bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  # tws status bar
-    set -g status-right '#[bg=#e3a273,fg=#121212] #(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
+    set -g window-status-current-format '#[bg=#c88e68,fg=#121212] #I #W#(/home/you/.local/bin/tws bar window --active --since #{start_time} #{P:#{pane_id} }) #[default]'  # tws status bar
+    set -g status-right '#[bg=#c88e68,fg=#121212] #(/home/you/.local/bin/tws bar where -- #{q:session_name}) '  # tws status bar
 
 To use your own bar, add the two commands to it. tmux replaces
 `#{P:#{pane_id} }` with the panes of the window, and `tws bar window` prints
@@ -134,9 +134,9 @@ the end of the tab label: the glyph color stays on for the text after it.
 
     set -g @nova-pane '#I#{?pane_in_mode,  #{pane_mode},}  #W#(/home/you/.local/bin/tws bar window #{?window_active,--active,} --since #{start_time} #{P:#{pane_id} })'
     set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'
-    set -g @nova-segment-tws-colors '#e3a273 #121212'
+    set -g @nova-segment-tws-colors '#c88e68 #121212'
     set -g @nova-segments-0-right 'tws'
-    set -g @nova-status-style-active-bg '#e3a273'
+    set -g @nova-status-style-active-bg '#c88e68'
 
 A `#()` command does not read your shell `PATH`, so write the full path of your
 own binary. tmux runs the commands again once in each `status-interval`, so a new
