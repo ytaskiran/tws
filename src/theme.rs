@@ -2,19 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::palette::Palette;
 
-/// Brighten an RGB color by adding `amount` to each channel, capped at 255.
-fn brighten(color: Color, amount: u8) -> Color {
-    if let Color::Rgb(r, g, b) = color {
-        Color::Rgb(
-            r.saturating_add(amount),
-            g.saturating_add(amount),
-            b.saturating_add(amount),
-        )
-    } else {
-        color
-    }
-}
-
 /// Darken a color by blending it toward `target` by `fraction` (0.0 = unchanged, 1.0 = target).
 fn darken_toward(color: Color, target: Color, fraction: f32) -> Color {
     if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, target) {
@@ -243,14 +230,6 @@ mod tests {
 
         assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
         assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
-    }
-
-    #[test]
-    fn brighten_caps_at_255() {
-        assert_eq!(
-            brighten(Color::Rgb(250, 250, 250), 16),
-            Color::Rgb(255, 255, 255)
-        );
     }
 
     #[test]
