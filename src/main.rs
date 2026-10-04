@@ -1,4 +1,5 @@
 mod app;
+mod bar;
 mod components;
 mod config;
 mod core;
@@ -35,6 +36,28 @@ enum Command {
         /// tmux pane id, e.g. %12. Defaults to $TMUX_PANE
         pane_id: Option<String>,
     },
+    /// Print text for the tmux status bar (called by a tmux #() job)
+    Bar {
+        #[command(subcommand)]
+        what: BarCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BarCommand {
+    /// The agent glyphs of the panes in one window
+    Window {
+        /// tmux server start time (#{start_time}); older status files are skipped
+        #[arg(long, default_value_t = 0)]
+        since: i64,
+        /// tmux pane ids, e.g. %12 %13
+        pane_ids: Vec<String>,
+    },
+    /// "thread › session" for a tmux session
+    Where {
+        /// tmux session name
+        session_name: String,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -45,6 +68,18 @@ fn main() -> std::io::Result<()> {
         Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
         Some(Command::AckPane { pane_id }) => {
             ack_pane(pane_id);
+            Ok(())
+        }
+        Some(Command::Bar {
+            what: BarCommand::Window { since, pane_ids },
+        }) => {
+            bar::window(&pane_ids, since);
+            Ok(())
+        }
+        Some(Command::Bar {
+            what: BarCommand::Where { session_name },
+        }) => {
+            bar::session_label(&session_name);
             Ok(())
         }
         None => run_tui(),

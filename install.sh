@@ -1058,6 +1058,113 @@ fork_key_taken() {
     return 1
 }
 
+# --- 5c. tmux status bar (part of the agent hooks) ---
+
+BAR_MARKER='# tws status bar'
+# A config line with this text keeps the installer from adding the bar again.
+BAR_OFF='# tws status bar off'
+BAR_OPTIONS='status-style status-bg status-fg status-justify status-left status-left-style status-right status-right-style status-format window-status-format window-status-current-format window-status-style window-status-current-style'
+
+# The window tabs show the agent glyphs of their panes, and the right end shows
+# "thread › session". #() jobs get the tmux server environment, not your shell
+# PATH, so the block names the binary by its absolute path. Every line carries
+# the marker, so a re-run drops the block and keeps your own lines, also a line
+# of yours that calls `tws bar`.
+# The tmux default bar is green, and the green working glyph does not show on
+# it, so the block also sets the tws palette bg and fg. The block goes after
+# your lines, so it leaves out status-interval and status-right-length when
+# you set them. --since gives the server start time: an older status file is
+# from a pane of an earlier server with the same ID. Both tab formats run the
+# same command, and its output picks the colors for the current tab, so a
+# window change starts no new job. The tabs keep the zoom and bell flags.
+bar_block() {
+    local bin="$INSTALL_DIR/$BINARY_NAME"
+    printf '%s\n' "$BAR_MARKER"
+    tmux_conf_sets status-interval || printf '%s\n' "set -g status-interval 5  $BAR_MARKER"
+    tmux_conf_sets status-right-length || printf '%s\n' "set -g status-right-length 80  $BAR_MARKER"
+    printf '%s\n' \
+        "set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  $BAR_MARKER" \
+        "set -g status-left ' '  $BAR_MARKER" \
+        "set -g window-status-format ' #I #W#{s/[*-]//:window_flags}#($bin bar window --since #{start_time} #{P:#{pane_id} }) '  $BAR_MARKER" \
+        "set -g window-status-current-format '#[bg=#c88e68,fg=#121212] #I #W#{s/[*-]//:window_flags}#($bin bar window --since #{start_time} #{P:#{pane_id} }) #[default]'  $BAR_MARKER" \
+        "set -g status-right '#[bg=#c88e68,fg=#121212] #($bin bar where -- #{q:session_name}) '  $BAR_MARKER"
+}
+
+# Succeeds when the user has a status bar of their own: a config line sets one
+# of BAR_OPTIONS, or, with a live server, one of them differs from the tmux
+# default (a plugin such as nova sets them at runtime). A value from a tws
+# block does not count, also from an older block or another install path, so
+# a re-run sees the same result. A theme added after the install still
+# counts. The defaults come from a probe server that reads no config and
+# exits at once.
+tmux_has_own_bar() {
+    local conf opt live ours default pattern block
+    pattern="(^|[[:space:]'\"])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]'\"[]|$)"
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -vF "$BAR_MARKER" "$conf" \
+            | grep -vE '^[[:space:]]*#' \
+            | grep -E "$pattern" >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    [ "$tmux_live" -eq 1 ] || return 1
+    block="$(bar_block)"
+    for opt in $BAR_OPTIONS; do
+        live="$(tmux show-options -gv "$opt" 2>/dev/null)"
+        case "$live" in *" bar window "* | *" bar where "*) continue ;; esac
+        ours="$(printf '%s\n' "$block" | sed -n "s/^set -g $opt '\(.*\)'.*/\1/p")"
+        [ -z "$ours" ] || [ "$live" != "$ours" ] || continue
+        default="$(tmux -L tws-defaults -f /dev/null start-server \; show-options -gv "$opt" 2>/dev/null)"
+        [ "$live" = "$default" ] || return 0
+    done
+    return 1
+}
+
+# Succeeds when a config line of yours sets the option $1.
+tmux_conf_sets() {
+    local conf
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' \
+            | grep -E "(^|[[:space:]])$1([[:space:]]|\$)" >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    return 1
+}
+
+# Succeeds when a config holds the opt-out line.
+tmux_conf_bar_off() {
+    local conf
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -F "$BAR_OFF" "$conf" >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    return 1
+}
+
+configure_status_bar() {
+    [ "$hooks_configured" -eq 1 ] || return 0
+
+    local conf
+    if ! conf="$(tmux_conf_for_write)"; then
+        warn "Could not create $HOME/.tmux.conf — skipping this tmux step"
+        return
+    fi
+
+    if ! rewrite_conf_block "$conf" "$BAR_MARKER" "$BAR_MARKER" "$(bar_block)"; then
+        warn "Could not write $conf — skipping the status bar"
+        return
+    fi
+    ok "Added the tws status bar to $conf (agents on each window tab)"
+    if load_into_tmux "$(bar_block)"; then
+        ok "Loaded it into the running tmux server"
+    fi
+}
+
 # --- 6. glow (rich markdown rendering) ---
 
 GLOW_GO_PKG='github.com/charmbracelet/glow@latest'
@@ -1080,7 +1187,7 @@ install_glow() {
 # The scan only reads. It records what the installer can change in plan_*
 # flags, and what it found but leaves alone in plan_notes. The user then
 # answers one question for the whole plan.
-plan_path=0 plan_claude=0 plan_codex=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -1161,10 +1268,10 @@ scan_plan() {
     broken_link="$(tmux_conf_broken_link)"
     if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ]; then
         if [ -n "$broken_link" ]; then
-            plan_notes+=("tmux ack hooks and fork binding — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
+            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
             tmux_blocked=1
         elif [ -n "$plan_conf" ] && [ ! -w "$plan_conf" ]; then
-            plan_notes+=("tmux ack hooks and fork binding — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
+            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
             tmux_blocked=1
         fi
     fi
@@ -1176,6 +1283,18 @@ scan_plan() {
             plan_notes+=($'\t'"Put the binary at a path without these characters, then add these to your tmux config:")
             local line
             while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
+        fi
+    fi
+    # The bar shows what the agent hooks write, so it comes with the ack hooks.
+    if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
+        if [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
+            plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
+            plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
+        elif tmux_has_own_bar; then
+            plan_notes+=("tmux status bar — your tmux config has its own bar. To show the agents on it, see")
+            plan_notes+=($'\t'"https://github.com/ytaskiran/tws#status-bar")
+        else
+            plan_bar=1
         fi
     fi
     if [ "$plan_claude" -eq 1 ] && [ "$tmux_blocked" -eq 0 ]; then
@@ -1223,6 +1342,7 @@ print_plan() {
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
+        if [ "$plan_bar" -eq 1 ]; then plan_row "tmux status bar (agents on tabs)" "$conf_label"; fi
         if [ "$plan_path" -eq 1 ]; then plan_row "add $(tilde "$INSTALL_DIR") to PATH" "$(tilde "$plan_rc"), $(tilde "$plan_profile")"; fi
         if [ "$plan_glow" -eq 1 ]; then
             if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
@@ -1246,7 +1366,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_ack + plan_fork + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
 # The one question. No terminal (a piped install with no tty) counts as no, so
@@ -1266,13 +1386,14 @@ apply_plan() {
     configure_agent_hooks
     if [ "$plan_ack" -eq 1 ]; then configure_ack_hooks; fi
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
+    if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
 }
 
 # After a "no", show the user what to add by hand. The agent hooks are left out:
 # they are long JSON, and running install again is the way to get them.
 print_manual_steps() {
-    if [ $((plan_path + plan_ack + plan_fork + plan_glow)) -eq 0 ]; then
+    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
         info "No changes made. Run install again to set them up."
         return
     fi
@@ -1281,10 +1402,11 @@ print_manual_steps() {
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
         echo "    $PATH_EXPORT_LINE"
     fi
-    if [ $((plan_ack + plan_fork)) -gt 0 ]; then
+    if [ $((plan_ack + plan_fork + plan_bar)) -gt 0 ]; then
         echo "  In $(tilde "${plan_conf:-$HOME/.tmux.conf}"):"
         if [ "$plan_ack" -eq 1 ]; then ack_hook_block | sed 's/^/    /'; fi
         if [ "$plan_fork" -eq 1 ]; then echo "    $FORK_BINDING"; fi
+        if [ "$plan_bar" -eq 1 ]; then bar_block | sed 's/^/    /'; fi
     fi
     if [ "$plan_glow" -eq 1 ]; then
         if [ "$plan_glow_via" = brew ]; then echo "  Install glow: brew install glow"; else echo "  Install glow: go install $GLOW_GO_PKG"; fi
