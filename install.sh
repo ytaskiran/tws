@@ -1061,16 +1061,20 @@ fork_key_taken() {
 # --- 5c. tmux status bar (part of the agent hooks) ---
 
 BAR_MARKER='# tws status bar'
-BAR_OPTIONS='status-left status-right status-format window-status-format window-status-current-format'
+BAR_OPTIONS='status-style status-left status-right status-format window-status-format window-status-current-format'
 
 # The window tabs show the agent glyphs of their panes, and the right end shows
 # "thread › session". #() jobs get the tmux server environment, not your shell
-# PATH, so the block names the binary by its absolute path. The status-interval
-# line carries the marker, so a re-run drops it with the rest of the block.
+# PATH, so the block names the binary by its absolute path. A line with no
+# binary path carries the marker, so a re-run drops it with the rest of the block.
+# The tmux default bar is green, and the green working glyph does not show on
+# it, so the block also sets the tws palette bg and fg.
 bar_block() {
     local bin="$INSTALL_DIR/$BINARY_NAME"
     printf '%s\n' "$BAR_MARKER" \
         "set -g status-interval 5  $BAR_MARKER" \
+        "set -g status-style 'bg=#1e1e1e,fg=#d4d4d4'  $BAR_MARKER" \
+        "set -g status-left ' '  $BAR_MARKER" \
         "set -g window-status-format ' #I #W#($bin bar window #{P:#{pane_id} }) '" \
         "set -g window-status-current-format '#[bg=#cc7832,fg=#1e1e1e] #I #W#($bin bar window --plain #{P:#{pane_id} }) #[default]'" \
         "set -g status-right '#($bin bar where #{q:session_name}) '"
@@ -1078,11 +1082,11 @@ bar_block() {
 
 # Succeeds when the user has a status bar of their own: a config line sets one
 # of BAR_OPTIONS, or, with a live server, one of them differs from the tmux
-# default (a plugin such as nova sets them at runtime). The tws block does not
-# count, so a re-run sees the same result. The defaults come from a probe
-# server that reads no config and exits at once.
+# default (a plugin such as nova sets them at runtime). A value from the tws
+# block does not count, so a re-run sees the same result. The defaults come
+# from a probe server that reads no config and exits at once.
 tmux_has_own_bar() {
-    local bin="$INSTALL_DIR/$BINARY_NAME" conf opt live default pattern
+    local bin="$INSTALL_DIR/$BINARY_NAME" conf opt live ours default pattern
     pattern="(^|[[:space:]])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]]|$)"
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
@@ -1095,7 +1099,8 @@ tmux_has_own_bar() {
     [ "$tmux_live" -eq 1 ] || return 1
     for opt in $BAR_OPTIONS; do
         live="$(tmux show-options -gv "$opt" 2>/dev/null)"
-        case "$live" in *"$bin bar "*) continue ;; esac
+        ours="$(bar_block | sed -n "s/^set -g $opt '\(.*\)'.*/\1/p")"
+        [ -z "$ours" ] || [ "$live" != "$ours" ] || continue
         default="$(tmux -L tws-defaults -f /dev/null start-server \; show-options -gv "$opt" 2>/dev/null)"
         [ "$live" = "$default" ] || return 0
     done
