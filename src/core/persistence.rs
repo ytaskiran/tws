@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use super::model::Collection;
+use super::model::Thread;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct UiState {
@@ -58,28 +58,26 @@ fn state_file() -> PathBuf {
     config_dir().join("state.json")
 }
 
-pub fn load() -> io::Result<Vec<Collection>> {
+pub fn load() -> io::Result<Vec<Thread>> {
     let path = state_file();
     if !path.exists() {
         return Ok(Vec::new());
     }
     let data = fs::read_to_string(&path)?;
-    let collections: Vec<Collection> =
-        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(collections)
+    serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-pub fn save(collections: &[Collection]) -> io::Result<()> {
+pub fn save(threads: &[Thread]) -> io::Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
-    save_to(&state_file(), collections)
+    save_to(&state_file(), threads)
 }
 
 /// Writes a new file and renames it over the old one, so a reader such as
 /// `tws bar where` never sees a half-written file. A symlinked state.json
 /// (a dotfiles repo, for example) is written at its target, so the link stays.
-fn save_to(path: &std::path::Path, collections: &[Collection]) -> io::Result<()> {
-    let data = serde_json::to_string_pretty(collections)?;
+fn save_to(path: &std::path::Path, threads: &[Thread]) -> io::Result<()> {
+    let data = serde_json::to_string_pretty(threads)?;
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     crate::core::status::write_atomic(&target, &data)
 }
@@ -87,30 +85,17 @@ fn save_to(path: &std::path::Path, collections: &[Collection]) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::Thread;
     use std::env;
 
-    fn with_temp_config<F: FnOnce()>(f: F) {
-        let dir = env::temp_dir().join(format!("tws_test_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("state.json");
-
-        let mut col = Collection::new("Test");
-        col.threads.push(Thread::new("Thread A"));
-        let collections = vec![col];
-
-        let data = serde_json::to_string_pretty(&collections).unwrap();
-        fs::write(&path, &data).unwrap();
-
-        let loaded: Vec<Collection> =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    #[test]
+    fn round_trip_threads() {
+        let mut t = Thread::new("api");
+        t.working_dir = Some("/tmp".into());
+        let json = serde_json::to_string_pretty(&vec![t.clone()]).unwrap();
+        let loaded: Vec<Thread> = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name, "Test");
-        assert_eq!(loaded[0].threads.len(), 1);
-        assert_eq!(loaded[0].threads[0].name, "Thread A");
-
-        fs::remove_dir_all(&dir).unwrap();
-        f();
+        assert_eq!(loaded[0].id, t.id);
+        assert_eq!(loaded[0].working_dir, t.working_dir);
     }
 
     #[test]
@@ -124,10 +109,10 @@ mod tests {
         fs::write(&path, "[]").unwrap();
         fs::hard_link(&path, dir.join("old.json")).unwrap();
 
-        save_to(&path, &[Collection::new("New")]).unwrap();
+        save_to(&path, &[Thread::new("New")]).unwrap();
 
         assert_eq!(fs::read_to_string(dir.join("old.json")).unwrap(), "[]");
-        let loaded: Vec<Collection> =
+        let loaded: Vec<Thread> =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded[0].name, "New");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
@@ -147,7 +132,7 @@ mod tests {
         let link = dir.join("state.json");
         symlink(&real, &link).unwrap();
 
-        save_to(&link, &[Collection::new("New")]).unwrap();
+        save_to(&link, &[Thread::new("New")]).unwrap();
 
         assert!(
             fs::symlink_metadata(&link)
@@ -159,56 +144,5 @@ mod tests {
         let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn round_trip_serialization() {
-        with_temp_config(|| {});
-    }
-
-    #[test]
-    fn load_missing_file_returns_empty() {
-        let path = env::temp_dir().join("tws_nonexistent_state.json");
-        assert!(!path.exists());
-        if !path.exists() {
-            let result: Vec<Collection> = Vec::new();
-            assert!(result.is_empty());
-        }
-    }
-
-    #[test]
-    fn deserialize_without_is_root_defaults_false() {
-        let json = r#"[{
-            "id": "00000000-0000-0000-0000-000000000001",
-            "name": "Legacy",
-            "threads": []
-        }]"#;
-        let collections: Vec<Collection> = serde_json::from_str(json).unwrap();
-        assert_eq!(collections.len(), 1);
-        assert_eq!(collections[0].name, "Legacy");
-        assert!(!collections[0].is_root);
-    }
-
-    #[test]
-    fn root_collection_round_trip() {
-        let mut col = Collection::new_root();
-        col.threads.push(Thread::new("general"));
-        let collections = vec![col];
-
-        let json = serde_json::to_string_pretty(&collections).unwrap();
-        let loaded: Vec<Collection> = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(loaded.len(), 1);
-        assert!(loaded[0].is_root);
-        assert_eq!(loaded[0].threads.len(), 1);
-        assert_eq!(loaded[0].threads[0].name, "general");
-    }
-
-    #[test]
-    fn empty_collections_serialize() {
-        let collections: Vec<Collection> = Vec::new();
-        let json = serde_json::to_string_pretty(&collections).unwrap();
-        let loaded: Vec<Collection> = serde_json::from_str(&json).unwrap();
-        assert!(loaded.is_empty());
     }
 }

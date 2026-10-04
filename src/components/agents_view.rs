@@ -152,7 +152,6 @@ mod tests {
 
     fn agent(n: usize) -> FlatAgent {
         FlatAgent {
-            col_idx: 0,
             thread_idx: 0,
             thread_name: "t".into(),
             sess_idx: 0,

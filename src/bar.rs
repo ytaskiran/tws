@@ -9,7 +9,7 @@ use ratatui::style::Color;
 
 use crate::config;
 use crate::config::palette::Palette;
-use crate::core::model::{AgentStatus, Collection};
+use crate::core::model::{AgentStatus, Thread};
 use crate::core::state::AppState;
 use crate::core::{persistence, status};
 
@@ -25,15 +25,15 @@ pub fn window(pane_ids: &[String], server_start: i64) {
 
 /// Prints `thread › session` for a tws session, else the session name.
 pub fn session_label(session_name: &str) {
-    let collections = persistence::load().unwrap_or_default();
-    print!("{}", label_for(collections, session_name));
+    let threads = persistence::load().unwrap_or_default();
+    print!("{}", label_for(threads, session_name));
 }
 
 /// tmux reads `#` in job output as the start of a format, so each `#` in a
 /// name is doubled.
-fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
+fn label_for(threads: Vec<Thread>, session_name: &str) -> String {
     let mut state = AppState {
-        collections,
+        threads,
         active_sessions: Vec::new(),
         agent_sessions: Vec::new(),
     };
@@ -42,8 +42,8 @@ fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
         .active_sessions
         .first()
         .and_then(|s| {
-            let (_, thread) = state.resolve_thread_path(s.thread_id)?;
-            Some(format!("{thread} › {}", s.display_name))
+            let thread = state.threads.iter().find(|t| t.id == s.thread_id)?;
+            Some(format!("{} › {}", thread.name, s.display_name))
         })
         .unwrap_or_else(|| session_name.to_string());
     label.replace('#', "##")
@@ -174,7 +174,6 @@ fn palette() -> Palette {
 mod tests {
     use super::*;
     use crate::core::model::Thread;
-    use uuid::Uuid;
 
     /// A config dir with `agents/`; each file gets the current mtime.
     fn status_dir(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
@@ -305,33 +304,16 @@ mod tests {
         assert_eq!(hex(Color::Rgb(0x82, 0xb4, 0x02)), "#82b402");
     }
 
-    fn col(name: &str, is_root: bool, threads: &[&str]) -> Collection {
-        Collection {
-            id: Uuid::new_v4(),
-            name: name.to_string(),
-            is_root,
-            threads: threads
-                .iter()
-                .map(|t| Thread {
-                    id: Uuid::new_v4(),
-                    name: t.to_string(),
-                    description: None,
-                    working_dir: None,
-                })
-                .collect(),
-        }
+    fn threads(names: &[&str]) -> Vec<Thread> {
+        names.iter().map(|n| Thread::new(*n)).collect()
     }
 
     #[test]
-    fn where_root_thread() {
-        let cols = vec![col("root", true, &["tws"])];
-        assert_eq!(label_for(cols, "twsr_tws_status-bar"), "tws › status-bar");
-    }
-
-    #[test]
-    fn where_never_shows_the_collection() {
-        let cols = vec![col("Work", false, &["api"])];
-        assert_eq!(label_for(cols, "tws_work_api_main"), "api › main");
+    fn where_thread_and_session() {
+        assert_eq!(
+            label_for(threads(&["tws"]), "twsr_tws_status-bar"),
+            "tws › status-bar"
+        );
     }
 
     #[test]
@@ -341,8 +323,10 @@ mod tests {
 
     #[test]
     fn where_escapes_the_tmux_format_character() {
-        let cols = vec![col("root", true, &["C# work"])];
-        assert_eq!(label_for(cols, "twsr_c-work_main"), "C## work › main");
+        assert_eq!(
+            label_for(threads(&["C# work"]), "twsr_c-work_main"),
+            "C## work › main"
+        );
         assert_eq!(label_for(Vec::new(), "a#[fg=red]"), "a##[fg=red]");
     }
 }

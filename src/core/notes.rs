@@ -5,7 +5,7 @@ use super::persistence;
 
 /// File-based note storage. Each note is a `.md` file in `~/.config/tws/notes/`.
 ///
-/// Keys are UUID strings (for collections/threads) or tmux session names (for sessions).
+/// Keys are thread UUID strings or tmux session names.
 pub struct NoteStore {
     dir: PathBuf,
 }

@@ -11,7 +11,6 @@ use crate::theme::Theme;
 /// Constructed by `app.rs` so we don't expose `Mode` publicly.
 pub enum StatusContext {
     NormalNone,
-    NormalCollection,
     NormalThread,
     NormalSession,
     NormalAgent,
@@ -92,19 +91,7 @@ pub fn render(
                 "quick session",
             ),
             (keymap.key_hint(KeyMode::Normal, Action::Add), "add thread"),
-            (
-                keymap.key_hint(KeyMode::Normal, Action::AddCollection),
-                "add collection",
-            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder), "find"),
-        ],
-        StatusContext::NormalCollection => vec![
-            (keymap.key_hint(KeyMode::Normal, Action::Quit), "quit"),
-            (keymap.key_hint(KeyMode::Normal, Action::Add), "add thread"),
-            (keymap.key_hint(KeyMode::Normal, Action::Rename), "rename"),
-            (keymap.key_hint(KeyMode::Normal, Action::Delete), "delete"),
-            (keymap.key_hint(KeyMode::Normal, Action::Finder), "find"),
-            ("Tab".to_string(), "notes"),
         ],
         StatusContext::NormalThread => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit), "quit"),

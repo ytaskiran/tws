@@ -4,15 +4,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Collection {
-    pub id: Uuid,
-    pub name: String,
-    #[serde(default)]
-    pub is_root: bool,
-    pub threads: Vec<Thread>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     pub id: Uuid,
     pub name: String,
@@ -95,26 +86,6 @@ pub struct AgentSession {
     pub subagents: usize,
 }
 
-impl Collection {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            name: name.into(),
-            is_root: false,
-            threads: Vec::new(),
-        }
-    }
-
-    pub fn new_root() -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            name: String::new(),
-            is_root: true,
-            threads: Vec::new(),
-        }
-    }
-}
-
 impl Thread {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -152,38 +123,16 @@ fn slugify(s: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
-/// Generates the base prefix for root thread tmux sessions.
+/// Generates the base prefix for a thread's tmux sessions.
 /// Format: `twsr_{thread_slug}`
-pub fn tmux_root_session_prefix(thread_name: &str) -> String {
+pub fn tmux_session_prefix(thread_name: &str) -> String {
     format!("twsr_{}", slugify(thread_name))
 }
 
-/// Generates a labeled tmux session name for a root thread.
+/// Generates a labeled tmux session name for a thread.
 /// Format: `twsr_{thread_slug}_{label_slug}`
-pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String {
-    format!(
-        "{}_{}",
-        tmux_root_session_prefix(thread_name),
-        slugify(label)
-    )
-}
-
-/// Generates the base prefix for tmux session names for a given collection/thread.
-/// Format: `tws_{collection_slug}_{thread_slug}`
-///
-/// Individual sessions append `_1`, `_2`, etc.
-pub fn tmux_session_prefix(collection_name: &str, thread_name: &str) -> String {
-    format!("tws_{}_{}", slugify(collection_name), slugify(thread_name))
-}
-
-/// Generates a labeled tmux session name.
-/// Format: `tws_{collection_slug}_{thread_slug}_{label_slug}`
-pub fn tmux_session_name_labeled(collection_name: &str, thread_name: &str, label: &str) -> String {
-    format!(
-        "{}_{}",
-        tmux_session_prefix(collection_name, thread_name),
-        slugify(label)
-    )
+pub fn tmux_session_name_labeled(thread_name: &str, label: &str) -> String {
+    format!("{}_{}", tmux_session_prefix(thread_name), slugify(label))
 }
 
 #[cfg(test)]
@@ -191,23 +140,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collection_has_unique_id() {
-        let a = Collection::new("Work");
-        let b = Collection::new("Work");
-        assert_ne!(a.id, b.id);
-    }
-
-    #[test]
     fn thread_has_unique_id() {
         let a = Thread::new("Rust Book");
         let b = Thread::new("Rust Book");
         assert_ne!(a.id, b.id);
-    }
-
-    #[test]
-    fn collection_starts_empty() {
-        let c = Collection::new("Test");
-        assert!(c.threads.is_empty());
     }
 
     #[test]
@@ -249,50 +185,22 @@ mod tests {
 
     #[test]
     fn tmux_session_prefix_format() {
+        assert_eq!(tmux_session_prefix("general"), "twsr_general");
         assert_eq!(
-            tmux_session_prefix("Work", "Edge Device Pipeline"),
-            "tws_work_edge-device-pipeline"
+            tmux_session_prefix("My Quick Thread"),
+            "twsr_my-quick-thread"
         );
     }
 
     #[test]
     fn tmux_session_name_labeled_format() {
         assert_eq!(
-            tmux_session_name_labeled("Work", "Edge Device Pipeline", "bugfix"),
-            "tws_work_edge-device-pipeline_bugfix"
-        );
-        assert_eq!(
-            tmux_session_name_labeled("Work", "Edge Device Pipeline", "Hot Fix 2"),
-            "tws_work_edge-device-pipeline_hot-fix-2"
-        );
-    }
-
-    #[test]
-    fn tmux_root_session_prefix_format() {
-        assert_eq!(tmux_root_session_prefix("general"), "twsr_general");
-        assert_eq!(
-            tmux_root_session_prefix("My Quick Thread"),
-            "twsr_my-quick-thread"
-        );
-    }
-
-    #[test]
-    fn tmux_root_session_name_labeled_format() {
-        assert_eq!(
-            tmux_root_session_name_labeled("general", "bugfix"),
+            tmux_session_name_labeled("general", "bugfix"),
             "twsr_general_bugfix"
         );
         assert_eq!(
-            tmux_root_session_name_labeled("My Quick Thread", "Hot Fix 2"),
+            tmux_session_name_labeled("My Quick Thread", "Hot Fix 2"),
             "twsr_my-quick-thread_hot-fix-2"
-        );
-    }
-
-    #[test]
-    fn tmux_session_prefix_special_chars() {
-        assert_eq!(
-            tmux_session_prefix("Derin Notlar Podcast", "Episode 13 - Planning"),
-            "tws_derin-notlar-podcast_episode-13-planning"
         );
     }
 

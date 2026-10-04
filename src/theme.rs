@@ -50,7 +50,6 @@ pub struct Theme {
     pub header_rule_active: Style,
     pub meta: Style,
     pub dim_text: Color,
-    pub collection: Style,
     pub highlight: Style,
     pub highlight_unfocused: Style,
 
@@ -119,9 +118,6 @@ impl Theme {
             header_rule_active: Style::new().fg(p.accent),
             meta: Style::new().fg(midpoint(p.muted, p.border)),
             dim_text,
-            collection: Style::new()
-                .fg(brighten(p.accent, 16))
-                .add_modifier(Modifier::BOLD),
             highlight: Style::new().bg(selection_tint),
             highlight_unfocused: Style::new().bg(darken_toward(p.border, p.bg, 0.5)),
 
@@ -225,12 +221,6 @@ mod tests {
         let t = Theme::build(&p);
 
         assert_eq!(
-            t.collection,
-            Style::new()
-                .fg(Color::Rgb(220, 136, 66))
-                .add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
             t.thread_name,
             Style::new()
                 .fg(Color::Rgb(212, 212, 212))
@@ -252,12 +242,6 @@ mod tests {
         let t = Theme::build(&p);
 
         assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
-        assert_eq!(
-            t.collection,
-            Style::new()
-                .fg(Color::Rgb(255, 16, 16))
-                .add_modifier(Modifier::BOLD)
-        );
         assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
     }
 
