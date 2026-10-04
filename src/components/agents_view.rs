@@ -49,10 +49,14 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
 
     let now_ms = agent_meta::now_ms();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // The last line of the selected agent, so its subagent line stays on screen.
-    let mut cursor_line = 0;
+    // The first and last lines of the selected agent, so the scroll can keep
+    // its subagent line on screen without hiding the agent line.
+    let (mut cursor_first, mut cursor_last) = (0, 0);
     for (i, a) in agents.iter().enumerate() {
         let selected = i == cursor;
+        if selected {
+            cursor_first = lines.len();
+        }
         lines.push({
             let bar = if selected {
                 Span::styled("▎", theme.selection_bar)
@@ -116,11 +120,13 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             lines.push(item_line(spans, selected, width, theme));
         }
         if selected {
-            cursor_line = lines.len() - 1;
+            cursor_last = lines.len() - 1;
         }
     }
 
-    let scroll = super::scroll_to_keep_visible(cursor_line, area.height);
+    // A pane too short for both lines shows the agent line.
+    let scroll = super::scroll_to_keep_visible(cursor_last, area.height)
+        .min(u16::try_from(cursor_first).unwrap_or(u16::MAX));
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 }
 
@@ -264,6 +270,14 @@ mod tests {
             out.contains("2 subagents working"),
             "its line scrolled off:\n{out}"
         );
+    }
+
+    #[test]
+    fn one_row_pane_shows_the_selected_agent_not_its_subagent_line() {
+        let mut agents: Vec<FlatAgent> = (0..3).map(agent).collect();
+        agents[2].subagents = 2;
+        let out = screen(&agents, 2, 1);
+        assert!(out.contains("agent-02"), "agent line hidden:\n{out}");
     }
 
     #[test]

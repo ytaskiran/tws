@@ -154,7 +154,6 @@ pub struct App {
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
     agent_trigger: AgentTrigger,
-    subagent_trigger: AgentTrigger,
     flash: Option<(String, Instant)>,
     preview_content: Option<Text<'static>>,
     preview_pane_id: Option<String>,
@@ -194,7 +193,6 @@ impl App {
             md_renderer: MarkdownRenderer::new(note_stylesheet),
             last_refresh: Instant::now(),
             agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
-            subagent_trigger: AgentTrigger::new(crate::core::status::subagent_trigger_path()),
             flash: None,
             preview_content: None,
             preview_pane_id: None,
@@ -245,9 +243,9 @@ impl App {
                 self.do_refresh_sessions();
             }
 
-            if self.subagent_trigger.is_pending() {
-                self.recount_subagents();
-            }
+            // Every tick, with no trigger: a recount is a few small readdirs,
+            // and it sees every marker change, whichever hook made it.
+            self.recount_subagents();
 
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
@@ -2033,7 +2031,6 @@ impl App {
 
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
-        self.recount_subagents();
 
         if !self.pending_pin_restore.is_empty() {
             let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);
@@ -2053,16 +2050,13 @@ impl App {
     }
 
     /// Recount the running subagents of the known agents. It reads only the
-    /// marker directories, so a subagent start or stop costs no tmux or ps scan.
+    /// marker directories, so it costs no tmux or ps scan.
     fn recount_subagents(&mut self) {
-        // Snapshot first, so a hook firing mid-count stays pending.
-        let observed = self.subagent_trigger.mtime();
         crate::core::status::apply_subagent_counts(
             &mut self.state.agent_sessions,
             &crate::core::status::subagents_dir(),
             crate::components::agent_meta::now(),
         );
-        self.subagent_trigger.acknowledge(observed);
     }
 
     fn toggle_expand_all(&mut self) {

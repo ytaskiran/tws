@@ -34,12 +34,6 @@ pub fn trigger_path() -> PathBuf {
     config_dir().join("agent.trigger")
 }
 
-/// The SubagentStart / SubagentStop hooks touch it after a marker changes.
-/// It asks only for a recount, so it is not `agent.trigger` and its full scan.
-pub fn subagent_trigger_path() -> PathBuf {
-    config_dir().join("subagent.trigger")
-}
-
 /// Tracks the trigger file that agent hooks touch after writing a status.
 ///
 /// Callers must snapshot [`mtime`](Self::mtime) before reading any status file
@@ -1455,12 +1449,6 @@ mod tests {
     fn subagents_dir_sits_beside_agents_dir() {
         assert_eq!(subagents_dir().parent(), agents_dir().parent());
         assert_ne!(subagents_dir(), agents_dir());
-    }
-
-    #[test]
-    fn subagent_trigger_is_not_the_agent_trigger() {
-        assert_eq!(subagent_trigger_path().parent(), trigger_path().parent());
-        assert_ne!(subagent_trigger_path(), trigger_path());
     }
 
     #[test]

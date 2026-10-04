@@ -388,27 +388,6 @@ expect_marker absent "SubagentStop removes the marker"
 prompt_submit; claude_stop
 expect review "Stop without subagents hands the pane back"
 
-printf '\nsubagent hooks ring the subagent trigger\n'
-SUB_TRIGGER="$HOME/.config/tws/subagent.trigger"
-expect_sub_trigger() {
-    local want="$1" msg="$2" got=absent
-    [ -e "$SUB_TRIGGER" ] && got=present
-    if [ "$got" = "$want" ]; then
-        printf '  ok   %s\n' "$msg"
-    else
-        printf '  FAIL %s (trigger %s)\n' "$msg" "$got"
-        failures=$((failures + 1))
-    fi
-    rm -f "$SUB_TRIGGER"
-}
-reset
-sub_start
-expect_sub_trigger present "SubagentStart rings the subagent trigger"
-sub_stop
-expect_sub_trigger present "SubagentStop rings the subagent trigger"
-sub_stop
-expect_sub_trigger absent "a SubagentStop with no marker does not ring it"
-
 reset
 prompt_submit; sub_start; backdate "$MARKER"
 expect_marker present "a backdated marker is in place"
@@ -1069,7 +1048,6 @@ expect_panes "%7" "a hook with TMUX_PANE writes only its own pane"
 reset
 sub_start
 expect_marker present "a marker exists for the pane-less stop to leave alone"
-rm -f "$SUB_TRIGGER"
 PANE_LESS=1 sub_start
 PANE_LESS=1 sub_stop
 PANE_LESS=1 fire_in "$MAIN_JSON" working "$TOOL_MATCHER" tool

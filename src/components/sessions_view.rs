@@ -378,30 +378,17 @@ mod tests {
     /// agent is working. The dot belongs on the agent row only.
     #[test]
     fn thread_band_shows_no_agent_status_summary() {
-        use crate::config::palette::Palette;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
         let state = fixture();
-        let theme = Theme::build(&Palette::default());
-        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
-        terminal
-            .draw(|f| render(f, &state, &[], true, f.area(), &theme))
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        let row = |y: u16| -> String { (0..60).map(|x| buf[(x, y)].symbol()).collect() };
+        let band = screen_row(&state, 60, 0);
+        let agent = screen_row(&state, 60, 2);
 
-        assert!(row(0).contains('b'), "row 0 is not the band: {:?}", row(0));
-        assert!(
-            !row(0).contains('●'),
-            "band repeats agent status: {:?}",
-            row(0)
-        );
-        assert!(row(2).contains('●'), "agent row lost its dot: {:?}", row(2));
+        assert!(band.contains('b'), "row 0 is not the band: {band:?}");
+        assert!(!band.contains('●'), "band repeats agent status: {band:?}");
+        assert!(agent.contains('●'), "agent row lost its dot: {agent:?}");
     }
 
-    /// Row 2 of the fixture is the agent row, drawn `width` columns wide.
-    fn agent_row(state: &AppState, width: u16) -> String {
+    /// Screen row `y` of the view, drawn `width` columns wide.
+    fn screen_row(state: &AppState, width: u16, y: u16) -> String {
         use crate::config::palette::Palette;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -412,7 +399,12 @@ mod tests {
             .draw(|f| render(f, state, &[], true, f.area(), &theme))
             .unwrap();
         let buf = terminal.backend().buffer();
-        (0..width).map(|x| buf[(x, 2)].symbol()).collect()
+        (0..width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// Row 2 of the fixture is the agent row.
+    fn agent_row(state: &AppState, width: u16) -> String {
+        screen_row(state, width, 2)
     }
 
     #[test]

@@ -62,7 +62,6 @@ pub fn spinner(now_ms: u128) -> char {
     SPINNER[(now_ms / SPINNER_STEP_MS % SPINNER.len() as u128) as usize]
 }
 
-/// `1 subagent`, `3 subagents`.
 pub fn subagents(n: usize) -> String {
     format!("{n} subagent{}", if n == 1 { "" } else { "s" })
 }

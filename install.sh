@@ -361,8 +361,6 @@ status_hook_entry() {
 # Emits the SubagentStart / SubagentStop hook entry. A marker file named for the
 # subagent tells `stop` mode that work continues after the main loop ends its turn.
 # A stop with no marker is normal (compaction sends one), so it removes nothing.
-# A changed marker rings `subagent.trigger`, and tws recounts the subagents. The
-# recount needs no tmux or ps scan, so this is not `agent.trigger`.
 subagent_hook_entry() {
     local kind="$1"    # start | stop
     local cmd
@@ -370,11 +368,10 @@ subagent_hook_entry() {
     cmd+='aid=$(jq -r ".agent_id // empty" 2>/dev/null); '
     cmd+='case "$aid" in ""|*/*|.*) exit 0 ;; esac; '
     cmd+='sd="$HOME/.config/tws/subagents/$TMUX_PANE"; '
-    cmd+='trig="$HOME/.config/tws/subagent.trigger"; '
     if [ "$kind" = start ]; then
-        cmd+='mkdir -p "$sd" && touch "$sd/$aid" && touch "$trig"; :'
+        cmd+='mkdir -p "$sd" && touch "$sd/$aid"; :'
     else
-        cmd+='rm "$sd/$aid" 2>/dev/null && touch "$trig"; :'
+        cmd+='rm -f "$sd/$aid"; :'
     fi
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
