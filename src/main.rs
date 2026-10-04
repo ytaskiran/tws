@@ -53,6 +53,11 @@ enum BarCommand {
         /// tmux pane ids, e.g. %12 %13
         pane_ids: Vec<String>,
     },
+    /// "thread › session" for a tmux session
+    Where {
+        /// tmux session name
+        session_name: String,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -69,6 +74,12 @@ fn main() -> std::io::Result<()> {
             what: BarCommand::Window { plain, pane_ids },
         }) => {
             bar::window(&pane_ids, plain);
+            Ok(())
+        }
+        Some(Command::Bar {
+            what: BarCommand::Where { session_name },
+        }) => {
+            bar::session_label(&session_name);
             Ok(())
         }
         None => run_tui(),

@@ -9,7 +9,8 @@ use ratatui::style::Color;
 
 use crate::config::palette::Palette;
 use crate::config::{self, Config};
-use crate::core::model::AgentStatus;
+use crate::core::model::{AgentStatus, Collection};
+use crate::core::state::AppState;
 use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
@@ -21,6 +22,32 @@ pub fn window(pane_ids: &[String], plain: bool) {
         "{}",
         window_glyphs(&status::agents_dir(), pane_ids, palette.as_ref())
     );
+}
+
+/// Prints `thread › session` for a tws session, else the session name.
+pub fn session_label(session_name: &str) {
+    let collections = persistence::load().unwrap_or_default();
+    print!("{}", label_for(collections, session_name));
+}
+
+/// tmux reads `#` in job output as the start of a format, so each `#` in a
+/// name is doubled.
+fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
+    let mut state = AppState {
+        collections,
+        active_sessions: Vec::new(),
+        agent_sessions: Vec::new(),
+    };
+    state.refresh_sessions(&[(session_name.to_string(), 0)]);
+    let label = state
+        .active_sessions
+        .first()
+        .and_then(|s| {
+            let (_, thread) = state.resolve_thread_path(s.thread_id)?;
+            Some(format!("{thread} › {}", s.display_name))
+        })
+        .unwrap_or_else(|| session_name.to_string());
+    label.replace('#', "##")
 }
 
 /// A space, then one glyph for each pane with a status file, in argument
@@ -81,6 +108,8 @@ fn palette() -> Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::Thread;
+    use uuid::Uuid;
 
     fn status_dir(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tws-test-bar-{tag}-{}", std::process::id()));
@@ -144,5 +173,46 @@ mod tests {
     #[test]
     fn hex_prints_rgb() {
         assert_eq!(hex(Color::Rgb(0x82, 0xb4, 0x02)), "#82b402");
+    }
+
+    fn col(name: &str, is_root: bool, threads: &[&str]) -> Collection {
+        Collection {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            is_root,
+            threads: threads
+                .iter()
+                .map(|t| Thread {
+                    id: Uuid::new_v4(),
+                    name: t.to_string(),
+                    description: None,
+                    working_dir: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn where_root_thread() {
+        let cols = vec![col("root", true, &["tws"])];
+        assert_eq!(label_for(cols, "twsr_tws_status-bar"), "tws › status-bar");
+    }
+
+    #[test]
+    fn where_never_shows_the_collection() {
+        let cols = vec![col("Work", false, &["api"])];
+        assert_eq!(label_for(cols, "tws_work_api_main"), "api › main");
+    }
+
+    #[test]
+    fn where_unknown_session_keeps_its_name() {
+        assert_eq!(label_for(Vec::new(), "scratch"), "scratch");
+    }
+
+    #[test]
+    fn where_escapes_the_tmux_format_character() {
+        let cols = vec![col("root", true, &["C# work"])];
+        assert_eq!(label_for(cols, "twsr_c-work_main"), "C## work › main");
+        assert_eq!(label_for(Vec::new(), "a#[fg=red]"), "a##[fg=red]");
     }
 }
