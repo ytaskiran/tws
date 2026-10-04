@@ -199,13 +199,6 @@ pub fn render(
             selected_line = lines.len();
         }
         let sel = is_sel.then_some(tint);
-        let name_style = |normal: Style| {
-            if is_sel {
-                theme.session_name_selected
-            } else {
-                normal
-            }
-        };
         let l = match row {
             Row::Gap => Line::from(""),
             Row::Collection(_, c) => line(
@@ -223,17 +216,14 @@ pub fn render(
                 line(left, vec![], width, sel, Some(theme.band), theme)
             }
             Row::IdleThread(_, t) => {
-                let mut left = vec![Span::styled(
-                    format!(" {}", t.name),
-                    name_style(theme.thread_idle),
-                )];
+                let mut left = vec![Span::styled(format!(" {}", t.name), theme.thread_idle)];
                 left.extend(dir(t, is_sel));
                 line(left, vec![], width, sel, None, theme)
             }
             Row::Session(_, s) => line(
                 vec![
                     guide(),
-                    Span::styled(s.display_name.clone(), name_style(theme.session_name)),
+                    Span::styled(s.display_name.clone(), theme.session_name),
                 ],
                 vec![],
                 width,
@@ -251,7 +241,7 @@ pub fn render(
                         format!("{} ", status_glyph(a.status)),
                         status_style(a.status, theme),
                     ),
-                    Span::styled(a.display_name.clone(), name_style(theme.agent_name)),
+                    Span::styled(a.display_name.clone(), theme.agent_name),
                 ];
                 let meta = agent_meta::label(a.agent_type, a.status_since, now);
                 if a.subagents > 0 {

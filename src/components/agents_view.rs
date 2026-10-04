@@ -75,14 +75,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                     format!("{} ", status_glyph(a.status)),
                     status_style(a.status, theme),
                 ),
-                Span::styled(
-                    a.agent_display_name.clone(),
-                    if selected {
-                        theme.session_name_selected
-                    } else {
-                        theme.agent_name_loud
-                    },
-                ),
+                Span::styled(a.agent_display_name.clone(), theme.agent_name_loud),
                 Span::raw(pad),
             ];
             // `kind · age` at the right edge, as in the sessions view. The path
