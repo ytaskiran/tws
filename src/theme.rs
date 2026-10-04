@@ -2,19 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::palette::Palette;
 
-/// Brighten an RGB color by adding `amount` to each channel, capped at 255.
-fn brighten(color: Color, amount: u8) -> Color {
-    if let Color::Rgb(r, g, b) = color {
-        Color::Rgb(
-            r.saturating_add(amount),
-            g.saturating_add(amount),
-            b.saturating_add(amount),
-        )
-    } else {
-        color
-    }
-}
-
 /// Darken a color by blending it toward `target` by `fraction` (0.0 = unchanged, 1.0 = target).
 fn darken_toward(color: Color, target: Color, fraction: f32) -> Color {
     if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, target) {
@@ -50,7 +37,6 @@ pub struct Theme {
     pub header_rule_active: Style,
     pub meta: Style,
     pub dim_text: Color,
-    pub collection: Style,
     pub highlight: Style,
     pub highlight_unfocused: Style,
 
@@ -119,9 +105,6 @@ impl Theme {
             header_rule_active: Style::new().fg(p.accent),
             meta: Style::new().fg(midpoint(p.muted, p.border)),
             dim_text,
-            collection: Style::new()
-                .fg(brighten(p.accent, 16))
-                .add_modifier(Modifier::BOLD),
             highlight: Style::new().bg(selection_tint),
             highlight_unfocused: Style::new().bg(darken_toward(p.border, p.bg, 0.5)),
 
@@ -225,12 +208,6 @@ mod tests {
         let t = Theme::build(&p);
 
         assert_eq!(
-            t.collection,
-            Style::new()
-                .fg(Color::Rgb(220, 136, 66))
-                .add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
             t.thread_name,
             Style::new()
                 .fg(Color::Rgb(212, 212, 212))
@@ -252,21 +229,7 @@ mod tests {
         let t = Theme::build(&p);
 
         assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
-        assert_eq!(
-            t.collection,
-            Style::new()
-                .fg(Color::Rgb(255, 16, 16))
-                .add_modifier(Modifier::BOLD)
-        );
         assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
-    }
-
-    #[test]
-    fn brighten_caps_at_255() {
-        assert_eq!(
-            brighten(Color::Rgb(250, 250, 250), 16),
-            Color::Rgb(255, 255, 255)
-        );
     }
 
     #[test]

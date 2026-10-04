@@ -94,10 +94,10 @@ fn ack_pane(pane_id: Option<String>) {
 }
 
 fn run_tui() -> std::io::Result<()> {
-    let collections = persistence::load()?;
+    let threads = persistence::load()?;
     let ui_state = persistence::load_ui();
     let state = AppState {
-        collections,
+        threads,
         active_sessions: Vec::new(),
         agent_sessions: Vec::new(),
     };
