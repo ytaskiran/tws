@@ -47,9 +47,9 @@ enum Command {
 enum BarCommand {
     /// The agent glyphs of the panes in one window
     Window {
-        /// Print the glyphs with no color (for the current tab)
+        /// Use dark tones of the colors (for the current tab)
         #[arg(long)]
-        plain: bool,
+        active: bool,
         /// tmux server start time (#{start_time}); older status files are skipped
         #[arg(long, default_value_t = 0)]
         since: i64,
@@ -76,12 +76,12 @@ fn main() -> std::io::Result<()> {
         Some(Command::Bar {
             what:
                 BarCommand::Window {
-                    plain,
+                    active,
                     since,
                     pane_ids,
                 },
         }) => {
-            bar::window(&pane_ids, plain, since);
+            bar::window(&pane_ids, active, since);
             Ok(())
         }
         Some(Command::Bar {

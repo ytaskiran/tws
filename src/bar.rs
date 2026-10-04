@@ -15,10 +15,10 @@ use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
 /// with `#{P:#{pane_id} }`, and the server start time with `#{start_time}`.
-/// `plain` leaves out the colors, for the current tab, whose background tws
-/// does not know.
-pub fn window(pane_ids: &[String], plain: bool, server_start: i64) {
-    let palette = (!plain).then(palette);
+/// `active` uses dark tones of the colors, for the current tab: its
+/// background is most often a bright accent color.
+pub fn window(pane_ids: &[String], active: bool, server_start: i64) {
+    let palette = if active { dark(&palette()) } else { palette() };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -27,7 +27,7 @@ pub fn window(pane_ids: &[String], plain: bool, server_start: i64) {
         window_glyphs(
             &persistence::config_dir(),
             pane_ids,
-            palette.as_ref(),
+            &palette,
             server_start,
             now
         )
@@ -71,7 +71,7 @@ fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
 fn window_glyphs(
     config_dir: &Path,
     pane_ids: &[String],
-    palette: Option<&Palette>,
+    palette: &Palette,
     server_start: i64,
     now: i64,
 ) -> String {
@@ -99,10 +99,11 @@ fn window_glyphs(
         {
             st = AgentStatus::Idle;
         }
-        if let Some(p) = palette {
-            out.push_str(&format!("#[fg={}]", hex(status_color(p, st))));
-        }
-        out.push_str(status::status_glyph(st));
+        out.push_str(&format!(
+            "#[fg={}]{}",
+            hex(status_color(palette, st)),
+            glyph(st)
+        ));
     }
     if out.is_empty() {
         out
@@ -116,6 +117,33 @@ fn window_glyphs(
 fn is_pane_id(s: &str) -> bool {
     s.strip_prefix('%')
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `●` for a live turn, `○` for idle. Most coding fonts have both, but not
+/// `◐`: a terminal takes `◐` from a fallback font, and then the glyphs do not
+/// line up. The color tells waiting from working.
+fn glyph(st: AgentStatus) -> &'static str {
+    match st {
+        AgentStatus::Working | AgentStatus::Waiting | AgentStatus::Review => "●",
+        AgentStatus::Idle | AgentStatus::Unknown => "○",
+    }
+}
+
+/// The palette at 45% brightness, for glyphs on a bright tab.
+fn dark(p: &Palette) -> Palette {
+    let d = |c: Color| match c {
+        Color::Rgb(r, g, b) => {
+            let f = |v: u8| (v as u16 * 45 / 100) as u8;
+            Color::Rgb(f(r), f(g), f(b))
+        }
+        other => other,
+    };
+    Palette {
+        green: d(p.green),
+        accent: d(p.accent),
+        muted: d(p.muted),
+        ..p.clone()
+    }
 }
 
 /// The same colors as the TUI rows (`theme.rs`).
@@ -174,8 +202,19 @@ mod tests {
             .unwrap();
     }
 
-    fn glyphs(dir: &std::path::Path, args: &[&str], palette: Option<&Palette>) -> String {
-        window_glyphs(dir, &ids(args), palette, 0, now())
+    fn glyphs(dir: &std::path::Path, args: &[&str]) -> String {
+        window_glyphs(dir, &ids(args), &Palette::default(), 0, now())
+    }
+
+    /// The glyphs alone, with the `#[fg=…]` styles taken out.
+    fn bare(s: &str) -> String {
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(i) = rest.find("#[") {
+            out.push_str(&rest[..i]);
+            rest = &rest[i + rest[i..].find(']').unwrap() + 1..];
+        }
+        out + rest
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -185,16 +224,45 @@ mod tests {
     #[test]
     fn window_with_no_agent_prints_nothing() {
         let dir = status_dir("none", &[]);
-        assert_eq!(glyphs(&dir, &["%1", "%2"], None), "");
+        assert_eq!(glyphs(&dir, &["%1", "%2"]), "");
     }
 
     #[test]
-    fn window_plain_keeps_argument_order() {
+    fn window_keeps_argument_order() {
         let dir = status_dir(
-            "plain",
+            "order",
             &[("%1", "working"), ("%3", "review\n"), ("%4", "idle")],
         );
-        assert_eq!(glyphs(&dir, &["%4", "%2", "%1", "%3"], None), " ○●◐");
+        assert_eq!(bare(&glyphs(&dir, &["%4", "%2", "%1", "%3"])), " ○●●");
+    }
+
+    #[test]
+    fn window_uses_only_glyphs_from_one_font() {
+        // ◐ comes from a fallback font in many terminals, and then it does not
+        // line up with ● and ○. The color tells waiting from working.
+        let dir = status_dir(
+            "font",
+            &[
+                ("%1", "working"),
+                ("%2", "waiting"),
+                ("%3", "review"),
+                ("%4", "idle"),
+                ("%5", "x"),
+            ],
+        );
+        let out = bare(&glyphs(&dir, &["%1", "%2", "%3", "%4", "%5"]));
+        assert_eq!(out, " ●●●○○");
+    }
+
+    #[test]
+    fn active_tab_uses_dark_tones_of_the_palette() {
+        let p = Palette::default();
+        let d = dark(&p);
+        assert_eq!(d.green, Color::Rgb(0x3a, 0x51, 0x3a));
+        assert_ne!(hex(d.accent), hex(p.accent));
+        let dir = status_dir("dark", &[("%1", "waiting")]);
+        let out = window_glyphs(&dir, &ids(&["%1"]), &d, 0, now());
+        assert_eq!(out, format!(" #[fg={}]●", hex(d.accent)));
     }
 
     #[test]
@@ -205,12 +273,15 @@ mod tests {
         );
         let p = Palette::default();
         let want = format!(
-            " #[fg={}]●#[fg={}]◐#[fg={}]○",
+            " #[fg={}]●#[fg={}]●#[fg={}]○",
             hex(p.green),
             hex(p.accent),
             hex(p.muted)
         );
-        assert_eq!(glyphs(&dir, &["%1", "%2", "%3"], Some(&p)), want);
+        assert_eq!(
+            window_glyphs(&dir, &ids(&["%1", "%2", "%3"]), &p, 0, now()),
+            want
+        );
     }
 
     #[test]
@@ -218,7 +289,7 @@ mod tests {
         let dir = status_dir("ids", &[("%1", "working"), ("x", "working")]);
         std::fs::write(dir.join("agents").join("..%1"), "working").unwrap();
         let args = ["x", "../x", "%", "%1a", "..%1", "%1"];
-        assert_eq!(glyphs(&dir, &args, None), " ●");
+        assert_eq!(bare(&glyphs(&dir, &args)), " ●");
     }
 
     #[test]
@@ -227,7 +298,8 @@ mod tests {
         let dir = status_dir("restart", &[("%0", "review"), ("%1", "working")]);
         age(&dir.join("agents/%0"), 600);
         let args = ids(&["%0", "%1"]);
-        assert_eq!(window_glyphs(&dir, &args, None, now() - 60, now()), " ●");
+        let out = window_glyphs(&dir, &args, &Palette::default(), now() - 60, now());
+        assert_eq!(bare(&out), " ●");
     }
 
     #[test]
@@ -238,7 +310,7 @@ mod tests {
         age(&dir.join("agents/%2"), old);
         std::fs::create_dir_all(dir.join("heartbeat")).unwrap();
         std::fs::write(dir.join("heartbeat/%2"), "").unwrap();
-        assert_eq!(glyphs(&dir, &["%1", "%2"], None), " ○●");
+        assert_eq!(bare(&glyphs(&dir, &["%1", "%2"])), " ○●");
     }
 
     #[test]
