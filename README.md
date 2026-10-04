@@ -109,10 +109,11 @@ working, an orange `●` waiting or review, a grey `○` idle. The right end sho
 
      0 claude ●   1 zsh   2 review ●○                         tws › status-bar
 
-`install.sh` adds the block below together with the agent status hooks, but only
-when your tmux config has no status bar of its own. A config that sets a status
-option, or a theme plugin that sets one, has a bar of its own. For such a config,
-the installer changes nothing and shows a note. The installer leaves out the
+`install.sh` adds the block below together with the agent status hooks. A config
+that sets a status option, or a theme plugin that sets one, has a bar of its own.
+For such a config, the installer asks you first. If you say yes, the block goes
+after your lines and replaces your bar. If you say no, the installer changes
+nothing and shows a note. The installer leaves out the
 `status-interval` and `status-right-length` lines when your config sets them.
 
     # tws status bar

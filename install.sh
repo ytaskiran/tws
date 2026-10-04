@@ -1290,7 +1290,7 @@ scan_plan() {
         if [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
             plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
             plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
-        elif tmux_has_own_bar; then
+        elif tmux_has_own_bar && ! confirm_own_bar; then
             plan_notes+=("tmux status bar — your tmux config has its own bar. To show the agents on it, see")
             plan_notes+=($'\t'"https://github.com/ytaskiran/tws#status-bar")
         else
@@ -1369,7 +1369,20 @@ plan_is_empty() {
     [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
-# The one question. No terminal (a piped install with no tty) counts as no, so
+# Asked during the scan, only when the user has a bar of their own. The tws
+# block goes after their lines, so a yes replaces their bar; the default is no.
+# No terminal counts as no.
+confirm_own_bar() {
+    local answer=""
+    printf '%s' "Your tmux config has its own status bar. Replace it with the tws bar? [y/N] "
+    if ! read -r answer 2>/dev/null < /dev/tty; then
+        echo ""
+        return 1
+    fi
+    [[ "$answer" =~ ^[Yy] ]]
+}
+
+# The main question. No terminal (a piped install with no tty) counts as no, so
 # such a run changes nothing outside the binary.
 confirm_plan() {
     local answer=""
