@@ -243,6 +243,10 @@ impl App {
                 self.do_refresh_sessions();
             }
 
+            // Every tick, with no trigger: a recount is a few small readdirs,
+            // and it sees every marker change, whichever hook made it.
+            self.recount_subagents();
+
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
 
@@ -2043,6 +2047,16 @@ impl App {
         }
 
         self.agent_trigger.acknowledge(observed_trigger);
+    }
+
+    /// Recount the running subagents of the known agents. It reads only the
+    /// marker directories, so it costs no tmux or ps scan.
+    fn recount_subagents(&mut self) {
+        crate::core::status::apply_subagent_counts(
+            &mut self.state.agent_sessions,
+            &crate::core::status::subagents_dir(),
+            crate::components::agent_meta::now(),
+        );
     }
 
     fn toggle_expand_all(&mut self) {

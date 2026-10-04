@@ -303,6 +303,21 @@ fn has_tool_in_flight(pane_dir: &Path, now: i64) -> bool {
         .any(|m| now - mtime_secs(&m) <= MAX_TOOL_SECS)
 }
 
+/// Set each agent's count of running subagents from the markers in
+/// `dir/<pane_id>/`. A marker older than `STALE_WORKING_SECS` is not counted:
+/// the hooks use the same window, and a crashed subagent leaves its marker.
+pub fn apply_subagent_counts(agents: &mut [AgentSession], dir: &Path, now: i64) {
+    for agent in agents.iter_mut() {
+        agent.subagents = std::fs::read_dir(dir.join(&agent.pane_id)).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file() && now - mtime_secs(m) <= STALE_WORKING_SECS)
+                .count()
+        });
+    }
+}
+
 /// Convert a status to its on-disk representation; `Unknown` maps to `idle`.
 pub fn status_word(status: AgentStatus) -> &'static str {
     match status {
@@ -419,6 +434,7 @@ mod tests {
             pin_slot: None,
             status: AgentStatus::Unknown,
             status_since: 0,
+            subagents: 0,
         }
     }
 
@@ -1465,6 +1481,36 @@ mod tests {
     fn subagents_dir_sits_beside_agents_dir() {
         assert_eq!(subagents_dir().parent(), agents_dir().parent());
         assert_ne!(subagents_dir(), agents_dir());
+    }
+
+    #[test]
+    fn apply_counts_fresh_markers_for_each_pane() {
+        let dir = stale_dir("subcount");
+        let p1 = dir.join("%1");
+        std::fs::create_dir_all(&p1).unwrap();
+        for aid in ["a1", "a2", "old"] {
+            std::fs::write(p1.join(aid), "").unwrap();
+        }
+        backdate(&p1.join("old"), STALE_WORKING_SECS as u64 + 60);
+        let mut agents = vec![mk_agent("%1"), mk_agent("%2")];
+        agents[1].subagents = 5;
+
+        apply_subagent_counts(&mut agents, &dir, now_secs());
+
+        assert_eq!(agents[0].subagents, 2, "the stale marker is not counted");
+        assert_eq!(agents[1].subagents, 0, "a pane with no directory has none");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_counts_zero_when_the_subagents_dir_is_missing() {
+        let dir = stale_dir("subcount-missing").join("absent");
+        let mut agents = vec![mk_agent("%1")];
+        agents[0].subagents = 3;
+
+        apply_subagent_counts(&mut agents, &dir, now_secs());
+
+        assert_eq!(agents[0].subagents, 0);
     }
 
     #[test]

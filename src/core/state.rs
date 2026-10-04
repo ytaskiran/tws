@@ -31,6 +31,7 @@ pub struct FlatAgent {
     pub agent_type: super::model::AgentType,
     /// Unix time of the last status change. 0 when unknown.
     pub status_since: i64,
+    pub subagents: usize,
 }
 
 pub enum SelectedItem {
@@ -533,6 +534,7 @@ impl AppState {
                             status: agent.status,
                             agent_type: agent.agent_type,
                             status_since: agent.status_since,
+                            subagents: agent.subagents,
                         });
                     }
                 }
@@ -946,6 +948,7 @@ mod tests {
             pin_slot: None,
             status: AgentStatus::Unknown,
             status_since: 0,
+            subagents: 0,
         }
     }
 
@@ -1105,6 +1108,7 @@ mod tests {
             pin_slot: slot,
             status: AgentStatus::Unknown,
             status_since: 0,
+            subagents: 0,
         };
         state.agent_sessions.push(mk("%a", None));
         state.agent_sessions.push(mk("%b", Some(3)));
@@ -1130,6 +1134,7 @@ mod tests {
             pin_slot: Some(2),
             status: AgentStatus::Unknown,
             status_since: 0,
+            subagents: 0,
         });
 
         let saved_pin = state
@@ -1149,6 +1154,7 @@ mod tests {
             pin_slot: None,
             status: AgentStatus::Unknown,
             status_since: 0,
+            subagents: 0,
         });
 
         if let Some(agent) = state.agent_sessions.iter_mut().find(|a| a.pane_id == "%1") {

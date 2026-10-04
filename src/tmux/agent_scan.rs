@@ -274,6 +274,7 @@ fn match_agents(panes: &[PaneInfo], table: &ProcessTable) -> Vec<AgentSession> {
                 pin_slot: None,
                 status: AgentStatus::Unknown,
                 status_since: 0,
+                subagents: 0,
             })
         })
         .collect()
