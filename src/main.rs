@@ -1,4 +1,5 @@
 mod app;
+mod bar;
 mod components;
 mod config;
 mod core;
@@ -35,6 +36,23 @@ enum Command {
         /// tmux pane id, e.g. %12. Defaults to $TMUX_PANE
         pane_id: Option<String>,
     },
+    /// Print text for the tmux status bar (called by a tmux #() job)
+    Bar {
+        #[command(subcommand)]
+        what: BarCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BarCommand {
+    /// The agent glyphs of the panes in one window
+    Window {
+        /// Print the glyphs with no color (for the current tab)
+        #[arg(long)]
+        plain: bool,
+        /// tmux pane ids, e.g. %12 %13
+        pane_ids: Vec<String>,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -45,6 +63,12 @@ fn main() -> std::io::Result<()> {
         Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
         Some(Command::AckPane { pane_id }) => {
             ack_pane(pane_id);
+            Ok(())
+        }
+        Some(Command::Bar {
+            what: BarCommand::Window { plain, pane_ids },
+        }) => {
+            bar::window(&pane_ids, plain);
             Ok(())
         }
         None => run_tui(),
