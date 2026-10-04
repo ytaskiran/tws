@@ -264,14 +264,6 @@ impl AppState {
         Some(format!("{}/{}", thread.name, session.display_name))
     }
 
-    pub fn all_threads_display(&self) -> Vec<(usize, String)> {
-        self.threads
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i, t.name.clone()))
-            .collect()
-    }
-
     pub fn recent_sessions(&self, n: usize) -> Vec<&Session> {
         let mut recent: Vec<&Session> = self
             .active_sessions
@@ -368,12 +360,6 @@ impl AppState {
             agent_sessions: Vec::new(),
         }
     }
-
-    pub fn session_prefix_for(&self, thread_idx: usize) -> Option<String> {
-        self.threads
-            .get(thread_idx)
-            .map(|t| tmux_session_prefix(&t.name))
-    }
 }
 
 #[cfg(test)]
@@ -422,15 +408,6 @@ mod tests {
             SelectedItem::None => {}
             _ => panic!("expected None"),
         }
-    }
-
-    #[test]
-    fn session_prefix_for_valid() {
-        let state = AppState::with_sample_data();
-        assert_eq!(
-            state.session_prefix_for(0).unwrap(),
-            "twsr_edge-device-pipeline"
-        );
     }
 
     #[test]

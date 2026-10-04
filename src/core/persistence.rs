@@ -99,6 +99,15 @@ mod tests {
     }
 
     #[test]
+    fn old_collection_file_does_not_load() {
+        // A file from before threads were top level. Loading it as threads
+        // would drop the nested threads, and the next save would delete them.
+        let json = r#"[{"id":"00000000-0000-0000-0000-000000000001","name":"","is_root":true,
+            "threads":[{"id":"00000000-0000-0000-0000-000000000002","name":"api","description":null}]}]"#;
+        assert!(serde_json::from_str::<Vec<Thread>>(json).is_err());
+    }
+
+    #[test]
     fn save_replaces_the_file_and_does_not_rewrite_it() {
         // A reader such as `tws bar where` must never see a half-written file,
         // so save writes a new file and renames it over the old one. A hard

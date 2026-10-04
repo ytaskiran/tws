@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Rejects a pre-flattening state.json (collections with nested `threads`)
+// instead of loading it as threads and losing the nested ones on the next save.
+#[serde(deny_unknown_fields)]
 pub struct Thread {
     pub id: Uuid,
     pub name: String,

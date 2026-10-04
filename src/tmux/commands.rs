@@ -1,6 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
+/// A session tws owns: every thread session starts with `twsr_`.
+pub fn is_managed(name: &str) -> bool {
+    name.starts_with("twsr_")
+}
+
 pub fn list_sessions() -> Vec<String> {
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
@@ -35,7 +40,7 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
                 .lines()
                 .filter_map(|line| {
                     let (name, ts_str) = line.split_once('\t')?;
-                    if !name.starts_with("tws_") && !name.starts_with("twsr_") {
+                    if !is_managed(name) {
                         return None;
                     }
                     let ts = ts_str.parse::<i64>().unwrap_or(0);
@@ -145,4 +150,16 @@ pub fn capture_pane(pane_id: &str) -> Option<String> {
 
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_thread_sessions_are_managed() {
+        assert!(is_managed("twsr_api_main"));
+        assert!(!is_managed("tws_work_api_main"));
+        assert!(!is_managed("scratch"));
+    }
 }

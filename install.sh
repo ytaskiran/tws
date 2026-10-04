@@ -107,8 +107,10 @@ migrate_state() {
     local f="$HOME/.config/tws/state.json"
     [[ -f "$f" ]] && command -v jq &>/dev/null || return 0
     jq -e '.[0] | has("threads")' "$f" &>/dev/null || return 0
-    # `|| rm` keeps a jq failure from stopping the installer under `set -e`.
-    { jq '[.[].threads[]]' "$f" > "$f.tmp" && mv "$f" "$f.bak" && mv "$f.tmp" "$f"; } || rm -f "$f.tmp"
+    # Write through "$f", so a symlink and the file mode stay. `|| true` keeps
+    # a failure from stopping the installer under `set -e`; .bak holds the data.
+    { jq '[.[].threads[]]' "$f" > "$f.tmp" && cp "$f" "$f.bak" && cat "$f.tmp" > "$f"; } || true
+    rm -f "$f.tmp"
 }
 
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'

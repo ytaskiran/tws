@@ -1085,10 +1085,11 @@ impl App {
 
         let entries: Vec<(String, String)> = self
             .state
-            .all_threads_display()
-            .into_iter()
+            .threads
+            .iter()
+            .enumerate()
             .filter(|(ti, _)| *ti != thread_idx)
-            .map(|(ti, path)| (ti.to_string(), path))
+            .map(|(ti, t)| (ti.to_string(), t.name.clone()))
             .collect();
 
         if entries.is_empty() {

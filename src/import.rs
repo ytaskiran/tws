@@ -8,7 +8,7 @@ pub fn run() -> io::Result<()> {
     let all_sessions = tmux::list_sessions();
     let unmanaged: Vec<&String> = all_sessions
         .iter()
-        .filter(|name| !is_managed(name))
+        .filter(|name| !tmux::is_managed(name))
         .collect();
 
     if unmanaged.is_empty() {
@@ -121,20 +121,4 @@ fn prompt(msg: &str) -> io::Result<String> {
 fn confirm(msg: &str) -> io::Result<bool> {
     let input = prompt(&format!("{} [y/N] ", msg))?;
     Ok(input == "y" || input == "Y")
-}
-
-/// A session tws already owns: every thread session starts with `twsr_`.
-fn is_managed(name: &str) -> bool {
-    name.starts_with("twsr_")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thread_sessions_are_managed() {
-        assert!(is_managed("twsr_api_main"));
-        assert!(!is_managed("scratch"));
-    }
 }
