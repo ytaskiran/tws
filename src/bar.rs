@@ -15,23 +15,12 @@ use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
 /// with `#{P:#{pane_id} }`, and the server start time with `#{start_time}`.
-/// `active` uses slightly darker tones of the colors, for the current tab:
-/// its background is most often a bright accent color.
-pub fn window(pane_ids: &[String], active: bool, server_start: i64) {
-    let palette = if active { dark(&palette()) } else { palette() };
+pub fn window(pane_ids: &[String], server_start: i64) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    print!(
-        "{}",
-        window_glyphs(
-            &persistence::config_dir(),
-            pane_ids,
-            &palette,
-            server_start,
-            now
-        )
-    );
+    let states = window_states(&persistence::config_dir(), pane_ids, server_start, now);
+    print!("{}", window_label(&states, &palette()));
 }
 
 /// Prints `thread › session` for a tws session, else the session name.
@@ -60,23 +49,20 @@ fn label_for(collections: Vec<Collection>, session_name: &str) -> String {
     label.replace('#', "##")
 }
 
-/// A space, then one glyph for each pane with a status file, in argument
-/// order. Empty when no pane has one. No color reset at the end: the glyphs
-/// are the last visible text of the tab.
+/// The state of each pane with a status file, in argument order.
 ///
 /// The TUI cleans the status files, so with the TUI closed two kinds of
 /// files are stale. A file older than the tmux server belongs to a pane of
-/// an earlier server that had the same ID, and shows nothing. A `working`
-/// file with no sign of life shows as idle, the change the TUI would write.
-fn window_glyphs(
+/// an earlier server that had the same ID, and is skipped. A `working` file
+/// with no sign of life counts as idle, the change the TUI would write.
+fn window_states(
     config_dir: &Path,
     pane_ids: &[String],
-    palette: &Palette,
     server_start: i64,
     now: i64,
-) -> String {
+) -> Vec<AgentStatus> {
     let agents = config_dir.join("agents");
-    let mut out = String::new();
+    let mut out = Vec::new();
     for id in pane_ids.iter().filter(|id| is_pane_id(id)) {
         let path = agents.join(id);
         let (Ok(word), Ok(meta)) = (std::fs::read_to_string(&path), std::fs::metadata(&path))
@@ -99,17 +85,32 @@ fn window_glyphs(
         {
             st = AgentStatus::Idle;
         }
-        out.push_str(&format!(
-            "#[fg={}]{}",
-            hex(status_color(palette, st)),
-            glyph(st)
-        ));
+        out.push(st);
     }
-    if out.is_empty() {
-        out
-    } else {
-        format!(" {out}")
+    out
+}
+
+/// A space, then the glyphs in two versions. tmux expands the format in the
+/// job output for each tab, so it picks the darker tones for the current tab.
+/// The command string is then the same for every tab, and a window change
+/// starts no new job. Empty when no pane has an agent. No color reset at the
+/// end: the glyphs are the last visible text of the tab.
+fn window_label(states: &[AgentStatus], palette: &Palette) -> String {
+    if states.is_empty() {
+        return String::new();
     }
+    format!(
+        " #{{?window_active,{},{}}}",
+        glyph_run(states, &dark(palette)),
+        glyph_run(states, palette)
+    )
+}
+
+fn glyph_run(states: &[AgentStatus], palette: &Palette) -> String {
+    states
+        .iter()
+        .map(|&st| format!("#[fg={}]{}", hex(status_color(palette, st)), glyph(st)))
+        .collect()
 }
 
 /// A tmux pane ID is `%` and digits. Any other text could name a file
@@ -203,29 +204,21 @@ mod tests {
             .unwrap();
     }
 
-    fn glyphs(dir: &std::path::Path, args: &[&str]) -> String {
-        window_glyphs(dir, &ids(args), &Palette::default(), 0, now())
-    }
-
-    /// The glyphs alone, with the `#[fg=…]` styles taken out.
-    fn bare(s: &str) -> String {
-        let mut out = String::new();
-        let mut rest = s;
-        while let Some(i) = rest.find("#[") {
-            out.push_str(&rest[..i]);
-            rest = &rest[i + rest[i..].find(']').unwrap() + 1..];
-        }
-        out + rest
+    fn states(dir: &std::path::Path, args: &[&str]) -> Vec<AgentStatus> {
+        window_states(dir, &ids(args), 0, now())
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    use AgentStatus::{Idle, Review, Waiting, Working};
+
     #[test]
     fn window_with_no_agent_prints_nothing() {
         let dir = status_dir("none", &[]);
-        assert_eq!(glyphs(&dir, &["%1", "%2"]), "");
+        assert!(states(&dir, &["%1", "%2"]).is_empty());
+        assert_eq!(window_label(&[], &Palette::default()), "");
     }
 
     #[test]
@@ -234,56 +227,49 @@ mod tests {
             "order",
             &[("%1", "working"), ("%3", "review\n"), ("%4", "idle")],
         );
-        assert_eq!(bare(&glyphs(&dir, &["%4", "%2", "%1", "%3"])), " ○●●");
+        assert_eq!(
+            states(&dir, &["%4", "%2", "%1", "%3"]),
+            [Idle, Working, Review]
+        );
     }
 
     #[test]
-    fn window_uses_only_glyphs_from_one_font() {
+    fn glyph_run_uses_only_glyphs_from_one_font() {
         // ◐ comes from a fallback font in many terminals, and then it does not
         // line up with ● and ○. The color tells waiting from working.
-        let dir = status_dir(
-            "font",
-            &[
-                ("%1", "working"),
-                ("%2", "waiting"),
-                ("%3", "review"),
-                ("%4", "idle"),
-                ("%5", "x"),
-            ],
+        let p = Palette::default();
+        let run = glyph_run(&[Working, Waiting, Review, Idle], &p);
+        let want = format!(
+            "#[fg={g}]●#[fg={a}]●#[fg={a}]●#[fg={m}]○",
+            g = hex(p.green),
+            a = hex(p.accent),
+            m = hex(p.muted)
         );
-        let out = bare(&glyphs(&dir, &["%1", "%2", "%3", "%4", "%5"]));
-        assert_eq!(out, " ●●●○○");
+        assert_eq!(run, want);
     }
 
     #[test]
     fn active_tab_uses_dark_tones_of_the_palette() {
-        let p = Palette::default();
-        let d = dark(&p);
+        let d = dark(&Palette::default());
         assert_eq!(d.green, Color::Rgb(0x75, 0xa2, 0x75));
         assert_eq!(d.accent, Color::Rgb(0xb7, 0x6c, 0x2d));
-        assert_ne!(hex(d.accent), hex(p.accent));
-        let dir = status_dir("dark", &[("%1", "waiting")]);
-        let out = window_glyphs(&dir, &ids(&["%1"]), &d, 0, now());
-        assert_eq!(out, format!(" #[fg={}]●", hex(d.accent)));
     }
 
     #[test]
-    fn window_colors_come_from_the_palette() {
-        let dir = status_dir(
-            "color",
-            &[("%1", "working"), ("%2", "waiting"), ("%3", "idle")],
-        );
+    fn window_label_picks_the_tones_in_tmux() {
+        // One command string for the current tab and the other tabs, so a
+        // window change does not start a new job and the glyphs do not blink.
         let p = Palette::default();
+        let label = window_label(&[Working, Idle], &p);
         let want = format!(
-            " #[fg={}]●#[fg={}]●#[fg={}]○",
-            hex(p.green),
-            hex(p.accent),
-            hex(p.muted)
+            " #{{?window_active,{},{}}}",
+            glyph_run(&[Working, Idle], &dark(&p)),
+            glyph_run(&[Working, Idle], &p)
         );
-        assert_eq!(
-            window_glyphs(&dir, &ids(&["%1", "%2", "%3"]), &p, 0, now()),
-            want
-        );
+        assert_eq!(label, want);
+        // A `,` or `}` in a run would end the tmux conditional early.
+        let all = glyph_run(&[Working, Waiting, Review, Idle], &p);
+        assert!(!all.contains([',', '}']));
     }
 
     #[test]
@@ -291,7 +277,7 @@ mod tests {
         let dir = status_dir("ids", &[("%1", "working"), ("x", "working")]);
         std::fs::write(dir.join("agents").join("..%1"), "working").unwrap();
         let args = ["x", "../x", "%", "%1a", "..%1", "%1"];
-        assert_eq!(bare(&glyphs(&dir, &args)), " ●");
+        assert_eq!(states(&dir, &args), [Working]);
     }
 
     #[test]
@@ -299,9 +285,8 @@ mod tests {
         // tmux numbers panes from %0 again after a restart.
         let dir = status_dir("restart", &[("%0", "review"), ("%1", "working")]);
         age(&dir.join("agents/%0"), 600);
-        let args = ids(&["%0", "%1"]);
-        let out = window_glyphs(&dir, &args, &Palette::default(), now() - 60, now());
-        assert_eq!(bare(&out), " ●");
+        let out = window_states(&dir, &ids(&["%0", "%1"]), now() - 60, now());
+        assert_eq!(out, [Working]);
     }
 
     #[test]
@@ -312,7 +297,7 @@ mod tests {
         age(&dir.join("agents/%2"), old);
         std::fs::create_dir_all(dir.join("heartbeat")).unwrap();
         std::fs::write(dir.join("heartbeat/%2"), "").unwrap();
-        assert_eq!(bare(&glyphs(&dir, &["%1", "%2"])), " ○●");
+        assert_eq!(states(&dir, &["%1", "%2"]), [Idle, Working]);
     }
 
     #[test]

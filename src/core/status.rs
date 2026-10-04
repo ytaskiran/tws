@@ -326,13 +326,26 @@ fn is_temp_name(name: &str) -> bool {
 /// Write beside `path` and rename over it. A plain write truncates first, and a
 /// reader that lands in that gap sees an empty file. The hook commands in
 /// `install.sh` use the same temp name shape, so `is_temp_name` covers both.
+/// Writes a temp file beside `path`, flushes it to disk, and renames it over
+/// `path`, so a reader sees the old or the new text, never a part. The new
+/// file keeps the mode of the old one, and a failed write leaves no temp file.
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(contents.as_bytes())?;
+        if let Ok(old) = std::fs::metadata(path) {
+            file.set_permissions(old.permissions())?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
         std::fs::remove_file(&tmp).ok();
-    })
+    }
+    result
 }
 
 /// Write to the real agents directory; failures do not interrupt attach.

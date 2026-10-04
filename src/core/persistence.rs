@@ -76,10 +76,12 @@ pub fn save(collections: &[Collection]) -> io::Result<()> {
 }
 
 /// Writes a new file and renames it over the old one, so a reader such as
-/// `tws bar where` never sees a half-written file.
+/// `tws bar where` never sees a half-written file. A symlinked state.json
+/// (a dotfiles repo, for example) is written at its target, so the link stays.
 fn save_to(path: &std::path::Path, collections: &[Collection]) -> io::Result<()> {
     let data = serde_json::to_string_pretty(collections)?;
-    crate::core::status::write_atomic(path, &data)
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    crate::core::status::write_atomic(&target, &data)
 }
 
 #[cfg(test)]
@@ -129,6 +131,33 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded[0].name, "New");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_writes_through_a_symlink_and_keeps_the_mode() {
+        // A dotfiles setup can link state.json into a repo. A rename onto the
+        // link would replace the link with a plain file.
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = env::temp_dir().join(format!("tws_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.json");
+        fs::write(&real, "[]").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("state.json");
+        symlink(&real, &link).unwrap();
+
+        save_to(&link, &[Collection::new("New")]).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(fs::read_to_string(&real).unwrap().contains("New"));
+        let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         fs::remove_dir_all(&dir).unwrap();
     }
 
