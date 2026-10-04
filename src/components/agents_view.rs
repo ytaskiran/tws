@@ -100,7 +100,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             item_line(spans, selected, width, theme)
         });
         // The subagent line is part of the agent: same bar, same highlight, and
-        // the cursor does not stop on it. The `↳` sits under the name.
+        // the cursor does not stop on it. The spinner sits under the name.
         if a.subagents > 0 {
             let bar = if selected {
                 Span::styled("▎", theme.selection_bar)
@@ -108,7 +108,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                 Span::raw(" ")
             };
             let text = format!(
-                "↳ {} {} working",
+                "{} {} working",
                 agent_meta::spinner(now_ms),
                 agent_meta::subagents(a.subagents)
             );
@@ -229,8 +229,15 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[0].contains("agent-00"), "agent line:\n{out}");
         assert!(
-            lines[1].contains("↳") && lines[1].contains("3 subagents working"),
+            lines[1].contains("3 subagents working"),
             "subagent line:\n{out}"
+        );
+        // The spinner starts the text, in the column of the agent name.
+        let name_col = lines[0].chars().position(|c| c == 'a').unwrap();
+        let spinner = lines[1].chars().nth(name_col).unwrap();
+        assert!(
+            ('\u{2800}'..='\u{28FF}').contains(&spinner),
+            "no spinner under the name:\n{out}"
         );
         assert!(lines[2].contains("agent-01"), "next agent:\n{out}");
         assert!(
