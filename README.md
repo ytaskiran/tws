@@ -116,6 +116,22 @@ after your lines and replaces your bar. If you say no, the installer changes
 nothing and shows a note. The installer leaves out the
 `status-interval` and `status-right-length` lines when your config sets them.
 
+With [tmux-nova](https://github.com/o0th/tmux-nova), the installer keeps your
+nova bar and adds the agents on top of it, with no question. It appends the
+glyph command to your `@nova-pane`, adds a `tws` segment at the right end, and
+runs nova again:
+
+    # tws status bar
+    set -ga @nova-pane '#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} })'  # tws status bar
+    set -ga @nova-segments-0-right ' tws'  # tws status bar
+    set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'  # tws status bar
+    set -g @nova-segment-tws-colors '#c88e68 #121212'  # tws status bar
+    run-shell '/home/you/.tmux/plugins/tmux-nova/nova.tmux'  # tws status bar
+
+When your config does not set `@nova-pane` or `@nova-segments-0-right`, the
+block sets them to the nova default plus the tws part. For any other bar, the
+installer uses the block below.
+
     # tws status bar
     set -g status-interval 5  # tws status bar
     set -g status-right-length 80  # tws status bar
