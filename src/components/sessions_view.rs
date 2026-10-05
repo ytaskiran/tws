@@ -149,7 +149,6 @@ pub fn render(
     theme: &Theme,
 ) {
     let width = area.width as usize;
-    let now = agent_meta::now();
     let now_ms = agent_meta::now_ms();
     let tint = if focused {
         theme.highlight
@@ -209,7 +208,7 @@ pub fn render(
                     ),
                     Span::styled(a.display_name.clone(), theme.agent_name),
                 ];
-                let meta = agent_meta::label(a.agent_type, a.status_since, now);
+                let meta = agent_meta::kind_label(a.agent_type).to_string();
                 if a.subagents > 0 {
                     // The bar, a one-space gap and the two-space right margin
                     // of `line`. The word goes first, so the meta stays put.
@@ -276,7 +275,6 @@ mod tests {
             renamed: false,
             pin_slot: None,
             status: AgentStatus::Working,
-            status_since: 0,
             subagents: 0,
         }
     }

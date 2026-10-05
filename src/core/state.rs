@@ -25,8 +25,6 @@ pub struct FlatAgent {
     pub pin_slot: Option<u8>,
     pub status: super::model::AgentStatus,
     pub agent_type: super::model::AgentType,
-    /// Unix time of the last status change. 0 when unknown.
-    pub status_since: i64,
     pub subagents: usize,
 }
 
@@ -318,7 +316,6 @@ impl AppState {
                         pin_slot: agent.pin_slot,
                         status: agent.status,
                         agent_type: agent.agent_type,
-                        status_since: agent.status_since,
                         subagents: agent.subagents,
                     });
                 }
@@ -604,7 +601,6 @@ mod tests {
             renamed: false,
             pin_slot: None,
             status: AgentStatus::Unknown,
-            status_since: 0,
             subagents: 0,
         }
     }
@@ -764,7 +760,6 @@ mod tests {
             renamed: false,
             pin_slot: slot,
             status: AgentStatus::Unknown,
-            status_since: 0,
             subagents: 0,
         };
         state.agent_sessions.push(mk("%a", None));
@@ -790,7 +785,6 @@ mod tests {
             renamed: false,
             pin_slot: Some(2),
             status: AgentStatus::Unknown,
-            status_since: 0,
             subagents: 0,
         });
 
@@ -810,7 +804,6 @@ mod tests {
             renamed: false,
             pin_slot: None,
             status: AgentStatus::Unknown,
-            status_since: 0,
             subagents: 0,
         });
 
