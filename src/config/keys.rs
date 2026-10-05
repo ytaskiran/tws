@@ -35,6 +35,7 @@ pub enum Action {
     PinAgentSlot,
     SetDirectory,
     Complete,
+    ThemePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -139,6 +140,7 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
         "set_directory" => Ok(Action::SetDirectory),
         "complete" => Ok(Action::Complete),
+        "theme_picker" => Ok(Action::ThemePicker),
         _ => Err(format!("unknown action: {:?}", s)),
     }
 }
@@ -240,6 +242,12 @@ impl Keymap {
             A::SetDirectory
         );
         bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE, A::Finder);
+        bind!(
+            M::Normal,
+            KeyCode::Char('t'),
+            KeyModifiers::NONE,
+            A::ThemePicker
+        );
         bind!(
             M::Normal,
             KeyCode::Char('e'),

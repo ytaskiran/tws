@@ -114,6 +114,19 @@ struct ThemeFile {
     palette: Palette,
 }
 
+/// Built-in theme names, in picker order.
+pub const PRESETS: &[&str] = &[
+    "default",
+    "catppuccin-mocha",
+    "catppuccin-macchiato",
+    "catppuccin-frappe",
+    "catppuccin-latte",
+    "gruvbox-dark",
+    "gruvbox-light",
+    "tokyo-night",
+    "nord",
+];
+
 pub fn load_preset(name: &str) -> Option<Palette> {
     let toml_str = match name {
         "default" => include_str!("../themes/default.toml"),
@@ -196,6 +209,13 @@ mod tests {
     fn load_embedded_preset_default() {
         let p = load_preset("default").expect("default should exist");
         assert_eq!(p, Palette::default());
+    }
+
+    #[test]
+    fn every_listed_preset_loads() {
+        for name in PRESETS {
+            assert!(load_preset(name).is_some(), "{name} should load");
+        }
     }
 
     #[test]

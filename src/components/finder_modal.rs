@@ -13,7 +13,8 @@ const MAX_VISIBLE: usize = 10;
 pub fn render(
     frame: &mut Frame,
     title: &str,
-    query: &str,
+    // None hides the query line: a plain list with no filter.
+    query: Option<&str>,
     entries: &[(String, String)],
     filtered: &[usize],
     cursor: usize,
@@ -21,7 +22,8 @@ pub fn render(
     theme: &Theme,
 ) {
     let visible_count = filtered.len().min(MAX_VISIBLE);
-    let height = (visible_count.max(1) + 5) as u16;
+    let query_rows = if query.is_some() { 2 } else { 0 };
+    let height = (visible_count.max(1) + 3 + query_rows) as u16;
     let popup = centered_rect(60, height, area);
     frame.render_widget(Clear, popup);
 
@@ -37,24 +39,26 @@ pub fn render(
     frame.render_widget(block, popup);
 
     let chunks = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(query_rows as u16 / 2),
+        Constraint::Length(query_rows as u16 / 2),
         Constraint::Min(0),
     ])
     .split(inner);
 
-    let query_line = Line::from(vec![
-        Span::styled("/", theme.modal_muted),
-        Span::raw(query),
-        Span::styled("\u{2588}", theme.cursor),
-    ]);
-    frame.render_widget(Paragraph::new(query_line), chunks[0]);
+    if let Some(query) = query {
+        let query_line = Line::from(vec![
+            Span::styled("/", theme.modal_muted),
+            Span::raw(query),
+            Span::styled("\u{2588}", theme.cursor),
+        ]);
+        frame.render_widget(Paragraph::new(query_line), chunks[0]);
 
-    let sep = "\u{2500}".repeat(chunks[1].width as usize);
-    frame.render_widget(
-        Paragraph::new(Line::styled(sep, theme.separator)),
-        chunks[1],
-    );
+        let sep = "\u{2500}".repeat(chunks[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::styled(sep, theme.separator)),
+            chunks[1],
+        );
+    }
 
     if filtered.is_empty() {
         let empty = Line::from(Span::styled("No matches", theme.modal_muted));

@@ -14,7 +14,9 @@ use crate::components::{
     agent_preview, agents_view, confirm_modal, dir_picker_modal, finder_modal, input_modal,
     notes_sidebar, recent_bar, sessions_view,
 };
+use crate::config;
 use crate::config::keys::{Action, KeyMode, Keymap};
+use crate::config::palette::PaletteOverride;
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
@@ -125,6 +127,12 @@ enum Mode {
         picker: DirPicker,
         thread_idx: usize,
     },
+    /// A plain list (the query stays empty). Each cursor move previews the
+    /// theme under the cursor; Esc goes back to `original`.
+    ThemePicker {
+        state: FinderState,
+        original: String,
+    },
 }
 
 pub struct App {
@@ -145,6 +153,8 @@ pub struct App {
     view_mode: ViewMode,
     agent_list_cursor: usize,
     theme: Theme,
+    theme_name: String,
+    palette_overrides: Option<PaletteOverride>,
     keymap: Keymap,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
     /// Drained on first successful agent rebuild; entries whose pane_id
@@ -162,10 +172,11 @@ const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 impl App {
     pub fn new(
         state: AppState,
-        theme: Theme,
-        note_stylesheet: NoteStyleSheet,
+        theme_name: String,
+        palette_overrides: Option<PaletteOverride>,
         keymap: Keymap,
     ) -> Self {
+        let palette = config::palette_for(&theme_name, palette_overrides.as_ref());
         Self {
             state,
             tree_state: TreeState::default(),
@@ -174,7 +185,7 @@ impl App {
             focus: Focus::Tree,
             notes: NoteStore::new(),
             note_editor: NoteEditor::new(),
-            md_renderer: MarkdownRenderer::new(note_stylesheet),
+            md_renderer: MarkdownRenderer::new(NoteStyleSheet::new(&palette)),
             last_refresh: Instant::now(),
             agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
             flash: None,
@@ -183,7 +194,9 @@ impl App {
             last_preview_refresh: Instant::now(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
-            theme,
+            theme: Theme::build(&palette),
+            theme_name,
+            palette_overrides,
             keymap,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
@@ -192,6 +205,16 @@ impl App {
 
     fn set_flash(&mut self, msg: &str) {
         self.flash = Some((msg.to_string(), Instant::now()));
+    }
+
+    /// Rebuild the styles from the theme `name`, with the `[palette]`
+    /// overrides on top. The next frame draws with them.
+    fn apply_theme(&mut self, name: &str) {
+        let palette = config::palette_for(name, self.palette_overrides.as_ref());
+        self.theme = Theme::build(&palette);
+        self.md_renderer
+            .set_stylesheet(NoteStyleSheet::new(&palette));
+        self.theme_name = name.to_string();
     }
 
     pub fn run(
@@ -258,6 +281,7 @@ impl App {
                     Mode::DirPicker { .. } => {
                         self.handle_dir_picker_key(key.code, key.modifiers);
                     }
+                    Mode::ThemePicker { .. } => self.handle_theme_picker_key(key.code),
                 }
                 // Any mode can move the selection (the finder does on attach),
                 // so resync the notes pane after every key, not per handler.
@@ -580,7 +604,7 @@ impl App {
                     finder_modal::render(
                         frame,
                         " Find Session ",
-                        &state.query,
+                        Some(&state.query),
                         &state.all_entries,
                         &state.filtered,
                         state.cursor,
@@ -592,7 +616,7 @@ impl App {
                     finder_modal::render(
                         frame,
                         " Move to Thread ",
-                        &state.query,
+                        Some(&state.query),
                         &state.all_entries,
                         &state.filtered,
                         state.cursor,
@@ -609,6 +633,18 @@ impl App {
                         .unwrap_or("thread");
                     dir_picker_modal::render(frame, picker, thread_name, area, &self.theme);
                 }
+                Mode::ThemePicker { state, .. } => {
+                    finder_modal::render(
+                        frame,
+                        " Theme ",
+                        None,
+                        &state.all_entries,
+                        &state.filtered,
+                        state.cursor,
+                        area,
+                        &self.theme,
+                    );
+                }
             }
         })?;
         Ok(())
@@ -621,6 +657,7 @@ impl App {
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::DirPicker { .. } => StatusContext::DirPicker,
+            Mode::ThemePicker { .. } => StatusContext::ThemePicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents) {
                     if let Some(pending) = &self.pin_assign_pending {
@@ -671,6 +708,10 @@ impl App {
                     self.view_mode = ViewMode::Tree;
                 }
             }
+            return Ok(());
+        }
+        if normal_action == Some(Action::ThemePicker) {
+            self.start_theme_picker();
             return Ok(());
         }
 
@@ -1292,6 +1333,69 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn start_theme_picker(&mut self) {
+        let names = config::theme_names();
+        let current = names.iter().position(|n| *n == self.theme_name);
+        // The finder shows the second field; the first is the name.
+        let entries = names
+            .into_iter()
+            .map(|n| {
+                let label = if n == self.theme_name {
+                    format!("{n}  ●")
+                } else {
+                    n.clone()
+                };
+                (n, label)
+            })
+            .collect();
+        let mut state = FinderState::new(entries);
+        state.cursor = current.unwrap_or(0);
+        self.mode = Mode::ThemePicker {
+            state,
+            original: self.theme_name.clone(),
+        };
+    }
+
+    fn handle_theme_picker_key(&mut self, code: KeyCode) {
+        let Mode::ThemePicker { state, .. } = &mut self.mode else {
+            return;
+        };
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                state.cursor = (state.cursor + 1).min(state.filtered.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => state.cursor = state.cursor.saturating_sub(1),
+            KeyCode::Esc => {
+                if let Mode::ThemePicker { original, .. } =
+                    std::mem::replace(&mut self.mode, Mode::Normal)
+                {
+                    self.apply_theme(&original);
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                if let Mode::ThemePicker { original, .. } =
+                    std::mem::replace(&mut self.mode, Mode::Normal)
+                {
+                    // The cursor already applied the pick; save it if it changed.
+                    if self.theme_name == original {
+                        return;
+                    }
+                    match config::save_theme(&self.theme_name) {
+                        Ok(()) => self.set_flash(&format!("theme: {}", self.theme_name)),
+                        Err(e) => self.set_flash(&e),
+                    }
+                }
+                return;
+            }
+            _ => return,
+        }
+        if let Some(&idx) = state.filtered.get(state.cursor) {
+            let name = state.all_entries[idx].0.clone();
+            self.apply_theme(&name);
+        }
     }
 
     fn handle_thread_picker_key(

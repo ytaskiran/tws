@@ -251,6 +251,7 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `e` | Toggle expand all |
 | `1`–`5` | Attach to a recent session |
 | `/` | Fuzzy-find and attach to any session |
+| `t` | Pick a theme with a live preview |
 | `v` | Toggle agents view |
 | `Tab` | Focus the notes panel |
 | `q` | Quit |
@@ -280,7 +281,9 @@ Optional. Drop a TOML file at `~/.config/tws/config.toml` to customize the theme
 
 ### Theme
 
-Pick a built-in preset:
+Press `t` to open the theme picker. Move the cursor to preview each theme on the whole UI. `Enter` saves the theme as the `theme` line in `config.toml`, and `Esc` goes back to the theme you had.
+
+Or set a preset by hand:
 
 ```toml
 theme = "catppuccin-mocha"
@@ -316,6 +319,7 @@ add        = "a"
 move_down  = "ctrl+j"
 move_up    = "ctrl+k"
 finder     = "/"
+theme_picker = "t"
 
 [keys.agents]
 toggle_view = "v"

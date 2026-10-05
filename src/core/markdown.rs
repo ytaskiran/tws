@@ -77,6 +77,11 @@ impl MarkdownRenderer {
         self.cache = None;
     }
 
+    pub fn set_stylesheet(&mut self, stylesheet: NoteStyleSheet) {
+        self.stylesheet = stylesheet;
+        self.cache = None;
+    }
+
     fn render_fallback(&self, markdown: &str) -> Text<'static> {
         let options = tui_markdown::Options::new(self.stylesheet.clone());
         let text = tui_markdown::from_str_with_options(markdown, &options);
