@@ -1090,8 +1090,12 @@ BAR_OPTIONS='status-style status-bg status-fg status-justify status-left status-
 # same command, and its output picks the colors for the current tab, so a
 # window change starts no new job. The tabs keep the zoom and bell flags.
 bar_block() {
-    local bin="$INSTALL_DIR/$BINARY_NAME"
+    local bin="$INSTALL_DIR/$BINARY_NAME" nova
     printf '%s\n' "$BAR_MARKER"
+    if nova="$(nova_script)"; then
+        nova_block "$bin" "$nova"
+        return
+    fi
     tmux_conf_sets status-interval || printf '%s\n' "set -g status-interval 5  $BAR_MARKER"
     tmux_conf_sets status-right-length || printf '%s\n' "set -g status-right-length 80  $BAR_MARKER"
     printf '%s\n' \
@@ -1133,6 +1137,83 @@ tmux_has_own_bar() {
     return 1
 }
 
+# Prints the tmux-nova plugin script when a config line loads the plugin and
+# the script is there. With nova, the bar goes on top of your nova bar.
+nova_script() {
+    local conf dir
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -vE '^[[:space:]]*#' "$conf" | grep -E "@plugin[[:space:]]+['\"]o0th/tmux-nova['\"]" >/dev/null; then
+            for dir in "${TMUX_PLUGIN_MANAGER_PATH:-$HOME/.tmux/plugins}" "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins"; do
+                if [ -f "${dir%/}/tmux-nova/nova.tmux" ]; then
+                    printf '%s\n' "${dir%/}/tmux-nova/nova.tmux"
+                    return 0
+                fi
+            done
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    return 1
+}
+
+# The nova form of the block: the glyphs go at the end of each tab label, and
+# "thread › session" is one more segment at the right end. nova reads its
+# options only when it runs, and the block comes after `run tpm`, so the
+# block runs nova again. An option you set gets the tws part appended; an
+# option you do not set gets the nova default plus the tws part. A part that
+# your own lines already have (the README recipe, for example) is left out.
+nova_block() {
+    local bin="$1" nova="$2" tab
+    tab="#($bin bar window --since #{start_time} #{P:#{pane_id} })"
+    if tmux_conf_has '@nova-pane[[:space:]].* bar window '; then
+        :
+    elif tmux_conf_sets @nova-pane; then
+        printf '%s\n' "set -ga @nova-pane '$tab'  $BAR_MARKER"
+    else
+        printf '%s\n' "set -g @nova-pane '#S:#I:#W$tab'  $BAR_MARKER"
+    fi
+    if tmux_conf_has '@nova-segments-0-right[[:space:]].*tws'; then
+        :
+    elif tmux_conf_sets @nova-segments-0-right; then
+        printf '%s\n' "set -ga @nova-segments-0-right ' tws'  $BAR_MARKER"
+    else
+        printf '%s\n' "set -g @nova-segments-0-right 'tws'  $BAR_MARKER"
+    fi
+    if ! tmux_conf_has '@nova-segment-tws[[:space:]]'; then
+        printf '%s\n' \
+            "set -g @nova-segment-tws '#($bin bar where -- #{q:session_name})'  $BAR_MARKER" \
+            "set -g @nova-segment-tws-colors '#c88e68 #121212'  $BAR_MARKER"
+    fi
+    printf '%s\n' "run-shell '$nova'  $BAR_MARKER"
+}
+
+# Succeeds when a config line of yours (not the tws block, not a comment)
+# matches the extended regex $1.
+tmux_conf_has() {
+    local conf
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        if grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' | grep -E "$1" >/dev/null; then
+            return 0
+        fi
+    done <<< "$(tmux_conf_candidates)"
+    return 1
+}
+
+# The block for a running server. A server that already has the tws part in
+# a nova option skips that line, so a re-run does not append it twice.
+bar_block_live() {
+    local skip=""
+    case "$(tmux show-options -gv @nova-pane 2>/dev/null)" in *" bar window "*) skip="@nova-pane " ;; esac
+    case "$(tmux show-options -gv @nova-segments-0-right 2>/dev/null)" in *tws*) skip="$skip@nova-segments-0-right " ;; esac
+    bar_block | while IFS= read -r line; do
+        case "$line" in
+            *" @nova-segments-0-right "*) case "$skip" in *"@nova-segments-0-right "*) continue ;; esac ;;
+            *" @nova-pane "*) case "$skip" in *"@nova-pane "*) continue ;; esac ;;
+        esac
+        printf '%s\n' "$line"
+    done
+}
+
 # Succeeds when a config line of yours sets the option $1.
 tmux_conf_sets() {
     local conf
@@ -1172,7 +1253,7 @@ configure_status_bar() {
         return
     fi
     ok "Added the tws status bar to $conf (agents on each window tab)"
-    if load_into_tmux "$(bar_block)"; then
+    if load_into_tmux "$(bar_block_live)"; then
         ok "Loaded it into the running tmux server"
     fi
 }
@@ -1299,7 +1380,9 @@ scan_plan() {
     fi
     # The bar shows what the agent hooks write, so it comes with the ack hooks.
     if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
-        if [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
+        if nova_script >/dev/null; then
+            plan_bar=1
+        elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
             plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
             plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
         elif tmux_has_own_bar && ! confirm_own_bar; then
