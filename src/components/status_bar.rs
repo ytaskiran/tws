@@ -182,8 +182,8 @@ pub fn render(
             ),
         ],
         StatusContext::ThemePicker => vec![
-            ("Enter".to_string(), "save"),
-            ("Esc".to_string(), "revert"),
+            (keymap.key_hint(KeyMode::Finder, Action::Confirm), "save"),
+            (keymap.key_hint(KeyMode::Finder, Action::Cancel), "revert"),
             ("j/k".to_string(), "preview"),
         ],
         StatusContext::ThreadPicker => vec![

@@ -281,7 +281,9 @@ impl App {
                     Mode::DirPicker { .. } => {
                         self.handle_dir_picker_key(key.code, key.modifiers);
                     }
-                    Mode::ThemePicker { .. } => self.handle_theme_picker_key(key.code),
+                    Mode::ThemePicker { .. } => {
+                        self.handle_theme_picker_key(key.code, key.modifiers)
+                    }
                 }
                 // Any mode can move the selection (the finder does on attach),
                 // so resync the notes pane after every key, not per handler.
@@ -1336,8 +1338,15 @@ impl App {
     }
 
     fn start_theme_picker(&mut self) {
+        // A slot assign that waits for a digit ends at any other key.
+        self.pin_assign_pending = None;
         let names = config::theme_names();
         let current = names.iter().position(|n| *n == self.theme_name);
+        // An unknown theme fell back to "default" at startup. Use that name, so
+        // Esc does not resolve the unknown name again and print over the TUI.
+        if current.is_none() {
+            self.theme_name = "default".to_string();
+        }
         // The finder shows the second field; the first is the name.
         let entries = names
             .into_iter()
@@ -1358,16 +1367,19 @@ impl App {
         };
     }
 
-    fn handle_theme_picker_key(&mut self, code: KeyCode) {
+    fn handle_theme_picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let action = self.keymap.resolve(KeyMode::Finder, code, modifiers);
         let Mode::ThemePicker { state, .. } = &mut self.mode else {
             return;
         };
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match (code, action) {
+            (KeyCode::Char('j'), _) | (_, Some(Action::MoveDown)) => {
                 state.cursor = (state.cursor + 1).min(state.filtered.len().saturating_sub(1));
             }
-            KeyCode::Char('k') | KeyCode::Up => state.cursor = state.cursor.saturating_sub(1),
-            KeyCode::Esc => {
+            (KeyCode::Char('k'), _) | (_, Some(Action::MoveUp)) => {
+                state.cursor = state.cursor.saturating_sub(1)
+            }
+            (_, Some(Action::Cancel)) => {
                 if let Mode::ThemePicker { original, .. } =
                     std::mem::replace(&mut self.mode, Mode::Normal)
                 {
@@ -1375,7 +1387,7 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Enter => {
+            (_, Some(Action::Confirm)) => {
                 if let Mode::ThemePicker { original, .. } =
                     std::mem::replace(&mut self.mode, Mode::Normal)
                 {
@@ -1392,7 +1404,9 @@ impl App {
             }
             _ => return,
         }
-        if let Some(&idx) = state.filtered.get(state.cursor) {
+        if let Some(&idx) = state.filtered.get(state.cursor)
+            && state.all_entries[idx].0 != self.theme_name
+        {
             let name = state.all_entries[idx].0.clone();
             self.apply_theme(&name);
         }

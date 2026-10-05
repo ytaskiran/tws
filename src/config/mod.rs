@@ -117,7 +117,10 @@ pub fn save_theme(name: &str) -> Result<(), String> {
         Err(e) => return Err(format!("could not read config.toml: {e}")),
     };
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    fs::write(&path, set_theme(&text, name))
+    // Like state.json: `tws bar` must never read a half-written file, and a
+    // symlinked config.toml is written at its target, so the link stays.
+    let target = fs::canonicalize(&path).unwrap_or(path);
+    crate::core::status::write_atomic(&target, &set_theme(&text, name))
         .map_err(|e| format!("could not write config.toml: {e}"))
 }
 
@@ -131,9 +134,11 @@ fn set_theme(text: &str, name: &str) -> String {
         .iter()
         .take_while(|l| !l.trim_start().starts_with('['))
         .position(|l| {
-            l.trim_start()
-                .strip_prefix("theme")
-                .is_some_and(|rest| rest.trim_start().starts_with('='))
+            let l = l.trim_start();
+            ["theme", "\"theme\"", "'theme'"].iter().any(|key| {
+                l.strip_prefix(key)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
         });
     match existing {
         Some(i) => lines[i] = &line,
@@ -295,6 +300,12 @@ mod tests {
             out,
             "theme = \"nord\"\nthemes_dir = \"x\"\n[keys.normal]\ntheme = \"t\"\n"
         );
+    }
+
+    #[test]
+    fn set_theme_replaces_quoted_key() {
+        let text = "\"theme\" = \"nord\"\n";
+        assert_eq!(set_theme(text, "default"), "theme = \"default\"\n");
     }
 
     #[test]

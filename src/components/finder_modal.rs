@@ -22,8 +22,8 @@ pub fn render(
     theme: &Theme,
 ) {
     let visible_count = filtered.len().min(MAX_VISIBLE);
-    let query_rows = if query.is_some() { 2 } else { 0 };
-    let height = (visible_count.max(1) + 3 + query_rows) as u16;
+    let query_row = query.is_some() as u16;
+    let height = visible_count.max(1) as u16 + 3 + 2 * query_row;
     let popup = centered_rect(60, height, area);
     frame.render_widget(Clear, popup);
 
@@ -39,8 +39,8 @@ pub fn render(
     frame.render_widget(block, popup);
 
     let chunks = Layout::vertical([
-        Constraint::Length(query_rows as u16 / 2),
-        Constraint::Length(query_rows as u16 / 2),
+        Constraint::Length(query_row),
+        Constraint::Length(query_row),
         Constraint::Min(0),
     ])
     .split(inner);
