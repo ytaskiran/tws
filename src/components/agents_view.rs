@@ -40,7 +40,6 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
     }
 
     let width = area.width as usize;
-    let now = agent_meta::now();
     let name_width = agents
         .iter()
         .map(|a| a.agent_display_name.chars().count())
@@ -78,9 +77,9 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
                 Span::styled(a.agent_display_name.clone(), theme.agent_name_loud),
                 Span::raw(pad),
             ];
-            // `kind · age` at the right edge, as in the sessions view. The path
+            // The harness name at the right edge, as in the sessions view. The path
             // gives way first, so the meta stays on screen in a narrow pane.
-            let meta = agent_meta::label(a.agent_type, a.status_since, now);
+            let meta = agent_meta::kind_label(a.agent_type).to_string();
             let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
             let room = width.saturating_sub(used + meta.chars().count() + 3);
             spans.push(Span::styled(
@@ -164,7 +163,6 @@ mod tests {
             pin_slot: None,
             status: AgentStatus::Working,
             agent_type: AgentType::ClaudeCode,
-            status_since: 0,
             subagents: 0,
         }
     }
@@ -187,16 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn rows_show_the_harness_and_the_time_in_state() {
-        let mut a = agent(0);
-        a.status_since = agent_meta::now() - 250;
+    fn rows_show_the_harness_without_an_age() {
+        let a = agent(0);
         let mut b = agent(1);
         b.agent_type = AgentType::Codex;
         let out = screen(&[a, b], 0, 3);
-        assert!(out.contains("claude · 4m"), "missing kind and age:\n{out}");
-        // No status time yet: the kind shows alone.
+        assert!(out.contains("claude"), "missing kind:\n{out}");
         assert!(out.contains("codex"), "missing kind:\n{out}");
-        assert!(!out.contains("codex ·"), "age shown without a time:\n{out}");
+        assert!(!out.contains(" · "), "age shown:\n{out}");
     }
 
     #[test]

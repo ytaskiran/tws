@@ -83,8 +83,6 @@ pub struct AgentSession {
     pub pin_slot: Option<u8>,
     /// Live activity state, joined from `~/.config/tws/agents/<pane_id>`. Runtime-only.
     pub status: AgentStatus,
-    /// Unix timestamp (status file mtime) of the last state transition. 0 when Unknown.
-    pub status_since: i64,
     /// Running subagents, counted from `~/.config/tws/subagents/<pane_id>/`. Runtime-only.
     pub subagents: usize,
 }

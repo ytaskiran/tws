@@ -273,7 +273,6 @@ fn match_agents(panes: &[PaneInfo], table: &ProcessTable) -> Vec<AgentSession> {
                 renamed: false,
                 pin_slot: None,
                 status: AgentStatus::Unknown,
-                status_since: 0,
                 subagents: 0,
             })
         })
@@ -580,7 +579,6 @@ mod tests {
         assert_eq!(agents[0].display_name, "fix-bug");
         assert!(!agents[0].renamed);
         assert_eq!(agents[0].status, crate::core::model::AgentStatus::Unknown);
-        assert_eq!(agents[0].status_since, 0);
     }
 
     #[test]

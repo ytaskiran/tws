@@ -121,18 +121,12 @@ pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
     load_statuses_from(&agents_dir())
 }
 
-/// Agents without a matching file reset to `Unknown` / `0`.
+/// Agents without a matching file reset to `Unknown`.
 pub fn apply_statuses(agents: &mut [AgentSession], map: &HashMap<String, (AgentStatus, i64)>) {
     for agent in agents.iter_mut() {
         match map.get(&agent.pane_id) {
-            Some(&(status, ts)) => {
-                agent.status = status;
-                agent.status_since = ts;
-            }
-            None => {
-                agent.status = AgentStatus::Unknown;
-                agent.status_since = 0;
-            }
+            Some(&(status, _)) => agent.status = status,
+            None => agent.status = AgentStatus::Unknown,
         }
     }
 }
@@ -433,7 +427,6 @@ mod tests {
             renamed: false,
             pin_slot: None,
             status: AgentStatus::Unknown,
-            status_since: 0,
             subagents: 0,
         }
     }
@@ -482,9 +475,7 @@ mod tests {
         apply_statuses(&mut agents, &map);
 
         assert_eq!(agents[0].status, AgentStatus::Waiting);
-        assert_eq!(agents[0].status_since, 1234);
         assert_eq!(agents[1].status, AgentStatus::Unknown);
-        assert_eq!(agents[1].status_since, 0);
     }
 
     #[test]
@@ -539,12 +530,11 @@ mod tests {
 
     #[test]
     fn unknown_is_still_distinct_in_the_model() {
-        // Sharing a glyph must not leak into the data: a status-less agent keeps
-        // status_since = 0 rather than claiming a real timestamp.
+        // Sharing a glyph must not leak into the data: a status-less agent stays
+        // Unknown and does not count as idle.
         let mut agents = vec![mk_agent("%1")];
         apply_statuses(&mut agents, &HashMap::new());
         assert_eq!(agents[0].status, AgentStatus::Unknown);
-        assert_eq!(agents[0].status_since, 0);
         assert_eq!(status_counts(&agents).idle, 0);
     }
 
