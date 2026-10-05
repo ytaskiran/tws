@@ -51,15 +51,20 @@ pub fn try_load_config() -> Result<Config, String> {
     toml::from_str::<Config>(&text).map_err(|e| format!("malformed config.toml: {e}"))
 }
 
-/// Resolve the effective palette:
-/// 1. Start with theme preset (default → "default").
-/// 2. Check `~/.config/tws/themes/<name>.toml` for user custom themes.
-/// 3. Fall back to built-in presets via `palette::load_preset`.
-/// 4. Fall back to `Palette::default()` with a warning.
-/// 5. Apply any inline `[palette]` overrides from the config.
+/// Resolve the effective palette from the config's `theme` and `[palette]`.
 pub fn resolve_palette(config: &Config) -> Palette {
-    let theme_name = config.theme.as_deref().unwrap_or("default");
+    palette_for(
+        config.theme.as_deref().unwrap_or("default"),
+        config.palette.as_ref(),
+    )
+}
 
+/// Resolve the palette for one theme name:
+/// 1. Check `~/.config/tws/themes/<name>.toml` for user custom themes.
+/// 2. Fall back to built-in presets via `palette::load_preset`.
+/// 3. Fall back to `Palette::default()` with a warning.
+/// 4. Apply any inline `[palette]` overrides.
+pub fn palette_for(theme_name: &str, overrides: Option<&PaletteOverride>) -> Palette {
     let base = try_load_user_theme(theme_name)
         .or_else(|| palette::load_preset(theme_name))
         .unwrap_or_else(|| {
@@ -72,10 +77,74 @@ pub fn resolve_palette(config: &Config) -> Palette {
             Palette::default()
         });
 
-    match &config.palette {
+    match overrides {
         Some(overrides) => base.with_overrides(overrides),
         None => base,
     }
+}
+
+/// Theme names for the picker: the built-in presets, then the user themes in
+/// `~/.config/tws/themes/` that parse. A malformed file is left out, so
+/// `palette_for` never prints its warning over the TUI.
+pub fn theme_names() -> Vec<String> {
+    let mut user: Vec<String> = fs::read_dir(persistence::config_dir().join("themes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .filter(|p| {
+            fs::read_to_string(p).is_ok_and(|text| toml::from_str::<ThemeFile>(&text).is_ok())
+        })
+        .filter_map(|p| Some(p.file_stem()?.to_str()?.to_string()))
+        .filter(|n| !palette::PRESETS.contains(&n.as_str()))
+        .collect();
+    user.sort();
+    palette::PRESETS
+        .iter()
+        .map(|n| n.to_string())
+        .chain(user)
+        .collect()
+}
+
+/// Write `theme = "<name>"` into `~/.config/tws/config.toml`.
+pub fn save_theme(name: &str) -> Result<(), String> {
+    let dir = persistence::config_dir();
+    let path = dir.join("config.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("could not read config.toml: {e}")),
+    };
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // Like state.json: `tws bar` must never read a half-written file, and a
+    // symlinked config.toml is written at its target, so the link stays.
+    let target = fs::canonicalize(&path).unwrap_or(path);
+    crate::core::status::write_atomic(&target, &set_theme(&text, name))
+        .map_err(|e| format!("could not write config.toml: {e}"))
+}
+
+/// Replace the top-level `theme` line in `text`, or add one as line 1. Only
+/// lines before the first `[table]` header are top-level keys, and line 1 is
+/// always top-level, so every other line and comment stays as it is.
+fn set_theme(text: &str, name: &str) -> String {
+    let line = format!("theme = {}", toml::Value::String(name.to_string()));
+    let mut lines: Vec<&str> = text.lines().collect();
+    let existing = lines
+        .iter()
+        .take_while(|l| !l.trim_start().starts_with('['))
+        .position(|l| {
+            let l = l.trim_start();
+            ["theme", "\"theme\"", "'theme'"].iter().any(|key| {
+                l.strip_prefix(key)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
+        });
+    match existing {
+        Some(i) => lines[i] = &line,
+        None => lines.insert(0, &line),
+    }
+    lines.join("\n") + "\n"
 }
 
 #[derive(Deserialize)]
@@ -200,6 +269,49 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         let p = resolve_palette(&config);
         assert_eq!(p.green, ratatui::style::Color::Rgb(130, 180, 130));
+    }
+
+    #[test]
+    fn set_theme_replaces_top_level_line() {
+        let text = "# my config\ntheme = \"nord\"\n\n[palette]\naccent = \"#ff0000\"\n";
+        assert_eq!(
+            set_theme(text, "gruvbox-dark"),
+            "# my config\ntheme = \"gruvbox-dark\"\n\n[palette]\naccent = \"#ff0000\"\n"
+        );
+    }
+
+    #[test]
+    fn set_theme_inserts_when_missing() {
+        assert_eq!(set_theme("", "nord"), "theme = \"nord\"\n");
+        let text = "[keys.normal]\nquit = \"Q\"\n";
+        let out = set_theme(text, "nord");
+        assert_eq!(out, "theme = \"nord\"\n[keys.normal]\nquit = \"Q\"\n");
+        let config: Config = toml::from_str(&out).unwrap();
+        assert_eq!(config.theme.as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn set_theme_ignores_keys_inside_tables() {
+        // `theme` under a table is not the top-level key, and `themes = ` is
+        // another key; both stay, and a new top-level line goes first.
+        let text = "themes_dir = \"x\"\n[keys.normal]\ntheme = \"t\"\n";
+        let out = set_theme(text, "nord");
+        assert_eq!(
+            out,
+            "theme = \"nord\"\nthemes_dir = \"x\"\n[keys.normal]\ntheme = \"t\"\n"
+        );
+    }
+
+    #[test]
+    fn set_theme_replaces_quoted_key() {
+        let text = "\"theme\" = \"nord\"\n";
+        assert_eq!(set_theme(text, "default"), "theme = \"default\"\n");
+    }
+
+    #[test]
+    fn set_theme_replaces_whole_line() {
+        let text = "  theme   =  \"nord\"  # pick\n";
+        assert_eq!(set_theme(text, "default"), "theme = \"default\"\n");
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub enum StatusContext {
     Confirm,
     Finder,
     ThreadPicker,
+    ThemePicker,
     DirPicker,
     AgentsView,
     /// Slot-assign mode: agents view is waiting for a digit to assign a slot to an agent.
@@ -92,6 +93,10 @@ pub fn render(
             ),
             (keymap.key_hint(KeyMode::Normal, Action::Add), "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder), "find"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ThemePicker),
+                "theme",
+            ),
         ],
         StatusContext::NormalThread => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit), "quit"),
@@ -175,6 +180,11 @@ pub fn render(
                 keymap.key_hint(KeyMode::DirPicker, Action::Cancel),
                 "cancel",
             ),
+        ],
+        StatusContext::ThemePicker => vec![
+            (keymap.key_hint(KeyMode::Finder, Action::Confirm), "save"),
+            (keymap.key_hint(KeyMode::Finder, Action::Cancel), "revert"),
+            ("j/k".to_string(), "preview"),
         ],
         StatusContext::ThreadPicker => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm), "move"),

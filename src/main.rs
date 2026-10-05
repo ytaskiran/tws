@@ -103,13 +103,12 @@ fn run_tui() -> std::io::Result<()> {
     };
 
     let cfg = config::load_config();
-    let palette = config::resolve_palette(&cfg);
-    let theme = theme::Theme::build(&palette);
-    let note_stylesheet = theme::NoteStyleSheet::new(&palette);
     let keymap = config::build_keymap(&cfg);
+    let theme_name = cfg.theme.unwrap_or_else(|| "default".to_string());
 
+    // Before tui::init, so an unknown theme warning shows on a normal screen.
+    let mut app = App::new(state, theme_name, cfg.palette, keymap);
     let mut terminal = tui::init()?;
-    let mut app = App::new(state, theme, note_stylesheet, keymap);
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
     result
