@@ -77,7 +77,7 @@ Selection is a `&[String]` path of identifiers (thread UUIDs, tmux session names
 
 The sessions view (`components/sessions_view.rs`) draws its own rows and does not render the `Tree` widget. `TreeState` only learns the row order from a `Tree` render, so its `key_down`/`key_up` do not work here. Navigation uses `sessions_view::row_paths()` and `sessions_view::step()` instead, and a mouse hit uses `sessions_view::path_at()`. Keep the row order in `rows()` only, so the screen, the cursor and the mouse cannot disagree.
 
-The sessions view keeps its scroll offset between frames: `App` passes the last offset in, and `render` returns the new one. `App` stores it with the drawn area in `sessions_hit` for `path_at`. A hover selects a row, so the offset must not change while the selection stays on screen.
+Both list views keep their scroll offset between frames (`components::sticky_scroll`): `App` passes the last offset in, and `render` returns the new one. A hover selects a row, so the offset must not change while the selection stays on screen. Each draw also stores `Hits`, the areas of the list and the header tabs, for `sessions_view::path_at()` and `agents_view::agent_at()`. A key, a tab click and an attach from outside tmux clear `Hits`, because each one can change the rows under the pointer.
 
 ### Key modules
 

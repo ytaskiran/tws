@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ansi_to_tui::IntoText;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Padding, Paragraph};
 use tui_tree_widget::TreeState;
@@ -101,6 +101,7 @@ enum Focus {
     Notes,
 }
 
+#[derive(Clone, Copy)]
 enum ViewMode {
     Tree,
     Agents,
@@ -163,9 +164,20 @@ pub struct App {
     /// While Some, the next keystroke in agents view assigns this pane to a slot
     /// (digit 0-9), or cancels (Esc / any other key). Captured by pressing `P`.
     pin_assign_pending: Option<String>,
-    /// Where the last frame drew the sessions list, and its scroll offset.
-    /// None when the list was not on screen. Mouse events hit-test on it.
-    sessions_hit: Option<(Rect, u16)>,
+    /// Scroll offsets of the two lists, kept between frames.
+    sessions_scroll: u16,
+    agents_scroll: u16,
+    /// What the last frame drew where. Mouse events hit-test on it.
+    hits: Option<Hits>,
+}
+
+/// Where the last frame drew its clickable parts. A key clears it, because a
+/// key can change the rows, so a click never hit-tests a stale frame.
+#[derive(Clone, Copy)]
+struct Hits {
+    /// The list of the current view. None when the view shows only a message.
+    list: Option<Rect>,
+    tabs: [(Rect, ViewMode); 2],
 }
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -201,7 +213,9 @@ impl App {
             theme_name,
             palette_overrides,
             keymap,
-            sessions_hit: None,
+            sessions_scroll: 0,
+            agents_scroll: 0,
+            hits: None,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
         }
@@ -281,7 +295,7 @@ impl App {
         if let Input::Key(_) = input {
             // A key can change the rows (a kill, a delete, a move), so a
             // click later in the same batch must not hit-test the old frame.
-            self.sessions_hit = None;
+            self.hits = None;
         }
         match input {
             Input::Mouse(mouse) => self.handle_mouse(mouse, terminal)?,
@@ -386,8 +400,10 @@ impl App {
             None
         };
 
-        let prev_scroll = self.sessions_hit.map_or(0, |(_, scroll)| scroll);
-        let mut sessions_hit = None;
+        let mut sessions_scroll = self.sessions_scroll;
+        let mut agents_scroll = self.agents_scroll;
+        let mut list_area = None;
+        let mut tabs = [(Rect::default(), ViewMode::Tree); 2];
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -427,8 +443,18 @@ impl App {
                 // Second header row: a hairline, with an accent segment under
                 // the active tab.
                 let sessions_at = BRAND.len() + GAP.len();
+                let agents_at = sessions_at + SESSIONS.len() + TAB_GAP.len();
+                // A tab takes clicks on its word and on the rule under it.
+                let tab = |at: usize, len: usize| {
+                    Rect::new(header_area.x + at as u16, header_area.y, len as u16, 2)
+                        .intersection(header_area)
+                };
+                tabs = [
+                    (tab(sessions_at, SESSIONS.len()), ViewMode::Tree),
+                    (tab(agents_at, AGENTS.len()), ViewMode::Agents),
+                ];
                 let (start, len) = if is_agents {
-                    (sessions_at + SESSIONS.len() + TAB_GAP.len(), AGENTS.len())
+                    (agents_at, AGENTS.len())
                 } else {
                     (sessions_at, SESSIONS.len())
                 };
@@ -484,13 +510,17 @@ impl App {
             let padded = Block::new().padding(Padding::new(1, 1, 0, 0));
             let view_area = padded.inner(tree_area);
             if matches!(self.view_mode, ViewMode::Agents) {
-                agents_view::render(
+                agents_scroll = agents_view::render(
                     frame,
                     &flat_agents,
                     self.agent_list_cursor,
+                    agents_scroll,
                     view_area,
                     &self.theme,
                 );
+                if !flat_agents.is_empty() {
+                    list_area = Some(view_area);
+                }
             } else {
                 let selected_path = self.tree_state.selected().to_vec();
                 if sessions_view::row_paths(&self.state).is_empty() {
@@ -515,16 +545,16 @@ impl App {
                         tree_area,
                     );
                 } else {
-                    let scroll = sessions_view::render(
+                    sessions_scroll = sessions_view::render(
                         frame,
                         &self.state,
                         &selected_path,
                         !matches!(self.focus, Focus::Notes),
-                        prev_scroll,
+                        sessions_scroll,
                         view_area,
                         &self.theme,
                     );
-                    sessions_hit = Some((view_area, scroll));
+                    list_area = Some(view_area);
                 }
             }
 
@@ -668,7 +698,12 @@ impl App {
                 }
             }
         })?;
-        self.sessions_hit = sessions_hit;
+        self.sessions_scroll = sessions_scroll;
+        self.agents_scroll = agents_scroll;
+        self.hits = Some(Hits {
+            list: list_area,
+            tabs,
+        });
         Ok(())
     }
 
@@ -722,14 +757,10 @@ impl App {
 
         let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
         if normal_action == Some(Action::ToggleView) {
-            match self.view_mode {
-                ViewMode::Tree => {
-                    self.view_mode = ViewMode::Agents;
-                }
-                ViewMode::Agents => {
-                    self.view_mode = ViewMode::Tree;
-                }
-            }
+            self.set_view(match self.view_mode {
+                ViewMode::Tree => ViewMode::Agents,
+                ViewMode::Agents => ViewMode::Tree,
+            });
             return Ok(());
         }
         if normal_action == Some(Action::ThemePicker) {
@@ -779,39 +810,105 @@ impl App {
         self.tree_state.select(next);
     }
 
-    /// Mouse on the sessions list: a hover selects the row, and a click
-    /// opens the session or agent (a thread row only takes the selection).
-    /// The wheel arrives as arrow keys, see `event::poll`.
+    /// A click on a header tab switches the view. In a list, a hover selects
+    /// the row and a click opens it, see `mouse_on_sessions` and
+    /// `mouse_on_agents`. The wheel arrives as arrow keys, see `event::poll`.
     fn handle_mouse(&mut self, mouse: MouseEvent, terminal: &mut Tui) -> std::io::Result<()> {
-        let Some((area, scroll)) = self.sessions_hit else {
+        let Some(hits) = self.hits else {
             return Ok(());
         };
-        if !matches!(self.mode, Mode::Normal) {
+        let click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        if !matches!(self.mode, Mode::Normal) || !(click || mouse.kind == MouseEventKind::Moved) {
             return Ok(());
         }
-        let Some(path) = sessions_view::path_at(&self.state, area, scroll, mouse.column, mouse.row)
+        let at = Position::new(mouse.column, mouse.row);
+        if let Some(&(_, view)) = hits.tabs.iter().find(|(r, _)| r.contains(at)) {
+            if click {
+                self.set_view(view);
+                // The list under the pointer changed.
+                self.hits = None;
+            }
+            return Ok(());
+        }
+        let Some(area) = hits.list else {
+            return Ok(());
+        };
+        match self.view_mode {
+            ViewMode::Tree => self.mouse_on_sessions(area, at, click, terminal),
+            ViewMode::Agents => self.mouse_on_agents(area, at, click, terminal),
+        }
+    }
+
+    /// A pending pin belongs to the agents view, so a view change cancels it.
+    fn set_view(&mut self, view: ViewMode) {
+        self.view_mode = view;
+        self.pin_assign_pending = None;
+    }
+
+    /// A click on a thread row only selects it.
+    fn mouse_on_sessions(
+        &mut self,
+        area: Rect,
+        at: Position,
+        click: bool,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let Some(path) =
+            sessions_view::path_at(&self.state, area, self.sessions_scroll, at.x, at.y)
         else {
             return Ok(());
         };
-        match mouse.kind {
+        if !click {
             // While you read a note, a pointer that crosses the list must not
             // swap it. Only a click moves the selection then.
-            MouseEventKind::Moved if matches!(self.focus, Focus::Tree) => {
+            if matches!(self.focus, Focus::Tree) {
                 self.tree_state.select(path);
             }
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.focus = Focus::Tree;
-                self.tree_state.select(path);
-                if matches!(
-                    self.state.resolve_selection(self.tree_state.selected()),
-                    SelectedItem::Session(..) | SelectedItem::Agent(..)
-                ) {
-                    self.start_enter(terminal)?;
-                }
-            }
-            _ => {}
+            return Ok(());
+        }
+        self.focus = Focus::Tree;
+        self.tree_state.select(path);
+        if matches!(
+            self.state.resolve_selection(self.tree_state.selected()),
+            SelectedItem::Session(..) | SelectedItem::Agent(..)
+        ) {
+            self.start_enter(terminal)?;
         }
         Ok(())
+    }
+
+    fn mouse_on_agents(
+        &mut self,
+        area: Rect,
+        at: Position,
+        click: bool,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let agents = self.state.all_agents_flat();
+        let Some(i) = agents_view::agent_at(&agents, area, self.agents_scroll, at.x, at.y) else {
+            return Ok(());
+        };
+        self.agent_list_cursor = i;
+        if click {
+            // As with a key, a click cancels a pending pin.
+            self.pin_assign_pending = None;
+            let a = &agents[i];
+            self.open_agent(&a.tmux_session_name, a.window_index, &a.pane_id, terminal)?;
+        }
+        Ok(())
+    }
+
+    /// Go to the agent's pane, then attach to its session.
+    fn open_agent(
+        &mut self,
+        session_name: &str,
+        window_index: u32,
+        pane_id: &str,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        let _ = tmux::select_window(session_name, window_index);
+        let _ = tmux::select_pane(pane_id);
+        self.attach_to_pane(session_name, pane_id, terminal)
     }
 
     fn handle_normal_key(
@@ -942,11 +1039,7 @@ impl App {
             }
             Some(Action::Enter) => {
                 if let Some(a) = agents.get(self.agent_list_cursor) {
-                    let session_name = a.tmux_session_name.clone();
-                    let pane_id = a.pane_id.clone();
-                    let _ = tmux::select_window(&session_name, a.window_index);
-                    let _ = tmux::select_pane(&pane_id);
-                    self.attach_to_pane(&session_name, &pane_id, terminal)?;
+                    self.open_agent(&a.tmux_session_name, a.window_index, &a.pane_id, terminal)?;
                 }
             }
             Some(Action::Cancel) => {
@@ -998,10 +1091,12 @@ impl App {
                         if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
                             self.agent_list_cursor = idx;
                             let a = &agents[idx];
-                            let session_name = a.tmux_session_name.clone();
-                            let _ = tmux::select_window(&session_name, a.window_index);
-                            let _ = tmux::select_pane(&target_id);
-                            self.attach_to_pane(&session_name, &target_id, terminal)?;
+                            self.open_agent(
+                                &a.tmux_session_name,
+                                a.window_index,
+                                &target_id,
+                                terminal,
+                            )?;
                         }
                     }
                 }
@@ -1225,11 +1320,8 @@ impl App {
             SelectedItem::Agent(thread_idx, sess_idx, agent_idx) => {
                 if let Some(agent) = self.state.resolve_agent(thread_idx, sess_idx, agent_idx) {
                     let session_name = agent.tmux_session_name.clone();
-                    let window_index = agent.window_index;
                     let pane_id = agent.pane_id.clone();
-                    let _ = tmux::select_window(&session_name, window_index);
-                    let _ = tmux::select_pane(&pane_id);
-                    self.attach_to_pane(&session_name, &pane_id, terminal)?;
+                    self.open_agent(&session_name, agent.window_index, &pane_id, terminal)?;
                 }
             }
             SelectedItem::None => {
@@ -1888,7 +1980,7 @@ impl App {
             *terminal = tui::init()?;
             // The rows can change while you are away. Ignore the mouse until
             // the next draw stores a new frame.
-            self.sessions_hit = None;
+            self.hits = None;
         }
 
         self.do_refresh_sessions();

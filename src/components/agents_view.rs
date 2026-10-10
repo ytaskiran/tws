@@ -30,13 +30,36 @@ fn fit(s: &str, max: usize) -> String {
     }
 }
 
-pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme) {
+/// The index of the agent drawn at screen cell (`x`, `y`) when `render` drew
+/// into `area` with offset `scroll`. An agent owns its subagent line too.
+pub fn agent_at(agents: &[FlatAgent], area: Rect, scroll: u16, x: u16, y: u16) -> Option<usize> {
+    if !area.contains(Position { x, y }) {
+        return None;
+    }
+    let line = usize::from(y - area.y) + usize::from(scroll);
+    agents
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| std::iter::repeat_n(i, 1 + usize::from(a.subagents > 0)))
+        .nth(line)
+}
+
+/// `prev_scroll` is the offset of the last frame; the return value is the
+/// offset of this one.
+pub fn render(
+    frame: &mut Frame,
+    agents: &[FlatAgent],
+    cursor: usize,
+    prev_scroll: u16,
+    area: Rect,
+    theme: &Theme,
+) -> u16 {
     if agents.is_empty() {
         let top = area.height.saturating_sub(1) / 2;
         let mut lines: Vec<Line> = vec![Line::from(""); top as usize];
         lines.push(Line::from(Span::styled("no agents", theme.thread_idle)));
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
-        return;
+        return 0;
     }
 
     let width = area.width as usize;
@@ -116,10 +139,15 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         }
     }
 
-    // A pane too short for both lines shows the agent line.
-    let scroll = super::scroll_to_keep_visible(cursor_last, area.height)
-        .min(u16::try_from(cursor_first).unwrap_or(u16::MAX));
+    let scroll = super::sticky_scroll(
+        prev_scroll,
+        cursor_first,
+        cursor_last,
+        lines.len(),
+        area.height,
+    );
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    scroll
 }
 
 /// A selected line is padded to the full width, so its tint covers the row.
@@ -167,11 +195,47 @@ mod tests {
         }
     }
 
+    /// Agent 0 has a subagent line, so the list has 6 lines for 5 agents. On
+    /// a scrolled frame, the hit test must name the agent drawn at each line.
+    #[test]
+    fn agent_at_agrees_with_a_scrolled_render() {
+        let mut agents: Vec<FlatAgent> = (0..5).map(agent).collect();
+        agents[0].subagents = 2;
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        let mut scroll = 0;
+        terminal
+            .draw(|f| scroll = render(f, &agents, 4, 0, f.area(), &theme))
+            .unwrap();
+        assert_eq!(scroll, 3, "6 lines, 3 visible, the last agent selected");
+        let area = Rect::new(0, 0, 40, 3);
+        let top: String = (0..40)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        assert!(top.contains("agent-02"), "top line is not agent 2: {top:?}");
+        assert_eq!(agent_at(&agents, area, scroll, 0, 0), Some(2));
+        assert_eq!(agent_at(&agents, area, scroll, 39, 2), Some(4));
+        assert_eq!(agent_at(&agents, area, 0, 0, 1), Some(0), "subagent line");
+        assert_eq!(agent_at(&agents, area, 0, 0, 2), Some(1));
+        assert_eq!(
+            agent_at(&agents, area, scroll, 0, 3),
+            None,
+            "below the area"
+        );
+        assert_eq!(
+            agent_at(&agents, area, scroll, 40, 0),
+            None,
+            "right of the area"
+        );
+    }
+
     fn screen(agents: &[FlatAgent], cursor: usize, height: u16) -> String {
         let theme = Theme::build(&Palette::default());
         let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
         terminal
-            .draw(|f| render(f, agents, cursor, f.area(), &theme))
+            .draw(|f| {
+                render(f, agents, cursor, 0, f.area(), &theme);
+            })
             .unwrap();
         let buf = terminal.backend().buffer();
         (0..buf.area.height)

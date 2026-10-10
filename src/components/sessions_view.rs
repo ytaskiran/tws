@@ -139,16 +139,6 @@ fn line(
     l
 }
 
-/// Scroll offset for a list of `len` rows, `height` tall, that keeps row
-/// `selected` visible and moves as little as possible from `prev`. The list
-/// must not jump under the mouse when a hover selects a row near the top.
-/// The agents view has no mouse input, so it keeps `scroll_to_keep_visible`.
-fn sticky_scroll(prev: usize, selected: usize, len: usize, height: usize) -> usize {
-    let height = height.max(1);
-    prev.min(len.saturating_sub(height))
-        .clamp(selected.saturating_sub(height - 1), selected)
-}
-
 /// The selectable path drawn at screen cell (`x`, `y`) when `render` drew
 /// into `area` with offset `scroll`. None for a gap or a cell off the list.
 pub fn path_at(state: &AppState, area: Rect, scroll: u16, x: u16, y: u16) -> Option<Vec<String>> {
@@ -260,13 +250,13 @@ pub fn render(
         lines.push(l);
     }
 
-    let scroll = sticky_scroll(
-        usize::from(prev_scroll),
+    let scroll = super::sticky_scroll(
+        prev_scroll,
+        selected_line,
         selected_line,
         lines.len(),
-        usize::from(area.height),
+        area.height,
     );
-    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
     scroll
 }
@@ -469,17 +459,6 @@ mod tests {
             bottom.contains(" a"),
             "bottom line is not thread a: {bottom:?}"
         );
-    }
-
-    #[test]
-    fn sticky_scroll_moves_only_when_the_selection_leaves_the_screen() {
-        // 10 rows, 4 visible.
-        assert_eq!(sticky_scroll(0, 2, 10, 4), 0, "visible: stay");
-        assert_eq!(sticky_scroll(0, 5, 10, 4), 2, "below: last line");
-        assert_eq!(sticky_scroll(5, 7, 10, 4), 5, "visible after scroll: stay");
-        assert_eq!(sticky_scroll(5, 3, 10, 4), 3, "above: first line");
-        assert_eq!(sticky_scroll(8, 9, 10, 4), 6, "no blank rows at the end");
-        assert_eq!(sticky_scroll(3, 0, 10, 0), 0, "zero height");
     }
 
     #[test]
