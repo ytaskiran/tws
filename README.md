@@ -117,19 +117,41 @@ nothing and shows a note. The installer leaves out the
 `status-interval` and `status-right-length` lines when your config sets them.
 
 With [tmux-nova](https://github.com/o0th/tmux-nova), the installer keeps your
-nova bar and adds the agents on top of it, with no question. It appends the
-glyph command to your `@nova-pane`, adds a `tws` segment at the right end, and
-runs nova again:
+nova bar and adds the agents on top of it. It appends the glyph command to your
+`@nova-pane`, adds a `tws` segment at the right end, and runs nova again.
+
+When your `@nova-segments-0-right` has segments other than `tws`, the installer
+shows your right-side lines and asks if tws can replace them:
+
+- **Yes:** the right side shows only `tws`, and `status-right-length` becomes
+  at least 80: a smaller value of yours goes up to 80, a larger one stays. The
+  installer first copies to `~/.config/tws/backups/` the tmux config it writes
+  and each config that holds your right-side lines. It prints each backup path
+  and the `cp` command that restores it. A later run of the installer remembers the
+  yes: it asks nothing and makes no new backup.
+- **No** (the default, also with no terminal): the `tws` segment goes after your
+  segments, and your `status-right-length` stays.
+
+The block after a "no":
 
     # tws status bar
+    set -g status-interval 5  # tws status bar
+    set -g status-right-length 80  # tws status bar
     set -ga @nova-pane '#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} })'  # tws status bar
     set -ga @nova-segments-0-right ' tws'  # tws status bar
     set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'  # tws status bar
     set -g @nova-segment-tws-colors '#c88e68 #121212'  # tws status bar
+    set -g @nova-status-style-active-bg '#c88e68'  # tws status bar
     run-shell '/home/you/.tmux/plugins/tmux-nova/nova.tmux'  # tws status bar
 
+After a "yes", the right-side line is
+`set -g @nova-segments-0-right 'tws'  # tws status bar replace`. A later run
+reads this marker to remember the yes.
 When your config does not set `@nova-pane` or `@nova-segments-0-right`, the
-block sets them to the nova default plus the tws part. For any other bar, the
+block sets them to the nova default plus the tws part. nova does not set
+`status-interval` or `status-right-length`, so the block sets them too, except
+when your config sets them. The current tab gets the tws color only when your
+config does not set `@nova-status-style-active-bg`. For any other bar, the
 installer uses the block below.
 
     # tws status bar
@@ -155,6 +177,8 @@ the end of the tab label: the glyph color stays on for the text after it.
     set -g @nova-segment-tws-colors '#c88e68 #121212'
     set -g @nova-segments-0-right 'tws'
     set -g @nova-status-style-active-bg '#c88e68'
+    set -g status-interval 5
+    set -g status-right-length 80
 
 A `#()` command does not read your shell `PATH`, so write the full path of your
 own binary. tmux runs the commands again once in each `status-interval`, so a new
@@ -200,8 +224,9 @@ curl -fsSL https://raw.githubusercontent.com/ytaskiran/tws/main/install.sh | bas
 ```
 
 Downloads the latest release binary to `~/.local/bin`. Then the script scans your
-setup and shows all the changes it can make in one list. It asks one question,
-`Apply these changes? [Y/n]`. The list can hold:
+setup and shows all the changes it can make in one list. It asks one main
+question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
+your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
 - agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`), and Pi (`~/.pi/agent/extensions/`),
 - the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
