@@ -1003,7 +1003,7 @@ if declare -F configure_claude_hooks >/dev/null; then
     chmod 600 "$real"
     rm -f "$toml"; ln -s "$real" "$toml"
     ( HOME="$wire_home"; ok() { :; }; info() { :; }; plan_codex_daemon=1; configure_codex_feature_flag )
-    mode="$(stat -f %Lp "$real" 2>/dev/null || stat -c %a "$real")"
+    mode="$(stat -c %a "$real" 2>/dev/null || stat -f %Lp "$real")"
     if [ -L "$toml" ] && [ "$mode" = 600 ] && grep -q '^daemon_auto_start = false$' "$real" && grep -q '^hooks = true$' "$real"; then
         printf '  ok   a symlinked config.toml stays a link, keeps its mode, and gets the keys\n'
     else
