@@ -256,6 +256,8 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `Tab` | Focus the notes panel |
 | `q` | Quit |
 
+The mouse works in both views: point at a row to select it, and click a session or agent to open it. Click `sessions` or `agents` at the top to switch the view. The wheel moves the selection in every list. To select text with the mouse, hold `Shift` (`Option` in iTerm2) while you drag.
+
 ### Organize
 
 | Key | Action |
