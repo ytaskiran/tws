@@ -117,19 +117,38 @@ nothing and shows a note. The installer leaves out the
 `status-interval` and `status-right-length` lines when your config sets them.
 
 With [tmux-nova](https://github.com/o0th/tmux-nova), the installer keeps your
-nova bar and adds the agents on top of it, with no question. It appends the
-glyph command to your `@nova-pane`, adds a `tws` segment at the right end, and
-runs nova again:
+nova bar and adds the agents on top of it. It appends the glyph command to your
+`@nova-pane`, adds a `tws` segment at the right end, and runs nova again.
+
+When your `@nova-segments-0-right` has segments other than `tws`, the installer
+shows your right-side lines and asks if tws can replace them:
+
+- **Yes:** the right side shows only `tws`, and `status-right-length` becomes 80,
+  also when your config sets a smaller value. The installer first copies your
+  tmux config to `~/.config/tws/backups/`, and prints the backup path and the
+  `cp` command that restores it. A later run of the installer remembers the
+  yes: it asks nothing and makes no new backup.
+- **No** (the default, also with no terminal): the `tws` segment goes after your
+  segments, and your `status-right-length` stays.
+
+The block after a "no":
 
     # tws status bar
+    set -g status-interval 5  # tws status bar
+    set -g status-right-length 80  # tws status bar
     set -ga @nova-pane '#(/home/you/.local/bin/tws bar window --since #{start_time} #{P:#{pane_id} })'  # tws status bar
     set -ga @nova-segments-0-right ' tws'  # tws status bar
     set -g @nova-segment-tws '#(/home/you/.local/bin/tws bar where -- #{q:session_name})'  # tws status bar
     set -g @nova-segment-tws-colors '#c88e68 #121212'  # tws status bar
+    set -g @nova-status-style-active-bg '#c88e68'  # tws status bar
     run-shell '/home/you/.tmux/plugins/tmux-nova/nova.tmux'  # tws status bar
 
+After a "yes", the right-side line is `set -g @nova-segments-0-right 'tws'`.
 When your config does not set `@nova-pane` or `@nova-segments-0-right`, the
-block sets them to the nova default plus the tws part. For any other bar, the
+block sets them to the nova default plus the tws part. nova does not set
+`status-interval` or `status-right-length`, so the block sets them too, except
+when your config sets them. The current tab gets the tws color only when your
+config does not set `@nova-status-style-active-bg`. For any other bar, the
 installer uses the block below.
 
     # tws status bar
@@ -155,6 +174,8 @@ the end of the tab label: the glyph color stays on for the text after it.
     set -g @nova-segment-tws-colors '#c88e68 #121212'
     set -g @nova-segments-0-right 'tws'
     set -g @nova-status-style-active-bg '#c88e68'
+    set -g status-interval 5
+    set -g status-right-length 80
 
 A `#()` command does not read your shell `PATH`, so write the full path of your
 own binary. tmux runs the commands again once in each `status-interval`, so a new
