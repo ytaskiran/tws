@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##')"
 
 export HOME
 HOME="$(mktemp -d)"
@@ -163,7 +163,7 @@ claude_session_start() { fire idle "startup|resume|clear" reset ; }
 codex_session_start()  { fire idle "startup|resume|clear" rest ; }
 codex_interrupt()      { fire idle "" interrupt ; }
 codex_permission_request() { fire waiting "" alert ; }
-codex_stop()           { fire review "" stop keep ; }
+codex_stop()           { fire review "" stop ; }
 
 # PermissionRequest and the tool-done events carry the same tool_name and
 # tool_input, but the rest of the payload differs, and so does the key order.
@@ -180,10 +180,10 @@ tool_done()   { fire_in "$1" working "$POST_MATCHER" granted ; }
 tool_failed() { fire_in "$1" working "" granted ; }
 PERM_DIR="$HOME/.config/tws/permissions/%7"
 
-# Codex tool hooks carry a tool_use_id too. PreToolUse records the call and
-# PostToolUse ends it.
-codex_pre_tool()  { fire_in "$1" working "" begin ; }
-codex_post_tool() { fire_in "$1" working "" done ; }
+# Codex tool hooks make no in-flight marker: Codex does not pair every
+# PreToolUse with a PostToolUse.
+codex_pre_tool()  { fire_in "$1" working "" live ; }
+codex_post_tool() { fire_in "$1" working "" ; }
 INFLIGHT_DIR="$HOME/.config/tws/inflight/%7"
 HEARTBEAT="$HOME/.config/tws/heartbeat/%7"
 
@@ -889,11 +889,14 @@ rm -rf "$wire_home"; mkdir -p "$wire_home/.claude" "$wire_home/.codex"
 seed='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}],"PostCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual|auto","hooks":[{"type":"command","command":"echo old >> $HOME/.config/tws/x"}]}],"PreCompact":[{"matcher":"manual","hooks":[{"type":"command","command":"echo mine"}]},{"matcher":"manual","hooks":[{"type":"command","command":"echo oldpre >> $HOME/.config/tws/y"}]}],"Interrupt":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}'
 printf '%s' "$seed" > "$wire_home/.claude/settings.json"
 printf '%s' "$seed" > "$wire_home/.codex/hooks.json"
+# A user who turned the Codex daemon on: the runs must turn it off.
+printf '[features]\ndaemon_auto_start = true\n' > "$wire_home/.codex/config.toml"
 wire() (
     HOME="$wire_home"
     read() { answer=y; }
     info() { :; }; ok() { :; }; warn() { :; }
     hooks_configured=0
+    plan_codex_daemon=1
     configure_claude_hooks
     configure_codex_hooks
 )
@@ -923,6 +926,44 @@ if declare -F configure_claude_hooks >/dev/null; then
     check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and it matches exactly startup|resume|clear"
     check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
+    toml="$wire_home/.codex/config.toml"
+    if [ "$(grep -c '^hooks = true$' "$toml")" = 1 ] && [ "$(grep -c '^daemon_auto_start = false$' "$toml")" = 1 ] \
+        && [ "$(grep -c 'daemon_auto_start' "$toml")" = 1 ]; then
+        printf '  ok   Codex config.toml enables hooks and turns the daemon off, once each\n'
+    else
+        printf '  FAIL Codex config.toml — got:\n%s\n' "$(cat "$toml")"
+        failures=$((failures + 1))
+    fi
+    # A "no" to the daemon question: hooks still go on, the daemon line stays.
+    printf '[features]\ndaemon_auto_start = true\n' > "$toml"
+    ( HOME="$wire_home"; ok() { :; }; plan_codex_daemon=0; configure_codex_feature_flag )
+    if [ "$(grep -c '^hooks = true$' "$toml")" = 1 ] && [ "$(grep -c '^daemon_auto_start = true$' "$toml")" = 1 ]; then
+        printf '  ok   after a no, config.toml enables hooks and leaves the daemon on\n'
+    else
+        printf '  FAIL after a no — got:\n%s\n' "$(cat "$toml")"
+        failures=$((failures + 1))
+    fi
+    # The question: only a y is a yes, and no terminal is a no.
+    daemon_q() ( HOME="$wire_home"; confirm_codex_daemon >/dev/null )
+    if printf 'y\n' | daemon_q && ! printf '\n' | daemon_q && ! printf 'n\n' | daemon_q && ! daemon_q < /dev/null; then
+        printf '  ok   the daemon question takes only y as a yes\n'
+    else
+        printf '  FAIL the daemon question takes only y as a yes\n'
+        failures=$((failures + 1))
+    fi
+    if ( HOME="$wire_home"; codex_daemon_on ); then
+        printf '  ok   a config with daemon_auto_start = true reads as on\n'
+    else
+        printf '  FAIL a config with daemon_auto_start = true reads as on\n'
+        failures=$((failures + 1))
+    fi
+    printf '[features]\ndaemon_auto_start = false\n' > "$toml"
+    if ( HOME="$wire_home"; ! codex_daemon_on ); then
+        printf '  ok   a config with daemon_auto_start = false reads as off, so it asks nothing\n'
+    else
+        printf '  FAIL a config with daemon_auto_start = false reads as off\n'
+        failures=$((failures + 1))
+    fi
     # count_event FILE EVENT FILTER: how many entries of EVENT pass FILTER.
     count_event() { jq "[(.hooks.$2 // [])[] | select($3)] | length" "$1"; }
     check_event() {
@@ -1156,7 +1197,7 @@ else
 fi
 
 # Claude and Codex both use status_hook_entry, so this covers both.
-for mode in set prompt live alert tool stop idle_alert reset rest permit granted interrupt begin done; do
+for mode in set prompt live alert tool stop idle_alert reset rest permit granted interrupt; do
     cmd="$(entry_command "$(status_hook_entry working "" "$mode")")"
     if printf '%s' "$cmd" | has_direct_write; then
         printf '  FAIL %s mode redirects straight into "$f"\n' "$mode"
@@ -1605,7 +1646,7 @@ for id in '../x' '.x' '..' 'a/b' '' 'a\\b' 'q"x' 'a b' 'a'$'\t''b' 'a'$'\n''b' '
 done
 # A rejected id removes nothing either: a marker that has the same name stays.
 for id in 'q"x' 'a b' '.x' '..' 'a.b'; do
-    for remover in tool_done tool_failed codex_post_tool; do
+    for remover in tool_done tool_failed; do
         reset
         prompt_submit
         mkdir -p "$INFLIGHT_DIR"
@@ -1628,10 +1669,6 @@ for id in 'toolu_01AbC-9' 'call_ABC123' 'x' 'T-1_a'; do
     expect_inflight "m.$id s.$id" "a safe id [$id] makes both markers"
     tool_done "$(id_json "$id")"
     expect_inflight "" "and PostToolUse removes them"
-    codex_pre_tool "$(id_json "$id")"
-    expect_inflight "m.$id" "a safe id [$id] makes a Codex marker"
-    codex_post_tool "$(id_json "$id")"
-    expect_inflight "" "and Codex PostToolUse removes it"
 done
 reset
 prompt_submit
@@ -1661,59 +1698,34 @@ main_tool_call
 JQ_BROKEN=1 tool_done "$POST_M"
 expect_inflight "m.t2" "and a failed jq removes none"
 
-printf '\nCodex tool calls leave the same marker\n'
+printf '\nCodex tool calls make no in-flight marker\n'
+# Codex sends no PostToolUse for a failed call, or for an exec_command that
+# returns while its process runs. A marker made at PreToolUse would then hold off
+# stale expiry for 4 h after a turn that ends with no Stop (an API error).
 reset
 prompt_submit
 codex_pre_tool "$MAIN_JSON"
-expect_inflight "m.t2" "Codex PreToolUse creates m.<id>"
+expect_inflight "" "a Codex PreToolUse with no PostToolUse leaves no marker"
 expect working "and the pane stays working"
 codex_post_tool "$POST_M"
-expect_inflight "" "Codex PostToolUse removes it"
-expect working "and the pane stays working"
+expect working "and Codex PostToolUse keeps it working"
 reset
 prompt_submit; turn_end
 codex_pre_tool "$MAIN_JSON"
 expect review "Codex PreToolUse still never resumes review"
 codex_post_tool "$POST_M"
 expect working "and Codex PostToolUse still resumes the turn"
-# Codex tool hooks carry no agent_id, so a Codex subagent call gets the m prefix
-# too. A Stop that removed m.* would drop the marker of a subagent that still
-# runs a long tool, and tws would expire the pane after 15 minutes.
 reset
 prompt_submit
-codex_pre_tool "$MAIN_JSON"
+mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.old"
 codex_stop
-expect_inflight "m.t2" "Codex Stop keeps the marker of a call in flight"
+expect_inflight "" "Codex Stop removes a marker that an old install left"
 expect review "and still writes review"
 reset
 prompt_submit
-codex_pre_tool "$MAIN_JSON"
-fire review "manual" stop keep
-expect_inflight "m.t2" "Codex PostCompact keeps it too"
-reset
-prompt_submit
-codex_pre_tool "$MAIN_JSON"
 seed_key
 codex_stop
 expect_keys 0 "Codex Stop still clears the permission key files"
-reset
-prompt_submit
-codex_pre_tool "$MAIN_JSON"
-codex_stop
-codex_post_tool "$POST_M"
-expect_inflight "" "a kept marker ends at its PostToolUse"
-reset
-prompt_submit
-codex_pre_tool "$MAIN_JSON"
-codex_stop
-codex_interrupt
-expect_inflight "" "or at Interrupt"
-reset
-prompt_submit
-codex_pre_tool "$MAIN_JSON"
-codex_stop
-session_end
-expect_inflight "" "or at SessionEnd"
 reset
 prompt_submit
 main_tool_call
@@ -1744,9 +1756,7 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
     reset
     prompt_submit
     wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
-    expect_inflight "m.t2" "wired Codex PreToolUse creates the marker"
-    wired_fire "$hooks" PostToolUse Bash "$POST_M"
-    expect_inflight "" "wired Codex PostToolUse removes it"
+    expect_inflight "" "wired Codex PreToolUse makes no marker"
     reset
     prompt_submit
     wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
@@ -1754,19 +1764,19 @@ if [ -f "$wire_home/.claude/settings.json" ] && [ -f "$wire_home/.codex/hooks.js
     expect_inflight "" "wired Claude Stop removes m.*"
     reset
     prompt_submit
-    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.old"
     wired_fire "$hooks" Interrupt ""
     expect_inflight "" "wired Codex Interrupt clears the directory"
     reset
     prompt_submit
-    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.old"
     wired_fire "$hooks" Stop "" "$MAIN_JSON"
-    expect_inflight "m.t2" "wired Codex Stop keeps the marker"
+    expect_inflight "" "wired Codex Stop removes m.*"
     reset
     prompt_submit
-    wired_fire "$hooks" PreToolUse Bash "$MAIN_JSON"
+    mkdir -p "$INFLIGHT_DIR"; : > "$INFLIGHT_DIR/m.old"
     wired_fire "$hooks" PostCompact manual "$MAIN_JSON"
-    expect_inflight "m.t2" "wired Codex PostCompact keeps the marker"
+    expect_inflight "" "wired Codex PostCompact removes m.*"
     reset
     prompt_submit
     wired_fire "$settings" PreToolUse Bash "$MAIN_JSON"
@@ -1787,14 +1797,12 @@ else
 fi
 
 printf '\nthe in-flight commands run jq at most once\n'
-for call in codex_begin codex_done main_pre sub_pre main_post sub_post main_failed; do
+for call in main_pre sub_pre main_post sub_post main_failed; do
     reset
     prompt_submit
     permit "$REQ_X"
     rm -f "$JQ_CALLS"
     case "$call" in
-        codex_begin) codex_pre_tool "$MAIN_JSON" ;;
-        codex_done)  codex_post_tool "$POST_M" ;;
         main_pre)    main_tool_call ;;
         sub_pre)     sub_tool_call ;;
         main_post)   tool_done "$POST_M" ;;
@@ -1813,10 +1821,11 @@ reset
 prompt_submit
 rm -f "$JQ_CALLS"
 codex_interrupt; claude_session_start; claude_stop; session_end
+codex_pre_tool "$MAIN_JSON"; codex_post_tool "$POST_M"
 if [ ! -e "$JQ_CALLS" ]; then
-    printf '  ok   the clearing commands run no jq\n'
+    printf '  ok   the clearing commands and the Codex tool hooks run no jq\n'
 else
-    printf '  FAIL the clearing commands run jq\n'
+    printf '  FAIL the clearing commands or the Codex tool hooks run jq\n'
     failures=$((failures + 1))
 fi
 

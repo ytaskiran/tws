@@ -155,7 +155,7 @@ configure_path() {
 # is the state entry time. `prompt` is the exception: it always writes, so for a
 # `working` pane the mtime is the start of the turn. A tool call in a `working`
 # pane touches the heartbeat file
-# `heartbeat/$TMUX_PANE` instead (`live`, `tool` and `begin` do this). tws reads
+# `heartbeat/$TMUX_PANE` instead (`live` and `tool` do this). tws reads
 # the newer of the two mtimes to find a silent pane.
 #
 # Modes:
@@ -197,12 +197,6 @@ configure_path() {
 #          deletes stale markers and the permission key files. It deletes the
 #          `m.*` in-flight markers and keeps `s.*`: background subagents work on
 #          after the main loop ends its turn.
-#          With the fourth argument `keep` (Codex) it deletes no in-flight marker.
-#          Codex tool hooks carry no `agent_id`, so a Codex subagent call gets the
-#          `m` prefix too, and Stop cannot tell it from a main-loop call. Deleting
-#          it would let tws expire the pane after 15 minutes while the subagent's
-#          tool still runs. A Codex marker ends at its PostToolUse, at Interrupt, at
-#          SessionEnd, or at the 4 h cap.
 #   idle_alert  `alert` for `idle_prompt`, skipped while a fresh marker exists.
 #   reset  Claude SessionStart. A new conversation in the pane owns nothing of the
 #          last one, so it writes the word (`idle`) over any state and deletes the
@@ -233,11 +227,6 @@ configure_path() {
 #          PostToolUse repaints `working` within seconds. It also deletes the
 #          pane's in-flight markers, because a running tool dies with the turn. It
 #          starts no jq and no tmux, because the hook timeout is 1 s.
-#   begin  Codex PreToolUse. Its payload has a tool_use_id, so it works as `live`
-#          and also makes the marker `m.<tool_use_id>`. Codex has no `agent_id` in
-#          the documented payload, so every marker gets the `m` prefix.
-#   done   Codex PostToolUse. It works as `set` and also removes the marker of the
-#          call.
 #   rest   Codex SessionStart. Codex also fires it when a subagent starts, and that
 #          must not end the turn of the main loop. It changes `review` or an empty
 #          file to the word (`idle`). It leaves `working`, `waiting` and `idle`.
@@ -246,7 +235,6 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
-    local keep="${4:-}"     # `stop` only: "keep" leaves the in-flight markers
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -300,7 +288,7 @@ status_hook_entry() {
             ;;
         stop)
             cmd+='rm -rf "$pd"; '
-            [ "$keep" = keep ] || cmd+='rm -f "$ifd"/m.* 2>/dev/null; '
+            cmd+='rm -f "$ifd"/m.* 2>/dev/null; '
             cmd+="find \"\$sd\" -type f ! -mmin -$SUBAGENT_FRESH_MINS -delete 2>/dev/null; "
             cmd+="if $fresh; then case \"\$cur\" in waiting) w=waiting ;; *) w=working ;; esac; "
             cmd+="else w=$word; $seen fi; "
@@ -335,17 +323,6 @@ status_hook_entry() {
             ;;
         interrupt)
             cmd+='rm -rf "$sd" "$ifd"; '
-            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
-            ;;
-        begin)
-            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; p=m; '
-            cmd+="$mark"
-            cmd+="if [ \"\$cur\" = $word ]; then $beat; "
-            cmd+="elif [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
-            ;;
-        done)
-            cmd+='tid=$(jq -r ".tool_use_id // empty" 2>/dev/null) || tid=; '
-            cmd+="$unmark"
             cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
             ;;
         rest)
@@ -548,25 +525,34 @@ configure_claude_hooks() {
 
 configure_codex_feature_flag() {
     local config_file="$HOME/.codex/config.toml"
+    local pair key value line tmp
 
-    # Already enabled?
-    if grep -q '^\s*hooks\s*=\s*true' "$config_file" 2>/dev/null; then
-        return
-    fi
-
-    local tmp
-    tmp="$(mktemp)"
-
-    if [ ! -f "$config_file" ]; then
-        printf '[features]\nhooks = true\n' > "$config_file"
-    elif grep -q '^\[features\]' "$config_file"; then
-        # [features] section exists — insert hooks = true after the header
-        awk '/^\[features\]/{print; print "hooks = true"; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
-    else
-        # No [features] section — append it
-        printf '\n[features]\nhooks = true\n' >> "$config_file"
-    fi
-    ok "Enabled hooks feature in ~/.codex/config.toml"
+    # `daemon_auto_start` makes every Codex TUI run its sessions in one shared
+    # app-server daemon. Codex starts hooks with the environment of the process
+    # that runs the session, so each hook gets the $TMUX_PANE of the pane that
+    # started the daemon, and all Codex panes write one status file. With the
+    # daemon off, each TUI runs its own sessions and its hooks get its own pane.
+    # The user turns it off only with a yes to confirm_codex_daemon.
+    local pairs=hooks=true
+    [ "${plan_codex_daemon:-0}" -eq 1 ] && pairs+=" daemon_auto_start=false"
+    for pair in $pairs; do
+        key=${pair%=*}
+        value=${pair#*=}
+        line="$key = $value"
+        grep -q "^[[:space:]]*$key[[:space:]]*=[[:space:]]*$value" "$config_file" 2>/dev/null && continue
+        tmp="$(mktemp)"
+        if [ ! -f "$config_file" ]; then
+            printf '[features]\n%s\n' "$line" > "$config_file"
+        elif grep -q "^[[:space:]]*$key[[:space:]]*=" "$config_file"; then
+            sed "s/^[[:space:]]*$key[[:space:]]*=.*/$line/" "$config_file" > "$tmp" && mv "$tmp" "$config_file"
+        elif grep -q '^\[features\]' "$config_file"; then
+            awk -v l="$line" '/^\[features\]/{print; print l; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
+        else
+            printf '\n[features]\n%s\n' "$line" >> "$config_file"
+        fi
+        rm -f "$tmp"
+        ok "Set $line in ~/.codex/config.toml"
+    done
 }
 
 configure_codex_hooks() {
@@ -591,11 +577,19 @@ configure_codex_hooks() {
     # A new prompt stamps the turn start, as it does for Claude. Codex has no
     # permission key files, so the `rm -rf "$pd"` in `prompt` removes nothing.
     e_work=$(status_hook_entry working "" prompt)
-    # Both tool hooks carry a tool_use_id, so a long call keeps an in-flight marker.
-    e_pretool=$(status_hook_entry working "" begin)
-    e_posttool=$(status_hook_entry working "" done)
+    # Codex tool calls make no in-flight marker. Codex sends no PostToolUse for a
+    # failed call, or for an exec_command that returns while its process runs, so
+    # a marker would outlive its call and hold off stale expiry for 4 h. A shell
+    # call returns in 30 s, and a poll of its process in 5 min, so a long command
+    # still sends a heartbeat inside the 15 min window.
+    # ponytail: one MCP tool call that runs over 15 min expires to idle; pair
+    # markers again if Codex ever fires PostToolUse for every PreToolUse.
+    # `tool` mode is not used: it makes markers. Tool payloads now carry agent_id
+    # for subagents, but `live` already never resumes a resting state.
+    e_pretool=$(status_hook_entry working "" live)
+    e_posttool=$(status_hook_entry working "")
     e_wait=$(status_hook_entry waiting "" alert)
-    e_review=$(status_hook_entry review "" stop keep)
+    e_review=$(status_hook_entry review "" stop)
     e_substart=$(subagent_hook_entry start)
     e_substop=$(subagent_hook_entry stop)
     # Interrupt covers an ESC. Codex has no API-error event, so stale expiry still
@@ -603,7 +597,7 @@ configure_codex_hooks() {
     # Compaction follows the Claude rule: PostCompact ends a manual /compact, and
     # PreCompact writes nothing because a cancelled /compact has no exit event. An
     # auto compaction is ended by the Stop of its turn.
-    e_compact=$(status_hook_entry review "manual" stop keep)
+    e_compact=$(status_hook_entry review "manual" stop)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)
@@ -1368,8 +1362,9 @@ install_glow() {
 # The scan only reads. It records what the installer can change in plan_*
 # flags, and what it found but leaves alone in plan_notes. The user then
 # answers one question for the whole plan. Before it, the scan can ask about
-# a status bar of the user's own (confirm_own_bar, confirm_nova_right).
-plan_path=0 plan_claude=0 plan_codex=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+# a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
+# Codex daemon (confirm_codex_daemon).
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -1431,6 +1426,14 @@ scan_plan() {
             plan_notes+=("Codex hooks — $(tilde "$codex_hooks") is not a JSON object; fix it, then run install again")
         else
             plan_codex=1
+            if codex_daemon_on; then
+                if confirm_codex_daemon; then
+                    plan_codex_daemon=1
+                else
+                    plan_notes+=("Codex daemon_auto_start — left on. Warning: Codex agent status can be wrong")
+                    plan_notes+=($'\t'"when more than one Codex pane runs. Run install again to turn it off.")
+                fi
+            fi
         fi
     fi
     if [ -d "$HOME/.pi" ]; then
@@ -1528,6 +1531,7 @@ print_plan() {
         info "tws will set up or update:"
         if [ "$plan_claude" -eq 1 ]; then plan_row "Claude Code status hooks" "$(tilde "$HOME/.claude/settings.json")"; fi
         if [ "$plan_codex" -eq 1 ]; then plan_row "Codex status hooks" "$(tilde "$HOME/.codex/hooks.json"), $(tilde "$HOME/.codex/config.toml")"; fi
+        if [ "$plan_codex_daemon" -eq 1 ]; then plan_row "turn off the Codex daemon" "$(tilde "$HOME/.codex/config.toml")"; fi
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
@@ -1568,6 +1572,33 @@ plan_is_empty() {
 confirm_own_bar() {
     local answer=""
     printf '%s' "Your tmux config has its own status bar. Replace it with the tws bar? [y/N] "
+    if ! read -r answer 2>/dev/null < /dev/tty; then
+        echo ""
+        return 1
+    fi
+    [[ "$answer" =~ ^[Yy] ]]
+}
+
+# True unless ~/.codex/config.toml already sets daemon_auto_start = false. The
+# feature is on by default, so a missing key counts as on.
+codex_daemon_on() {
+    ! grep -q '^[[:space:]]*daemon_auto_start[[:space:]]*=[[:space:]]*false' "$HOME/.codex/config.toml" 2>/dev/null
+}
+
+# Asked during the scan, only when the Codex daemon is on. It changes how Codex
+# runs, so the default is no, and no terminal counts as no.
+confirm_codex_daemon() {
+    local answer=""
+    cat <<'CODEX_DAEMON_EOF'
+Codex runs all its sessions in one shared background daemon (daemon_auto_start).
+Codex starts its hooks in that daemon, so each hook reports the tmux pane that
+started the daemon, not the pane of the session. With more than one Codex pane,
+tws can show the wrong agent status.
+If you turn off the daemon, each Codex TUI runs its own sessions and tws shows
+the correct status. You lose the `codex agents` overview, and sessions stop
+when you close their TUI.
+CODEX_DAEMON_EOF
+    printf '%s' "Turn off the Codex daemon? [y/N] "
     if ! read -r answer 2>/dev/null < /dev/tty; then
         echo ""
         return 1
