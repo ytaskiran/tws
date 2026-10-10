@@ -228,7 +228,7 @@ setup and shows all the changes it can make in one list. It asks one main
 question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
 your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
-- agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`), and Pi (`~/.pi/agent/extensions/`),
+- agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`; it also asks to turn off `daemon_auto_start`, because hooks in the shared Codex daemon cannot tell which pane they belong to. After a yes, restart your open Codex TUIs and run `codex app-server daemon stop`), and Pi (`~/.pi/agent/extensions/`),
 - the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
 - a `PATH` line for `~/.local/bin` in your shell rc and profile, if your shell does not find it,
 - `glow`, with `brew` or `go`, if it is missing.
