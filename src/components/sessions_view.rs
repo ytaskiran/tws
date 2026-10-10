@@ -5,8 +5,9 @@
 //! sessions sit below the groups, without markers.
 //!
 //! The view owns its row order. `row_paths` returns the selectable rows in
-//! screen order, and `render` draws exactly those rows, so the cursor and the
-//! screen cannot disagree. Paths use the identifiers that
+//! screen order, `render` draws exactly those rows, and `path_at` maps a
+//! screen cell back to one, so the cursor, the mouse and the screen cannot
+//! disagree. Paths use the identifiers that
 //! `AppState::resolve_selection` expects.
 
 use ratatui::prelude::*;
@@ -138,16 +139,38 @@ fn line(
     l
 }
 
+/// Scroll offset for a list of `len` rows, `height` tall, that keeps row
+/// `selected` visible and moves as little as possible from `prev`. The list
+/// must not jump under the mouse when a hover selects a row near the top.
+/// The agents view has no mouse input, so it keeps `scroll_to_keep_visible`.
+fn sticky_scroll(prev: usize, selected: usize, len: usize, height: usize) -> usize {
+    let height = height.max(1);
+    prev.min(len.saturating_sub(height))
+        .clamp(selected.saturating_sub(height - 1), selected)
+}
+
+/// The selectable path drawn at screen cell (`x`, `y`) when `render` drew
+/// into `area` with offset `scroll`. None for a gap or a cell off the list.
+pub fn path_at(state: &AppState, area: Rect, scroll: u16, x: u16, y: u16) -> Option<Vec<String>> {
+    if !area.contains(Position { x, y }) {
+        return None;
+    }
+    let i = usize::from(y - area.y) + usize::from(scroll);
+    rows(state).get(i)?.path().map(<[String]>::to_vec)
+}
+
 /// `focused` is false while the notes pane has focus; the selection then
-/// uses the quieter unfocused tint.
+/// uses the quieter unfocused tint. `prev_scroll` is the offset of the last
+/// frame; the return value is the offset of this one.
 pub fn render(
     frame: &mut Frame,
     state: &AppState,
     selected: &[String],
     focused: bool,
+    prev_scroll: u16,
     area: Rect,
     theme: &Theme,
-) {
+) -> u16 {
     let width = area.width as usize;
     let now_ms = agent_meta::now_ms();
     let tint = if focused {
@@ -237,8 +260,15 @@ pub fn render(
         lines.push(l);
     }
 
-    let scroll = super::scroll_to_keep_visible(selected_line, area.height);
+    let scroll = sticky_scroll(
+        usize::from(prev_scroll),
+        selected_line,
+        lines.len(),
+        usize::from(area.height),
+    );
+    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    scroll
 }
 
 #[cfg(test)]
@@ -334,7 +364,9 @@ mod tests {
         let theme = Theme::build(&Palette::default());
         let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
         terminal
-            .draw(|f| render(f, state, &[], true, f.area(), &theme))
+            .draw(|f| {
+                render(f, state, &[], true, 0, f.area(), &theme);
+            })
             .unwrap();
         let buf = terminal.backend().buffer();
         (0..width).map(|x| buf[(x, y)].symbol()).collect()
@@ -394,6 +426,60 @@ mod tests {
         assert_eq!(step(&paths, &paths[0], 1), paths[1]);
         assert_eq!(step(&paths, &paths[0], -1), paths[0]);
         assert_eq!(&step(&paths, last, 1), last);
+    }
+
+    /// The fixture draws as: band b, s_b, %1, gap, band c, s_c, gap, a.
+    #[test]
+    fn path_at_maps_screen_cells_to_rows() {
+        let state = fixture();
+        let area = Rect::new(2, 3, 20, 4);
+        let (b, c) = (id(2), id(3));
+        assert_eq!(path_at(&state, area, 0, 2, 3), Some(p(&[&b])));
+        assert_eq!(path_at(&state, area, 0, 21, 5), Some(p(&[&b, "s_b", "%1"])));
+        assert_eq!(path_at(&state, area, 0, 5, 6), None, "gap row");
+        assert_eq!(path_at(&state, area, 1, 5, 6), Some(p(&[&c])), "scrolled");
+        assert_eq!(path_at(&state, area, 0, 1, 3), None, "left of the area");
+        assert_eq!(path_at(&state, area, 0, 2, 7), None, "below the area");
+        assert_eq!(path_at(&state, area, 6, 2, 5), None, "past the last row");
+    }
+
+    /// On a scrolled frame, the bottom line of the list is the selected row,
+    /// and the hit test must give it back.
+    #[test]
+    fn path_at_agrees_with_a_scrolled_render() {
+        use crate::config::palette::Palette;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let state = fixture();
+        let last = row_paths(&state).pop().unwrap();
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        let mut scroll = 0;
+        terminal
+            .draw(|f| scroll = render(f, &state, &last, true, 0, f.area(), &theme))
+            .unwrap();
+        let area = Rect::new(0, 0, 30, 3);
+        assert_eq!(scroll, 5, "8 rows, 3 visible, last one selected");
+        assert_eq!(path_at(&state, area, scroll, 0, 2), Some(last));
+        let bottom: String = (0..30)
+            .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
+            .collect();
+        assert!(
+            bottom.contains(" a"),
+            "bottom line is not thread a: {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn sticky_scroll_moves_only_when_the_selection_leaves_the_screen() {
+        // 10 rows, 4 visible.
+        assert_eq!(sticky_scroll(0, 2, 10, 4), 0, "visible: stay");
+        assert_eq!(sticky_scroll(0, 5, 10, 4), 2, "below: last line");
+        assert_eq!(sticky_scroll(5, 7, 10, 4), 5, "visible after scroll: stay");
+        assert_eq!(sticky_scroll(5, 3, 10, 4), 3, "above: first line");
+        assert_eq!(sticky_scroll(8, 9, 10, 4), 6, "no blank rows at the end");
+        assert_eq!(sticky_scroll(3, 0, 10, 0), 0, "zero height");
     }
 
     #[test]

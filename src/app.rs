@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 use ansi_to_tui::IntoText;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Padding, Paragraph};
@@ -23,7 +23,7 @@ use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::core::status::AgentTrigger;
 use crate::core::workdir::{self, DirPicker};
-use crate::event;
+use crate::event::{self, Input};
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
@@ -163,6 +163,9 @@ pub struct App {
     /// While Some, the next keystroke in agents view assigns this pane to a slot
     /// (digit 0-9), or cancels (Esc / any other key). Captured by pressing `P`.
     pin_assign_pending: Option<String>,
+    /// Where the last frame drew the sessions list, and its scroll offset.
+    /// None when the list was not on screen. Mouse events hit-test on it.
+    sessions_hit: Option<(Rect, u16)>,
 }
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -198,6 +201,7 @@ impl App {
             theme_name,
             palette_overrides,
             keymap,
+            sessions_hit: None,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
         }
@@ -258,39 +262,50 @@ impl App {
             self.refresh_preview(&selected);
 
             self.draw(terminal)?;
-            if let Some(key) = event::poll_key(Duration::from_millis(250))? {
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    self.running = false;
-                    continue;
-                }
-
-                match &self.mode {
-                    Mode::Normal => {
-                        self.handle_normal_mode(key.code, key.modifiers, terminal)?;
-                    }
-                    Mode::Input { .. } => {
-                        self.handle_input_key(key.code, key.modifiers, terminal)?
-                    }
-                    Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
-                    Mode::Finder { .. } => {
-                        self.handle_finder_key(key.code, key.modifiers, terminal)?
-                    }
-                    Mode::ThreadPicker { .. } => {
-                        self.handle_thread_picker_key(key.code, key.modifiers)?
-                    }
-                    Mode::DirPicker { .. } => {
-                        self.handle_dir_picker_key(key.code, key.modifiers);
-                    }
-                    Mode::ThemePicker { .. } => {
-                        self.handle_theme_picker_key(key.code, key.modifiers)
-                    }
-                }
-                // Any mode can move the selection (the finder does on attach),
-                // so resync the notes pane after every key, not per handler.
-                self.sync_note_editor();
+            // Handle every queued event before the next refresh and draw. A
+            // click then hit-tests the frame you saw, and a mouse sweep costs
+            // one draw, not one for each row it crosses.
+            let mut timeout = Duration::from_millis(250);
+            while self.running
+                && let Some(input) = event::poll(timeout)?
+            {
+                timeout = Duration::ZERO;
+                self.handle_input(input, terminal)?;
             }
         }
         self.save_ui_state();
+        Ok(())
+    }
+
+    fn handle_input(&mut self, input: Input, terminal: &mut Tui) -> std::io::Result<()> {
+        if let Input::Key(_) = input {
+            // A key can change the rows (a kill, a delete, a move), so a
+            // click later in the same batch must not hit-test the old frame.
+            self.sessions_hit = None;
+        }
+        match input {
+            Input::Mouse(mouse) => self.handle_mouse(mouse, terminal)?,
+            Input::Key(key)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c') =>
+            {
+                self.running = false;
+            }
+            Input::Key(key) => match &self.mode {
+                Mode::Normal => self.handle_normal_mode(key.code, key.modifiers, terminal)?,
+                Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
+                Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
+                Mode::Finder { .. } => self.handle_finder_key(key.code, key.modifiers, terminal)?,
+                Mode::ThreadPicker { .. } => {
+                    self.handle_thread_picker_key(key.code, key.modifiers)?
+                }
+                Mode::DirPicker { .. } => self.handle_dir_picker_key(key.code, key.modifiers),
+                Mode::ThemePicker { .. } => self.handle_theme_picker_key(key.code, key.modifiers),
+            },
+        }
+        // Any input can move the selection (the finder does on attach, and a
+        // hover does), so resync the notes pane after each one, not per handler.
+        self.sync_note_editor();
         Ok(())
     }
 
@@ -371,6 +386,8 @@ impl App {
             None
         };
 
+        let prev_scroll = self.sessions_hit.map_or(0, |(_, scroll)| scroll);
+        let mut sessions_hit = None;
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -498,14 +515,16 @@ impl App {
                         tree_area,
                     );
                 } else {
-                    sessions_view::render(
+                    let scroll = sessions_view::render(
                         frame,
                         &self.state,
                         &selected_path,
                         !matches!(self.focus, Focus::Notes),
+                        prev_scroll,
                         view_area,
                         &self.theme,
                     );
+                    sessions_hit = Some((view_area, scroll));
                 }
             }
 
@@ -649,6 +668,7 @@ impl App {
                 }
             }
         })?;
+        self.sessions_hit = sessions_hit;
         Ok(())
     }
 
@@ -753,6 +773,47 @@ impl App {
         Ok(())
     }
 
+    fn step_selection(&mut self, delta: isize) {
+        let paths = sessions_view::row_paths(&self.state);
+        let next = sessions_view::step(&paths, self.tree_state.selected(), delta);
+        self.tree_state.select(next);
+    }
+
+    /// Mouse on the sessions list: a hover selects the row, and a click
+    /// opens the session or agent (a thread row only takes the selection).
+    /// The wheel arrives as arrow keys, see `event::poll`.
+    fn handle_mouse(&mut self, mouse: MouseEvent, terminal: &mut Tui) -> std::io::Result<()> {
+        let Some((area, scroll)) = self.sessions_hit else {
+            return Ok(());
+        };
+        if !matches!(self.mode, Mode::Normal) {
+            return Ok(());
+        }
+        let Some(path) = sessions_view::path_at(&self.state, area, scroll, mouse.column, mouse.row)
+        else {
+            return Ok(());
+        };
+        match mouse.kind {
+            // While you read a note, a pointer that crosses the list must not
+            // swap it. Only a click moves the selection then.
+            MouseEventKind::Moved if matches!(self.focus, Focus::Tree) => {
+                self.tree_state.select(path);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus = Focus::Tree;
+                self.tree_state.select(path);
+                if matches!(
+                    self.state.resolve_selection(self.tree_state.selected()),
+                    SelectedItem::Session(..) | SelectedItem::Agent(..)
+                ) {
+                    self.start_enter(terminal)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_normal_key(
         &mut self,
         code: KeyCode,
@@ -767,12 +828,8 @@ impl App {
             Action::Quit => self.running = false,
             // The sessions view draws its own rows, so TreeState never learns
             // the row order from a Tree render. Navigate on the view's rows.
-            Action::MoveDown | Action::MoveUp => {
-                let delta = if action == Action::MoveDown { 1 } else { -1 };
-                let paths = sessions_view::row_paths(&self.state);
-                let next = sessions_view::step(&paths, self.tree_state.selected(), delta);
-                self.tree_state.select(next);
-            }
+            Action::MoveDown => self.step_selection(1),
+            Action::MoveUp => self.step_selection(-1),
             Action::MoveLeft => {
                 // Go to the parent row.
                 let mut path = self.tree_state.selected().to_vec();
@@ -1829,6 +1886,9 @@ impl App {
             tui::restore()?;
             let _ = tmux::attach_session(session_name);
             *terminal = tui::init()?;
+            // The rows can change while you are away. Ignore the mouse until
+            // the next draw stores a new frame.
+            self.sessions_hit = None;
         }
 
         self.do_refresh_sessions();

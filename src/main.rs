@@ -108,6 +108,13 @@ fn run_tui() -> std::io::Result<()> {
 
     // Before tui::init, so an unknown theme warning shows on a normal screen.
     let mut app = App::new(state, theme_name, cfg.palette, keymap);
+    // Without this, a panic leaves the shell in raw mode, and each mouse move
+    // prints an escape code into it.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = tui::restore();
+        hook(info);
+    }));
     let mut terminal = tui::init()?;
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;

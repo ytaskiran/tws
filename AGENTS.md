@@ -59,7 +59,7 @@ Threads are user-created and persist to `~/.config/tws/state.json` as a plain ar
 
 ## Architecture
 
-**Single-threaded event loop** in `app.rs` — the brain of the app. It owns the `Mode` state machine, key routing, rendering, and all side effects. The loop polls keys every 250ms and refreshes tmux sessions on a 30s floor, plus immediately whenever an agent hook fires (see [Agent status protocol](#agent-status-protocol)).
+**Single-threaded event loop** in `app.rs` — the brain of the app. It owns the `Mode` state machine, key and mouse routing, rendering, and all side effects. The loop waits up to 250ms for input, then handles every queued event before the next draw, so a click hit-tests the frame that you saw. It refreshes tmux sessions on a 30s floor, plus immediately whenever an agent hook fires (see [Agent status protocol](#agent-status-protocol)).
 
 ### Mode state machine
 
@@ -75,13 +75,15 @@ Mode::Normal → Mode::Input { purpose, buffer } → confirm → back to Normal
 
 Selection is a `&[String]` path of identifiers (thread UUIDs, tmux session names, pane IDs), stored in a `tui_tree_widget::TreeState`. `state.rs::resolve_selection()` maps that path into `SelectedItem` — an enum with variants `None | Thread(thread) | Session(thread, sess) | Agent(thread, sess, agent)`. This is the bridge between the UI and the domain model.
 
-The sessions view (`components/sessions_view.rs`) draws its own rows and does not render the `Tree` widget. `TreeState` only learns the row order from a `Tree` render, so its `key_down`/`key_up` do not work here. Navigation uses `sessions_view::row_paths()` and `sessions_view::step()` instead. Keep the row order in `rows()` only, so the screen and the cursor cannot disagree.
+The sessions view (`components/sessions_view.rs`) draws its own rows and does not render the `Tree` widget. `TreeState` only learns the row order from a `Tree` render, so its `key_down`/`key_up` do not work here. Navigation uses `sessions_view::row_paths()` and `sessions_view::step()` instead, and a mouse hit uses `sessions_view::path_at()`. Keep the row order in `rows()` only, so the screen, the cursor and the mouse cannot disagree.
+
+The sessions view keeps its scroll offset between frames: `App` passes the last offset in, and `render` returns the new one. `App` stores it with the drawn area in `sessions_hit` for `path_at`. A hover selects a row, so the offset must not change while the selection stays on screen.
 
 ### Key modules
 
 | Module | Role |
 |---|---|
-| `app.rs` | Main loop, mode state machine, key routing, rendering |
+| `app.rs` | Main loop, mode state machine, key and mouse routing, rendering |
 | `core/model.rs` | Data structs: Thread, Session, AgentSession, AgentType |
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
