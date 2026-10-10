@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
 export HOME
 HOME="$(mktemp -d)"
@@ -964,6 +964,53 @@ if declare -F configure_claude_hooks >/dev/null; then
         printf '  FAIL a config with daemon_auto_start = false reads as off\n'
         failures=$((failures + 1))
     fi
+    # With no terminal the question prints nothing and counts as no.
+    out="$( (HOME="$wire_home"; NO_TTY=1; printf 'y\n' | confirm_codex_daemon) )" && got=yes || got=no
+    if [ -z "$out" ] && [ "$got" = no ]; then
+        printf '  ok   with no terminal the daemon question prints nothing and is a no\n'
+    else
+        printf '  FAIL with no terminal the daemon question printed [%s] and was %s\n' "$out" "$got"
+        failures=$((failures + 1))
+    fi
+    # Only the top-level [features] table counts; a profile table is left alone.
+    printf '[profiles.work.features]\ndaemon_auto_start = false\nhooks = false\n' > "$toml"
+    if ( HOME="$wire_home"; codex_daemon_on ); then
+        printf '  ok   a profile table with daemon_auto_start = false still reads as on\n'
+    else
+        printf '  FAIL a profile table with daemon_auto_start = false reads as off\n'
+        failures=$((failures + 1))
+    fi
+    ( HOME="$wire_home"; ok() { :; }; info() { :; }; plan_codex_daemon=1; configure_codex_feature_flag )
+    want="$(printf '[profiles.work.features]\ndaemon_auto_start = false\nhooks = false\n\n[features]\nhooks = true\ndaemon_auto_start = false')"
+    if [ "$(cat "$toml")" = "$want" ]; then
+        printf '  ok   the writes leave the profile table and add a top-level [features]\n'
+    else
+        printf '  FAIL the writes with a profile table — got:\n%s\n' "$(cat "$toml")"
+        failures=$((failures + 1))
+    fi
+    printf '[features]\nhooks = false\n\n[profiles.work.features]\nhooks = false\n' > "$toml"
+    ( HOME="$wire_home"; ok() { :; }; info() { :; }; plan_codex_daemon=1; configure_codex_feature_flag )
+    want="$(printf '[features]\nhooks = true\ndaemon_auto_start = false\n\n[profiles.work.features]\nhooks = false')"
+    if [ "$(cat "$toml")" = "$want" ]; then
+        printf '  ok   the writes change only the keys in the top-level [features]\n'
+    else
+        printf '  FAIL the writes in [features] before a profile table — got:\n%s\n' "$(cat "$toml")"
+        failures=$((failures + 1))
+    fi
+    # A symlinked config.toml stays a link, and the file keeps its mode.
+    real="$wire_home/real-config.toml"
+    printf '[features]\ndaemon_auto_start = true\n' > "$real"
+    chmod 600 "$real"
+    rm -f "$toml"; ln -s "$real" "$toml"
+    ( HOME="$wire_home"; ok() { :; }; info() { :; }; plan_codex_daemon=1; configure_codex_feature_flag )
+    mode="$(stat -f %Lp "$real" 2>/dev/null || stat -c %a "$real")"
+    if [ -L "$toml" ] && [ "$mode" = 600 ] && grep -q '^daemon_auto_start = false$' "$real" && grep -q '^hooks = true$' "$real"; then
+        printf '  ok   a symlinked config.toml stays a link, keeps its mode, and gets the keys\n'
+    else
+        printf '  FAIL a symlinked config.toml — link=%s mode=%s content:\n%s\n' "$([ -L "$toml" ] && echo yes || echo no)" "$mode" "$(cat "$real")"
+        failures=$((failures + 1))
+    fi
+    rm -f "$toml"
     # count_event FILE EVENT FILTER: how many entries of EVENT pass FILTER.
     count_event() { jq "[(.hooks.$2 // [])[] | select($3)] | length" "$1"; }
     check_event() {
@@ -1709,6 +1756,17 @@ expect_inflight "" "a Codex PreToolUse with no PostToolUse leaves no marker"
 expect working "and the pane stays working"
 codex_post_tool "$POST_M"
 expect working "and Codex PostToolUse keeps it working"
+backdate "$STATUS_FILE"; rm -f "$HEARTBEAT"
+codex_post_tool "$POST_M"
+if [ -e "$HEARTBEAT" ] && [ "$(mtime "$STATUS_FILE")" != "$(mtime_or_zero "$HEARTBEAT")" ]; then
+    printf '  ok   a Codex PostToolUse in a working pane touches the heartbeat, not the status file\n'
+else
+    printf '  FAIL a Codex PostToolUse in a working pane touches the heartbeat, not the status file\n'
+    failures=$((failures + 1))
+fi
+printf idle > "$STATUS_FILE"
+codex_post_tool "$POST_M"
+expect working "a Codex PostToolUse after tws expired the pane to idle resumes working"
 reset
 prompt_submit; turn_end
 codex_pre_tool "$MAIN_JSON"

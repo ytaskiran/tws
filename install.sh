@@ -159,7 +159,9 @@ configure_path() {
 # the newer of the two mtimes to find a silent pane.
 #
 # Modes:
-#   set    unconditional — the event names the new state outright.
+#   set    unconditional — the event names the new state outright. If the pane
+#          already has the word, it touches the heartbeat instead, so a Codex
+#          PostToolUse after a long call keeps a `working` pane alive.
 #   prompt UserPromptSubmit (Claude and Codex). It always writes the word, so the
 #          rename stamps a fresh mtime. After an Esc there is no Stop and no
 #          interrupt hook: the file still says `working` with the old turn's
@@ -340,7 +342,7 @@ status_hook_entry() {
             cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
         *)
-            cmd+="[ \"\$cur\" != $word ] && { put $word; $trig; }; :"
+            cmd+="if [ \"\$cur\" = $word ]; then $beat; else put $word; $trig; fi; :"
             ;;
     esac
     printf '[{"matcher": "%s", "hooks": [{"type": "command", "command": %s}]}]' \
@@ -539,20 +541,57 @@ configure_codex_feature_flag() {
         key=${pair%=*}
         value=${pair#*=}
         line="$key = $value"
-        grep -q "^[[:space:]]*$key[[:space:]]*=[[:space:]]*$value" "$config_file" 2>/dev/null && continue
-        tmp="$(mktemp)"
-        if [ ! -f "$config_file" ]; then
+        [ "$(codex_feature "$key")" = "$value" ] && continue
+        if [ ! -e "$config_file" ]; then
             printf '[features]\n%s\n' "$line" > "$config_file"
-        elif grep -q "^[[:space:]]*$key[[:space:]]*=" "$config_file"; then
-            sed "s/^[[:space:]]*$key[[:space:]]*=.*/$line/" "$config_file" > "$tmp" && mv "$tmp" "$config_file"
-        elif grep -q '^\[features\]' "$config_file"; then
-            awk -v l="$line" '/^\[features\]/{print; print l; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
         else
-            printf '\n[features]\n%s\n' "$line" >> "$config_file"
+            # Only the top-level [features] table counts: a profile table such as
+            # [profiles.work.features] has keys of the same name. The key line in
+            # that table is replaced; with no key line it goes at the end of the
+            # table (before its trailing blank lines, held in b), and with no table
+            # a new one goes at the end of the file. `cat >` writes through the
+            # path, so a symlink stays a link and the file keeps its mode.
+            tmp="$(mktemp)"
+            awk -v k="$key" -v l="$line" '
+                /^[[:space:]]*\[/ {
+                    if (t && !done) { print l; done = 1 }
+                    printf "%s", b; b = ""
+                    t = ($0 ~ /^[[:space:]]*\[features\][[:space:]]*(#.*)?$/)
+                    if (t) seen = 1
+                    print; next
+                }
+                t && /^[[:space:]]*$/ { b = b $0 "\n"; next }
+                { printf "%s", b; b = "" }
+                t && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { if (!done) print l; done = 1; next }
+                { print }
+                END {
+                    if (t && !done) print l
+                    printf "%s", b
+                    if (!seen) printf "\n[features]\n%s\n", l
+                }' "$config_file" > "$tmp" && cat "$tmp" > "$config_file"
+            rm -f "$tmp"
         fi
-        rm -f "$tmp"
         ok "Set $line in ~/.codex/config.toml"
     done
+    if [ "${plan_codex_daemon:-0}" -eq 1 ]; then
+        info "Restart each open Codex TUI. A running TUI still uses the shared daemon."
+        info "Then stop the daemon: codex app-server daemon stop"
+        info "This also stops any Codex session that still runs in the daemon."
+    fi
+}
+
+# Prints the value of KEY in the top-level [features] table of
+# ~/.codex/config.toml, or nothing. Keys of the same name in other tables, such
+# as [profiles.work.features], do not count.
+codex_feature() {
+    awk -v k="$1" '
+        /^[[:space:]]*\[/ { t = ($0 ~ /^[[:space:]]*\[features\][[:space:]]*(#.*)?$/); next }
+        t && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+            v = $0
+            sub(/^[^=]*=[[:space:]]*/, "", v)
+            sub(/[[:space:]]*(#.*)?$/, "", v)
+            print v; exit
+        }' "$HOME/.codex/config.toml" 2>/dev/null
 }
 
 configure_codex_hooks() {
@@ -582,8 +621,11 @@ configure_codex_hooks() {
     # a marker would outlive its call and hold off stale expiry for 4 h. A shell
     # call returns in 30 s, and a poll of its process in 5 min, so a long command
     # still sends a heartbeat inside the 15 min window.
-    # ponytail: one MCP tool call that runs over 15 min expires to idle; pair
-    # markers again if Codex ever fires PostToolUse for every PreToolUse.
+    # ponytail: one call that blocks over 15 min (an MCP tool, or the legacy
+    # `shell` tool with a large timeout_ms) shows idle until it ends. Its
+    # PostToolUse (`set`) then writes working, or touches the heartbeat when the
+    # pane still works. Pair markers again if Codex ever fires PostToolUse for
+    # every PreToolUse.
     # `tool` mode is not used: it makes markers. Tool payloads now carry agent_id
     # for subagents, but `live` already never resumes a resting state.
     e_pretool=$(status_hook_entry working "" live)
@@ -791,7 +833,7 @@ PI_EXT_EOF
 }
 
 # Configures the agents that scan_plan found. The user already approved them
-# with the single plan question, so nothing here asks.
+# with the plan question, so nothing here asks.
 configure_agent_hooks() {
     if [ "$plan_claude" -eq 1 ]; then configure_claude_hooks; fi
     if [ "$plan_codex" -eq 1 ]; then configure_codex_hooks; fi
@@ -1582,13 +1624,14 @@ confirm_own_bar() {
 # True unless ~/.codex/config.toml already sets daemon_auto_start = false. The
 # feature is on by default, so a missing key counts as on.
 codex_daemon_on() {
-    ! grep -q '^[[:space:]]*daemon_auto_start[[:space:]]*=[[:space:]]*false' "$HOME/.codex/config.toml" 2>/dev/null
+    [ "$(codex_feature daemon_auto_start)" != false ]
 }
 
 # Asked during the scan, only when the Codex daemon is on. It changes how Codex
-# runs, so the default is no, and no terminal counts as no.
+# runs, so the default is no. With no terminal it prints nothing and counts as no.
 confirm_codex_daemon() {
     local answer=""
+    (exec </dev/tty) 2>/dev/null || return 1
     cat <<'CODEX_DAEMON_EOF'
 Codex runs all its sessions in one shared background daemon (daemon_auto_start).
 Codex starts its hooks in that daemon, so each hook reports the tmux pane that
