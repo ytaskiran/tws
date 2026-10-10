@@ -123,10 +123,11 @@ nova bar and adds the agents on top of it. It appends the glyph command to your
 When your `@nova-segments-0-right` has segments other than `tws`, the installer
 shows your right-side lines and asks if tws can replace them:
 
-- **Yes:** the right side shows only `tws`, and `status-right-length` becomes 80,
-  also when your config sets a smaller value. The installer first copies your
-  tmux config to `~/.config/tws/backups/`, and prints the backup path and the
-  `cp` command that restores it. A later run of the installer remembers the
+- **Yes:** the right side shows only `tws`, and `status-right-length` becomes
+  at least 80: a smaller value of yours goes up to 80, a larger one stays. The
+  installer first copies to `~/.config/tws/backups/` the tmux config it writes
+  and each config that holds your right-side lines. It prints each backup path
+  and the `cp` command that restores it. A later run of the installer remembers the
   yes: it asks nothing and makes no new backup.
 - **No** (the default, also with no terminal): the `tws` segment goes after your
   segments, and your `status-right-length` stays.
@@ -143,7 +144,9 @@ The block after a "no":
     set -g @nova-status-style-active-bg '#c88e68'  # tws status bar
     run-shell '/home/you/.tmux/plugins/tmux-nova/nova.tmux'  # tws status bar
 
-After a "yes", the right-side line is `set -g @nova-segments-0-right 'tws'`.
+After a "yes", the right-side line is
+`set -g @nova-segments-0-right 'tws'  # tws status bar replace`. A later run
+reads this marker to remember the yes.
 When your config does not set `@nova-pane` or `@nova-segments-0-right`, the
 block sets them to the nova default plus the tws part. nova does not set
 `status-interval` or `status-right-length`, so the block sets them too, except
@@ -221,8 +224,9 @@ curl -fsSL https://raw.githubusercontent.com/ytaskiran/tws/main/install.sh | bas
 ```
 
 Downloads the latest release binary to `~/.local/bin`. Then the script scans your
-setup and shows all the changes it can make in one list. It asks one question,
-`Apply these changes? [Y/n]`. The list can hold:
+setup and shows all the changes it can make in one list. It asks one main
+question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
+your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
 - agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`), and Pi (`~/.pi/agent/extensions/`),
 - the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,

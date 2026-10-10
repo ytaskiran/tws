@@ -848,11 +848,12 @@ rewrite_conf_block() {
 }
 
 # The config files that tmux reads. tmux loads each one that exists, in this
-# order, so a check for the user's own keys must read all of them.
+# order, so a check for the user's own keys must read all of them. With
+# XDG_CONFIG_HOME unset, two entries name the same file, so repeats are dropped.
 tmux_conf_candidates() {
     printf '%s\n' "$HOME/.tmux.conf" \
         "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" \
-        "$HOME/.config/tmux/tmux.conf"
+        "$HOME/.config/tmux/tmux.conf" | awk '!seen[$0]++'
 }
 
 # Prints the first config file that exists, or nothing. The tws blocks go into
@@ -1075,6 +1076,9 @@ fork_key_taken() {
 BAR_MARKER='# tws status bar'
 # A config line with this text keeps the installer from adding the bar again.
 BAR_OFF='# tws status bar off'
+# Marks the replace form of the nova right side, so a re-run can tell an
+# earlier yes from the default `tws` line.
+BAR_REPLACE_MARKER='# tws status bar replace'
 BAR_OPTIONS='status-style status-bg status-fg status-justify status-left status-left-style status-right status-right-style status-format window-status-format window-status-current-format window-status-style window-status-current-style'
 # bar_replace is 1 when the right side of the nova bar is only tws: after a
 # yes, or kept from an earlier yes. bar_backup is 1 only after a new yes.
@@ -1089,17 +1093,20 @@ bar_backup=0
 # The tmux default bar is green, and the green working glyph does not show on
 # it, so the block also sets the tws palette bg and fg. The block goes after
 # your lines, so it leaves out status-interval and status-right-length when
-# you set them, except status-right-length after a yes to confirm_nova_right.
-# The nova form needs both too: nova sets neither, and the tmux default right
-# length of 40 cuts the tws segment. --since gives the server start time: an older status file is
-# from a pane of an earlier server with the same ID. Both tab formats run the
-# same command, and its output picks the colors for the current tab, so a
-# window change starts no new job. The tabs keep the zoom and bell flags.
+# you set them. After a yes to confirm_nova_right, it raises a
+# status-right-length below 80 to 80. The nova form needs both options too:
+# nova sets neither, and the tmux default right length of 40 cuts the tws
+# segment. --since gives the server start time: an older status file is from
+# a pane of an earlier server with the same ID. Both tab formats run the same
+# command, and its output picks the colors for the current tab, so a window
+# change starts no new job. The tabs keep the zoom and bell flags.
 bar_block() {
-    local bin="$INSTALL_DIR/$BINARY_NAME" nova
+    local bin="$INSTALL_DIR/$BINARY_NAME" nova len
     printf '%s\n' "$BAR_MARKER"
     tmux_conf_sets status-interval || printf '%s\n' "set -g status-interval 5  $BAR_MARKER"
-    if [ "$bar_replace" -eq 1 ] || ! tmux_conf_sets status-right-length; then
+    len="$(user_conf_lines | sed -nE "s/^.*status-right-length[[:space:]]+['\"]?([0-9]+).*$/\1/p" | tail -n 1)"
+    if ! tmux_conf_sets status-right-length \
+        || { [ "$bar_replace" -eq 1 ] && [ -n "$len" ] && [ "$len" -lt 80 ]; }; then
         printf '%s\n' "set -g status-right-length 80  $BAR_MARKER"
     fi
     if nova="$(nova_script)"; then
@@ -1124,14 +1131,9 @@ bar_block() {
 tmux_has_own_bar() {
     local conf opt live ours default pattern block
     pattern="(^|[[:space:]'\"])($(printf '%s' "$BAR_OPTIONS" | tr ' ' '|'))([[:space:]'\"[]|$)"
-    while IFS= read -r conf; do
-        [ -f "$conf" ] || continue
-        if grep -vF "$BAR_MARKER" "$conf" \
-            | grep -vE '^[[:space:]]*#' \
-            | grep -E "$pattern" >/dev/null; then
-            return 0
-        fi
-    done <<< "$(tmux_conf_candidates)"
+    if user_conf_lines | grep -E "$pattern" >/dev/null; then
+        return 0
+    fi
     [ "$tmux_live" -eq 1 ] || return 1
     block="$(bar_block)"
     for opt in $BAR_OPTIONS; do
@@ -1182,7 +1184,7 @@ nova_block() {
         printf '%s\n' "set -g @nova-pane '#S:#I:#W$tab'  $BAR_MARKER"
     fi
     if [ "$bar_replace" -eq 1 ]; then
-        printf '%s\n' "set -g @nova-segments-0-right 'tws'  $BAR_MARKER"
+        printf '%s\n' "set -g @nova-segments-0-right 'tws'  $BAR_REPLACE_MARKER"
     elif tmux_conf_has '@nova-segments-0-right[[:space:]].*tws'; then
         :
     elif tmux_conf_sets @nova-segments-0-right; then
@@ -1200,17 +1202,22 @@ nova_block() {
     printf '%s\n' "run-shell '$nova'  $BAR_MARKER"
 }
 
-# Succeeds when a config line of yours (not the tws block, not a comment)
-# matches the extended regex $1.
-tmux_conf_has() {
-    local conf
+# Prints your config lines: not the tws block, not a comment. With no
+# argument it reads every config that tmux loads, else only the files given.
+# `|| :` keeps a file with no such line from failing a caller's pipeline
+# under pipefail.
+user_conf_lines() {
+    local conf files
+    if [ "$#" -gt 0 ]; then files="$(printf '%s\n' "$@")"; else files="$(tmux_conf_candidates)"; fi
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
-        if grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' | grep -E "$1" >/dev/null; then
-            return 0
-        fi
-    done <<< "$(tmux_conf_candidates)"
-    return 1
+        grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' || :
+    done <<< "$files"
+}
+
+# Succeeds when a config line of yours matches the extended regex $1.
+tmux_conf_has() {
+    user_conf_lines | grep -E "$1" >/dev/null
 }
 
 # The block for a running server. A server that already has the tws part in
@@ -1231,33 +1238,22 @@ bar_block_live() {
 
 # Succeeds when a config line of yours sets the option $1.
 tmux_conf_sets() {
-    local conf
-    while IFS= read -r conf; do
-        [ -f "$conf" ] || continue
-        if grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' \
-            | grep -E "(^|[[:space:]])$1([[:space:]]|\$)" >/dev/null; then
-            return 0
-        fi
-    done <<< "$(tmux_conf_candidates)"
-    return 1
+    user_conf_lines | grep -E "(^|[[:space:]])$1([[:space:]]|\$)" >/dev/null
 }
+
+NOVA_RIGHT_PATTERN='(^|[[:space:]])(@nova-segments-0-right|status-right-length)([[:space:]]|$)'
 
 # Prints your config lines that set the right side of a nova bar, so the
-# question can show them.
+# question can show them. The file arguments work as in user_conf_lines.
 nova_right_lines() {
-    local conf
-    while IFS= read -r conf; do
-        [ -f "$conf" ] || continue
-        grep -vF "$BAR_MARKER" "$conf" | grep -vE '^[[:space:]]*#' \
-            | grep -E '(^|[[:space:]])(@nova-segments-0-right|status-right-length)([[:space:]]|$)' \
-            | sed 's/^[[:space:]]*//' || :
-    done <<< "$(tmux_conf_candidates)"
+    user_conf_lines "$@" | grep -E "$NOVA_RIGHT_PATTERN" | sed 's/^[[:space:]]*//' || :
 }
 
-# Succeeds when your nova right side has a segment that is not tws.
+# Succeeds when your nova right side has a segment that is not tws. A line
+# with only tws (also the ' tws' of an append) does not count.
 nova_right_has_more() {
     nova_right_lines | grep -E '@nova-segments-0-right' \
-        | grep -vE "@nova-segments-0-right[[:space:]]+['\"]?tws['\"]?[[:space:]]*(#.*)?$" >/dev/null
+        | grep -vE "@nova-segments-0-right[[:space:]]+['\"]?[[:space:]]*tws[[:space:]]*['\"]?[[:space:]]*(#.*)?$" >/dev/null
 }
 
 # Succeeds when the tws block already holds the replace form, so a re-run
@@ -1266,7 +1262,7 @@ nova_right_replaced() {
     local conf
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
-        if grep -F "$BAR_MARKER" "$conf" | grep -F "set -g @nova-segments-0-right 'tws'" >/dev/null; then
+        if grep -F "$BAR_REPLACE_MARKER" "$conf" >/dev/null; then
             return 0
         fi
     done <<< "$(tmux_conf_candidates)"
@@ -1282,7 +1278,7 @@ confirm_nova_right() {
     while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$(nova_right_lines)"
     tmux_conf_sets status-right-length || echo "    (no status-right-length line: tmux uses 40)"
     echo "  y = replace: the right side shows only tws (thread › session),"
-    echo "      and status-right-length becomes 80. tws backs up your tmux config first."
+    echo "      and status-right-length becomes at least 80. tws backs up your tmux config first."
     echo "  n = keep: tws adds its segment after yours, and keeps your status-right-length."
     printf '%s' "Replace the right side of your nova bar with the tws version? [y/N] "
     if ! read -r answer 2>/dev/null < /dev/tty; then
@@ -1292,15 +1288,27 @@ confirm_nova_right() {
     [[ "$answer" =~ ^[Yy] ]]
 }
 
-# Copies the config to ~/.config/tws/backups before the tws bar replaces your
-# nova right side, and tells how to restore it.
+# Before the tws bar replaces your nova right side, copies to
+# ~/.config/tws/backups the config that tws writes ($1) and each config that
+# holds your right-side lines, and tells how to restore each one. The backup
+# name keeps the path, so ~/.tmux.conf and ~/.config/tmux/tmux.conf do not
+# collide.
 backup_conf() {
-    local conf="$1" dir="$HOME/.config/tws/backups" name backup
-    name="$(basename "$conf")"
-    backup="$dir/${name#.}.$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$dir" 2>/dev/null && cp "$conf" "$backup" 2>/dev/null || return 1
-    ok "Backed up $conf to $backup"
-    info "To restore it: cp '$backup' '$conf', then restart tmux"
+    local dir="$HOME/.config/tws/backups" stamp conf name backup done_list=""
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    while IFS= read -r conf; do
+        [ -f "$conf" ] || continue
+        [ "$conf" = "$1" ] || [ -n "$(nova_right_lines "$conf")" ] || continue
+        case "$done_list" in *"|$conf|"*) continue ;; esac
+        done_list="$done_list|$conf|"
+        name="${conf#"$HOME"/}"
+        name="$(printf '%s' "${name#.}" | tr '/' '_')"
+        backup="$dir/$name.$stamp"
+        cp "$conf" "$backup" 2>/dev/null || return 1
+        ok "Backed up $conf to $backup"
+        info "To restore it: cp '$backup' '$conf', then restart tmux"
+    done <<< "$(printf '%s\n' "$1"; tmux_conf_candidates)"
 }
 
 # Succeeds when a config holds the opt-out line.
@@ -1355,11 +1363,12 @@ install_glow() {
     esac
 }
 
-# --- 7. Scan, plan, and the one question ---
+# --- 7. Scan, plan, and the questions ---
 
 # The scan only reads. It records what the installer can change in plan_*
 # flags, and what it found but leaves alone in plan_notes. The user then
-# answers one question for the whole plan.
+# answers one question for the whole plan. Before it, the scan can ask about
+# a status bar of the user's own (confirm_own_bar, confirm_nova_right).
 plan_path=0 plan_claude=0 plan_codex=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
