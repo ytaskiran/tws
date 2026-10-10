@@ -890,6 +890,9 @@ tmux_conf_broken_link() {
 # see the same config as the first run.
 tmux_conf_loads_more() {
     local conf
+    # The tws default config loads TPM and its plugins, and none of them binds
+    # a key that the plan checks.
+    [ "$default_conf_done" -eq 0 ] || return 1
     while IFS= read -r conf; do
         [ -f "$conf" ] || continue
         if grep -vE -e '^[[:space:]]*(#|(un)?bind(-key)?[[:space:]])' -e 'tws (ack|fork)-pane' "$conf" \
@@ -914,7 +917,7 @@ tmux_conf_for_write() {
 
 # Most tmux commands start a server when none runs, and a new server loads and
 # runs the user's config (plugin managers, session restore). list-sessions does
-# not start one, so it is the only safe probe. scan_plan sets tmux_live from it
+# not start one, so it is the only safe probe. main sets tmux_live from it
 # once, and every later tmux call checks tmux_live first.
 tmux_live=0
 tmux_server_runs() {
@@ -1262,16 +1265,19 @@ configure_status_bar() {
 
 DEFAULT_CONF_URL="https://raw.githubusercontent.com/$REPO/main/extras/tmux.conf"
 TMUX_PLUGIN_DIR="$HOME/.tmux/plugins"
+# 1 after the default config is in place. The plan then knows the config, and
+# the old tmux server no longer matches it.
+default_conf_done=0
 
 # Prints extras/tmux.conf with the binary path in place of @TWS_BIN@. A repo
-# checkout uses its own copy; a piped install downloads the copy on main, the
-# same source as this script. awk replaces the text literally, so a & or | in
-# the path stays as it is.
+# checkout uses its own copy. A piped install has an empty BASH_SOURCE, so it
+# downloads the copy on main, the same source as this script, and never reads
+# a file from the current directory. awk replaces the text literally, so a & or
+# | in the path stays as it is.
 default_conf_text() {
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    if [ -f "$script_dir/extras/tmux.conf" ]; then
-        cat "$script_dir/extras/tmux.conf"
+    local src="${BASH_SOURCE[0]:-}"
+    if [ -n "$src" ] && [ -f "$(dirname "$src")/extras/tmux.conf" ]; then
+        cat "$(dirname "$src")/extras/tmux.conf"
     else
         curl -fsSL "$DEFAULT_CONF_URL"
     fi | BIN="$INSTALL_DIR/$BINARY_NAME" awk '{
@@ -1289,6 +1295,7 @@ confirm_default_conf() {
     warn "Optional: the tws default tmux config"
     echo "   This REPLACES your tmux config with the full setup of the tws author:"
     echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, mouse, clipboard, and keys."
+    echo "   It downloads these 4 plugins from GitHub, and tmux runs them at each start."
     echo "   It needs git, and the theme needs a Nerd Font in your terminal."
     echo "   Each tmux config you have now moves to <file>.tws-backup-<time> first."
     printf '%s' "Install the tws default tmux config? [y/N] "
@@ -1299,14 +1306,27 @@ confirm_default_conf() {
     [[ "$answer" =~ ^[Yy] ]]
 }
 
-# Moves every tmux config aside (tmux loads each one that exists, so an old
-# XDG config would override the new file), writes ~/.tmux.conf, and clones the
-# plugins. A symlink moves as a link, so a dotfiles repo stays as it is. The
-# plugins are cloned with git and not with tpm/bin/install_plugins: that script
-# asks a tmux server for the plugin path, and a server that runs without TPM
-# gives a wrong path.
+# Moves the configs in conf_moved_from back from conf_moved_to, last first.
+undo_conf_moves() {
+    local i=${#conf_moved_from[@]}
+    while [ "$i" -gt 0 ]; do
+        i=$((i - 1))
+        mv "${conf_moved_to[$i]}" "${conf_moved_from[$i]}" || warn "Could not move ${conf_moved_to[$i]} back"
+    done
+}
+
+# Every step that can fail comes before the first change to your config: the
+# download, the plugin clones, and the new file. Only then do the configs move
+# aside (tmux loads each one that exists, so an old XDG config would override
+# the new file), and a failed move puts the earlier ones back. A symlinked
+# config moves as a link. A config in a symlinked directory (a GNU stow fold)
+# stops the step, because the move would rename the file in your dotfiles repo.
+# The plugins are cloned with git and not with tpm/bin/install_plugins: that
+# script asks a tmux server for the plugin path, and a server that runs
+# without TPM gives a wrong path.
 install_default_conf() {
-    local text stamp conf backup plugin moved=()
+    local text stamp conf dir plugin new="$HOME/.tmux.conf.tws-new"
+    conf_moved_from=() conf_moved_to=()
     command -v git &>/dev/null || { warn "git is missing — skipping the default tmux config"; return; }
     if ! ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
         warn "The binary path has a space or one of ' \" \\ \$ # ; — skipping the default tmux config"
@@ -1320,35 +1340,70 @@ install_default_conf() {
     stamp="$(date +%Y%m%d-%H%M%S)"
     while IFS= read -r conf; do
         [ -e "$conf" ] || [ -L "$conf" ] || continue
-        backup="$conf.tws-backup-$stamp"
-        if ! mv "$conf" "$backup"; then
-            warn "Could not move $conf aside — skipping the default tmux config"
-            [ "${#moved[@]}" -eq 0 ] || warn "Already moved: ${moved[*]}"
+        dir="$(dirname "$conf")"
+        if [ "$dir" != "$HOME" ] && [ -L "$dir" ]; then
+            warn "$dir is a symlink (a dotfiles repo?) — skipping the default tmux config"
             return
         fi
-        moved+=("$backup")
+        if [ -e "$conf.tws-backup-$stamp" ] || [ -L "$conf.tws-backup-$stamp" ]; then
+            warn "$conf.tws-backup-$stamp already exists — skipping the default tmux config"
+            return
+        fi
     done <<< "$(tmux_conf_candidates)"
 
-    if ! printf '%s\n' "$text" > "$HOME/.tmux.conf"; then
-        warn "Could not write $HOME/.tmux.conf — your old config is in: ${moved[*]:-nothing}"
-        return
-    fi
-    ok "Installed the tws default tmux config to $HOME/.tmux.conf"
-    # The +"..." form: bash 3.2 (macOS) calls an empty array unbound under set -u.
-    for backup in ${moved[@]+"${moved[@]}"}; do ok "Backup: $backup"; done
-
+    # A dir without .git is an interrupted clone or someone else's files, so it
+    # does not count as installed. No prompt can stop the installer: git asks
+    # for no password, and ssh (a url.insteadOf rule) asks for no passphrase.
     while IFS= read -r plugin; do
-        [ -d "$TMUX_PLUGIN_DIR/${plugin#*/}" ] && continue
-        if git clone -q --depth 1 "https://github.com/$plugin" "$TMUX_PLUGIN_DIR/${plugin#*/}"; then
+        dir="$TMUX_PLUGIN_DIR/${plugin#*/}"
+        [ ! -e "$dir/.git" ] || continue
+        if [ -e "$dir" ]; then
+            warn "$dir is not a git clone — remove it, then run install again"
+        elif GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+            git clone -q --depth 1 "https://github.com/$plugin" "$dir" < /dev/null; then
             ok "Installed tmux plugin $plugin"
         else
-            warn "Could not clone $plugin — open tmux and press prefix+I to install it"
+            warn "Could not clone $plugin — run install again"
         fi
     done <<< "$(sed -n "s/^set -g @plugin '\(.*\)'$/\1/p" <<< "$text")"
-
-    if [ "$tmux_live" -eq 1 ]; then
-        info "Restart tmux (tmux kill-server) to load the new config"
+    if [ ! -f "$TMUX_PLUGIN_DIR/tpm/tpm" ]; then
+        warn "TPM is not installed — your tmux config is not changed"
+        return
     fi
+
+    if ! printf '%s\n' "$text" > "$new"; then
+        rm -f "$new"
+        warn "Could not write $new — your tmux config is not changed"
+        return
+    fi
+    while IFS= read -r conf; do
+        [ -e "$conf" ] || [ -L "$conf" ] || continue
+        if ! mv "$conf" "$conf.tws-backup-$stamp"; then
+            warn "Could not move $conf aside — your tmux config is not changed"
+            undo_conf_moves
+            rm -f "$new"
+            return
+        fi
+        conf_moved_from+=("$conf") conf_moved_to+=("$conf.tws-backup-$stamp")
+    done <<< "$(tmux_conf_candidates)"
+    if ! mv "$new" "$HOME/.tmux.conf"; then
+        warn "Could not write $HOME/.tmux.conf — your tmux config is not changed"
+        undo_conf_moves
+        rm -f "$new"
+        return
+    fi
+
+    ok "Installed the tws default tmux config to $HOME/.tmux.conf"
+    # The +"..." form: bash 3.2 (macOS) calls an empty array unbound under set -u.
+    for conf in ${conf_moved_to[@]+"${conf_moved_to[@]}"}; do ok "Backup: $conf"; done
+    if [ "$tmux_live" -eq 1 ]; then
+        info "Restart tmux when your sessions can stop, to load the new config"
+    fi
+    # The running server still has the old config, so the plan must not read
+    # its keys or load blocks into it. A TPM path in the environment (from that
+    # server) points at the old plugins, and nova_script reads it.
+    default_conf_done=1 tmux_live=0
+    export TMUX_PLUGIN_MANAGER_PATH="$TMUX_PLUGIN_DIR/"
 }
 
 # --- 6. glow (rich markdown rendering) ---
@@ -1394,7 +1449,6 @@ tilde() {
 scan_plan() {
     local have_jq=0
     command -v jq &>/dev/null && have_jq=1
-    if tmux_server_runs; then tmux_live=1; fi
 
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
@@ -1594,11 +1648,13 @@ apply_plan() {
 # After a "no", show the user what to add by hand. The agent hooks are left out:
 # they are long JSON, and running install again is the way to get them.
 print_manual_steps() {
+    local none="No changes made"
+    [ "$default_conf_done" -eq 0 ] || none="No other changes made"
     if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
-        info "No changes made. Run install again to set them up."
+        info "$none. Run install again to set them up."
         return
     fi
-    info "No changes made. Run install again to set them up, or add these by hand:"
+    info "$none. Run install again to set them up, or add these by hand:"
     if [ "$plan_path" -eq 1 ]; then
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
         echo "    $PATH_EXPORT_LINE"

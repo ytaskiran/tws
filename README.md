@@ -219,13 +219,23 @@ Before the plan, the script offers the full tmux setup of the tws author:
 [`extras/tmux.conf`](extras/tmux.conf). It has TPM, tmux-sensible,
 tmux-resurrect, the tmux-nova theme with the tws segments, mouse, clipboard,
 and keys. It needs `git`, and the theme needs a [Nerd Font](https://www.nerdfonts.com/).
+It downloads the 4 plugins from GitHub, and tmux runs them at each start.
 
 > **Warning:** this option replaces your tmux config. The default answer is no.
 
-If you answer `y`, the script moves each tmux config you have
-(`~/.tmux.conf`, `~/.config/tmux/tmux.conf`) to `<file>.tws-backup-<time>`.
-Then it writes the new `~/.tmux.conf` and clones the plugins to `~/.tmux/plugins`.
-To go back, move the backup to its old name and restart tmux.
+If you answer `y`, the script first clones the plugins to `~/.tmux/plugins`.
+If TPM does not install, it stops and changes nothing. Then it moves each tmux
+config you have (`~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf`,
+`~/.config/tmux/tmux.conf`) to `<file>.tws-backup-<time>`, and writes the new
+`~/.tmux.conf`. If a move fails, it moves the configs back. A config in a
+symlinked directory (for example, a GNU stow fold) stops the step, so your
+dotfiles repo does not change.
+
+The new config loads when tmux starts again. To go back:
+
+1. Remove the new `~/.tmux.conf`. tmux loads each config that exists, so it must go.
+2. Move each `<file>.tws-backup-<time>` back to `<file>`.
+3. Restart tmux.
 
 ### Build from source
 
