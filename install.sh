@@ -1258,6 +1258,99 @@ configure_status_bar() {
     fi
 }
 
+# --- 5d. tws default tmux config (optional) ---
+
+DEFAULT_CONF_URL="https://raw.githubusercontent.com/$REPO/main/extras/tmux.conf"
+TMUX_PLUGIN_DIR="$HOME/.tmux/plugins"
+
+# Prints extras/tmux.conf with the binary path in place of @TWS_BIN@. A repo
+# checkout uses its own copy; a piped install downloads the copy on main, the
+# same source as this script. awk replaces the text literally, so a & or | in
+# the path stays as it is.
+default_conf_text() {
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    if [ -f "$script_dir/extras/tmux.conf" ]; then
+        cat "$script_dir/extras/tmux.conf"
+    else
+        curl -fsSL "$DEFAULT_CONF_URL"
+    fi | BIN="$INSTALL_DIR/$BINARY_NAME" awk '{
+        out = ""; s = $0
+        while ((i = index(s, "@TWS_BIN@"))) { out = out substr(s, 1, i - 1) ENVIRON["BIN"]; s = substr(s, i + 9) }
+        print out s
+    }'
+}
+
+# The question comes before the scan, so the plan then reads the new config.
+# The default is no, and no terminal counts as no.
+confirm_default_conf() {
+    local answer=""
+    echo ""
+    warn "Optional: the tws default tmux config"
+    echo "   This REPLACES your tmux config with the full setup of the tws author:"
+    echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, mouse, clipboard, and keys."
+    echo "   It needs git, and the theme needs a Nerd Font in your terminal."
+    echo "   Each tmux config you have now moves to <file>.tws-backup-<time> first."
+    printf '%s' "Install the tws default tmux config? [y/N] "
+    if ! read -r answer 2>/dev/null < /dev/tty; then
+        echo ""
+        return 1
+    fi
+    [[ "$answer" =~ ^[Yy] ]]
+}
+
+# Moves every tmux config aside (tmux loads each one that exists, so an old
+# XDG config would override the new file), writes ~/.tmux.conf, and clones the
+# plugins. A symlink moves as a link, so a dotfiles repo stays as it is. The
+# plugins are cloned with git and not with tpm/bin/install_plugins: that script
+# asks a tmux server for the plugin path, and a server that runs without TPM
+# gives a wrong path.
+install_default_conf() {
+    local text stamp conf backup plugin moved=()
+    command -v git &>/dev/null || { warn "git is missing — skipping the default tmux config"; return; }
+    if ! ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
+        warn "The binary path has a space or one of ' \" \\ \$ # ; — skipping the default tmux config"
+        return
+    fi
+    if ! text="$(default_conf_text)" || ! grep -q "@plugin 'tmux-plugins/tpm'" <<< "$text"; then
+        warn "Could not get the default tmux config — skipping it"
+        return
+    fi
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    while IFS= read -r conf; do
+        [ -e "$conf" ] || [ -L "$conf" ] || continue
+        backup="$conf.tws-backup-$stamp"
+        if ! mv "$conf" "$backup"; then
+            warn "Could not move $conf aside — skipping the default tmux config"
+            [ "${#moved[@]}" -eq 0 ] || warn "Already moved: ${moved[*]}"
+            return
+        fi
+        moved+=("$backup")
+    done <<< "$(tmux_conf_candidates)"
+
+    if ! printf '%s\n' "$text" > "$HOME/.tmux.conf"; then
+        warn "Could not write $HOME/.tmux.conf — your old config is in: ${moved[*]:-nothing}"
+        return
+    fi
+    ok "Installed the tws default tmux config to $HOME/.tmux.conf"
+    # The +"..." form: bash 3.2 (macOS) calls an empty array unbound under set -u.
+    for backup in ${moved[@]+"${moved[@]}"}; do ok "Backup: $backup"; done
+
+    while IFS= read -r plugin; do
+        [ -d "$TMUX_PLUGIN_DIR/${plugin#*/}" ] && continue
+        if git clone -q --depth 1 "https://github.com/$plugin" "$TMUX_PLUGIN_DIR/${plugin#*/}"; then
+            ok "Installed tmux plugin $plugin"
+        else
+            warn "Could not clone $plugin — open tmux and press prefix+I to install it"
+        fi
+    done <<< "$(sed -n "s/^set -g @plugin '\(.*\)'$/\1/p" <<< "$text")"
+
+    if [ "$tmux_live" -eq 1 ]; then
+        info "Restart tmux (tmux kill-server) to load the new config"
+    fi
+}
+
 # --- 6. glow (rich markdown rendering) ---
 
 GLOW_GO_PKG='github.com/charmbracelet/glow@latest'
@@ -1534,6 +1627,9 @@ main() {
 
     install_binary "$target"
     migrate_state
+
+    if tmux_server_runs; then tmux_live=1; fi
+    if confirm_default_conf; then install_default_conf; fi
 
     scan_plan
     print_plan

@@ -213,6 +213,20 @@ Answer `n` to install only the binary. A run with no terminal to answer from
 
 Re-run the same command any time to upgrade. A re-run replaces the tws lines in place, so it adds no copies.
 
+### Default tmux config (optional)
+
+Before the plan, the script offers the full tmux setup of the tws author:
+[`extras/tmux.conf`](extras/tmux.conf). It has TPM, tmux-sensible,
+tmux-resurrect, the tmux-nova theme with the tws segments, mouse, clipboard,
+and keys. It needs `git`, and the theme needs a [Nerd Font](https://www.nerdfonts.com/).
+
+> **Warning:** this option replaces your tmux config. The default answer is no.
+
+If you answer `y`, the script moves each tmux config you have
+(`~/.tmux.conf`, `~/.config/tmux/tmux.conf`) to `<file>.tws-backup-<time>`.
+Then it writes the new `~/.tmux.conf` and clones the plugins to `~/.tmux/plugins`.
+To go back, move the backup to its old name and restart tmux.
+
 ### Build from source
 
 Requires a [Rust toolchain](https://rustup.rs/).
