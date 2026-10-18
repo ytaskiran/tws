@@ -2090,6 +2090,246 @@ else
     failures=$((failures + 1))
 fi
 
+# The OpenCode plugin is plain JS with node: APIs only, so node runs the text
+# that install.sh writes. The driver feeds it the events that opencode sends and
+# asserts the status file, as the hook checks above do for the shell commands.
+printf '\nOpenCode status plugin\n'
+oc_plugin="$(sed -n '/<<.OPENCODE_PLUGIN_EOF.$/,/^OPENCODE_PLUGIN_EOF$/p' "$INSTALL_SH" | sed '1d;$d')"
+printf '%s\n' "$oc_plugin" > "$HOME/tws-status.mjs"
+if [ -z "$oc_plugin" ]; then
+    printf '  FAIL %s has no OpenCode plugin to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+elif ! command -v node > /dev/null 2>&1; then
+    if [ -n "${CI:-}" ]; then
+        printf '  FAIL node is missing, so the OpenCode plugin is not checked\n'
+        failures=$((failures + 1))
+    else
+        printf '  skip node is missing, so the OpenCode plugin is not checked\n'
+    fi
+else
+    cat > "$HOME/oc-driver.mjs" <<'OC_DRIVER_EOF'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+
+process.env.TMUX_PANE = "%7";
+process.env.PATH = `${process.env.FAKE_BIN}:${process.env.PATH}`;
+const HOME = process.env.HOME;
+const TWS = `${HOME}/.config/tws`;
+const STATUS = `${TWS}/agents/%7`;
+const TRIGGER = `${TWS}/agent.trigger`;
+const HEARTBEAT = `${TWS}/heartbeat/%7`;
+const MARKERS = `${TWS}/subagents/%7`;
+const TUI_ARGV = "/$bunfs/root/src/cli/tui/worker.js";
+const RUN_ARGV = "/$bunfs/root/src/index.js";
+const OLD = new Date("2000-01-01T00:00:00Z");
+
+const { TwsStatus } = await import(`${HOME}/tws-status.mjs`);
+
+let failures = 0;
+function check(cond, msg) {
+  if (cond) {
+    console.log(`  ok   ${msg}`);
+  } else {
+    console.log(`  FAIL ${msg}`);
+    failures++;
+  }
+}
+const word = () => (existsSync(STATUS) ? readFileSync(STATUS, "utf8") : "<none>");
+const mtime = (p) => statSync(p).mtimeMs;
+const tmux = (state) => {
+  process.env.FAKE_TMUX_STATE = state;
+};
+
+async function start() {
+  process.argv[1] = TUI_ARGV;
+  return TwsStatus();
+}
+
+async function scenario(fn) {
+  rmSync(TWS, { recursive: true, force: true });
+  tmux("fail");
+  const hooks = await start();
+  const ev = (type, properties) => hooks.event({ event: { type, properties } });
+  const busy = (sessionID) => ev("session.status", { sessionID, status: { type: "busy" } });
+  const idle = async (sessionID) => {
+    await ev("session.status", { sessionID, status: { type: "idle" } });
+    await ev("session.idle", { sessionID });
+  };
+  const child = (id, parentID) => ev("session.created", { info: { id, parentID } });
+  try {
+    await fn({ hooks, ev, busy, idle, child });
+  } finally {
+    await hooks.dispose?.();
+  }
+}
+
+console.log("  init");
+rmSync(TWS, { recursive: true, force: true });
+for (const dir of [`${MARKERS}`, `${TWS}/inflight/%7`, `${TWS}/permissions/%7`]) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/x`, "");
+}
+mkdirSync(`${TWS}/heartbeat`, { recursive: true });
+writeFileSync(HEARTBEAT, "");
+await (async () => {
+  const hooks = await start();
+  check(word() === "idle", "init writes idle");
+  check(existsSync(TRIGGER), "init rings the trigger");
+  check(
+    !existsSync(MARKERS) && !existsSync(HEARTBEAT) && !existsSync(`${TWS}/inflight/%7`) && !existsSync(`${TWS}/permissions/%7`),
+    "init removes the old subagent, heartbeat, in-flight and permission files",
+  );
+  await hooks.dispose();
+})();
+
+console.log("  busy, requests");
+await scenario(async ({ ev, busy }) => {
+  await busy("ses_root");
+  check(word() === "working", "a busy root session is working");
+  await ev("permission.asked", { id: "per_1", sessionID: "ses_root" });
+  check(word() === "waiting", "a permission request is waiting");
+  await ev("permission.replied", { requestID: "per_1", reply: "once" });
+  check(word() === "working", "a permission reply resumes working");
+  await ev("question.asked", { id: "que_1", sessionID: "ses_root" });
+  check(word() === "waiting", "a question is waiting");
+  await ev("question.rejected", { requestID: "que_1" });
+  check(word() === "working", "a dismissed question resumes working");
+});
+
+console.log("  subagent session");
+await scenario(async ({ ev, busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  check(existsSync(`${MARKERS}/ses_child`) && word() === "working", "a busy child session has a marker and the pane is working");
+  await ev("permission.asked", { id: "per_2", sessionID: "ses_child" });
+  check(word() === "waiting", "a permission request of the child is waiting");
+  await ev("permission.replied", { requestID: "per_2", reply: "once" });
+  check(word() === "working", "its reply resumes working");
+  await idle("ses_child");
+  check(!existsSync(`${MARKERS}/ses_child`) && word() === "working", "the child end removes the marker and the parent keeps working");
+});
+
+console.log("  turn end");
+await scenario(async ({ busy, idle }) => {
+  await busy("ses_root");
+  await idle("ses_root");
+  check(word() === "review", "a turn end with no pane state is review");
+  await busy("ses_root");
+  tmux("111");
+  await idle("ses_root");
+  check(word() === "idle", "a turn end in view is idle");
+  await busy("ses_root");
+  tmux("101");
+  await idle("ses_root");
+  check(word() === "review", "a turn end in an inactive window is review");
+});
+
+console.log("  acknowledgment");
+await scenario(async ({ busy, idle }) => {
+  await busy("ses_root");
+  await idle("ses_root");
+  check(word() === "review", "the first idle writes review");
+  writeFileSync(STATUS, "idle");
+  await idle("ses_root");
+  check(word() === "idle", "a later idle of the same turn keeps the acknowledgment");
+});
+
+console.log("  abort");
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("session.error", { sessionID: "ses_root", error: { name: "MessageAbortedError" } });
+  await idle("ses_root");
+  check(word() === "idle", "an abort ends idle and not review");
+  await idle("ses_root");
+  check(word() === "idle", "the second idle of an abort changes nothing");
+});
+await scenario(async ({ ev, busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await ev("session.error", { sessionID: "ses_root", error: { name: "MessageAbortedError" } });
+  await idle("ses_root");
+  check(word() === "idle" && !existsSync(MARKERS), "an abort with a busy child drops the child and ends idle");
+});
+
+console.log("  background subagent");
+await scenario(async ({ busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await idle("ses_root");
+  check(word() === "working", "the parent idle with a busy child keeps working");
+  await idle("ses_child");
+  check(word() === "review", "the end of the last child is review");
+});
+
+console.log("  stale request");
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("permission.asked", { id: "per_3", sessionID: "ses_root" });
+  await idle("ses_root");
+  check(word() === "review", "a request with no reply cannot outlive the turn");
+  await busy("ses_root");
+  check(word() === "working", "the next busy is working and not waiting");
+});
+
+console.log("  heartbeat");
+await scenario(async ({ hooks, busy }) => {
+  await busy("ses_root");
+  utimesSync(STATUS, OLD, OLD);
+  rmSync(HEARTBEAT, { force: true });
+  await hooks["tool.execute.before"]();
+  check(existsSync(HEARTBEAT) && mtime(STATUS) === OLD.getTime(), "a tool call while busy touches the heartbeat and not the status file");
+});
+
+console.log("  gate");
+await (async () => {
+  rmSync(TWS, { recursive: true, force: true });
+  const pane = process.env.TMUX_PANE;
+  delete process.env.TMUX_PANE;
+  process.argv[1] = TUI_ARGV;
+  let hooks = await TwsStatus();
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "no TMUX_PANE gives no hooks and writes nothing");
+  process.env.TMUX_PANE = pane;
+  process.argv[1] = RUN_ARGV;
+  process.argv[2] = "run";
+  hooks = await TwsStatus();
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing");
+  process.argv.length = 2;
+})();
+
+console.log("  two instances");
+await (async () => {
+  rmSync(TWS, { recursive: true, force: true });
+  const a = await start();
+  const b = await start();
+  await a.event({ event: { type: "session.status", properties: { sessionID: "ses_root", status: { type: "busy" } } } });
+  await a.dispose();
+  check(word() === "working", "the first dispose leaves the status file");
+  utimesSync(TRIGGER, OLD, OLD);
+  await b.dispose();
+  check(word() === "<none>" && mtime(TRIGGER) > OLD.getTime(), "the last dispose removes the status file and rings the trigger");
+  check(!existsSync(HEARTBEAT), "the last dispose removes the heartbeat");
+})();
+
+process.exit(failures);
+OC_DRIVER_EOF
+    set +e
+    FAKE_BIN="$FAKE_BIN" node "$HOME/oc-driver.mjs"
+    oc_failures=$?
+    set -e
+    failures=$((failures + oc_failures))
+fi
+
+if printf '%s' "$oc_plugin" | grep -Fq 'writeFileSync(path' \
+    || ! printf '%s' "$oc_plugin" | grep -Fq 'renameSync(tmp, path)' \
+    || [ "$(printf '%s' "$oc_plugin" | grep -Fc 'writeFileSync(tmp')" != 1 ]; then
+    printf '  FAIL OpenCode writes a status word through a rename only\n'
+    failures=$((failures + 1))
+else
+    printf '  ok   OpenCode writes a status word through a rename only\n'
+fi
+
 printf '\n'
 if [ "$failures" -eq 0 ]; then
     printf 'all checks passed\n'
