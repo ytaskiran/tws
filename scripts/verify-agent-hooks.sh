@@ -13,8 +13,11 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
+# A harness that runs under Devin must not look like a Devin hook to the Claude
+# commands.
+unset DEVIN_PROJECT_DIR
 export HOME
 HOME="$(mktemp -d)"
 export TMUX_PANE="%7"
@@ -98,14 +101,16 @@ count_lines() {
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
 # inherit. The fake tmux is on the PATH either way, so the real server is never
 # asked. Set FAKE_TMUX_STATE to choose what the fake tmux says about the pane.
+# A here-string, not a pipe: a hook that exits before it reads stdin would kill
+# the writer with SIGPIPE, and pipefail would end the whole run.
 run_command() {
     local json="$1" command="$2" broken=""
     [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
     local state="FAKE_TMUX_STATE=${FAKE_TMUX_STATE:-fail}"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     else
-        printf '%s' "$json" | env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     fi
 }
 
@@ -2087,6 +2092,252 @@ if [ "$(mtime "$STATUS_FILE")" = "$old" ]; then
     printf '  ok   and it keeps the turn start\n'
 else
     printf '  FAIL the question-answered entry moved the mtime\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe Devin CLI hooks\n'
+# Runs the real configure_devin_hooks twice against a Devin config that has
+# comments, a trailing comma, other keys, a user hook and an old tws entry.
+if declare -F configure_devin_hooks >/dev/null; then
+    devin_home="$HOME/devin-wiring"
+    rm -rf "$devin_home"; mkdir -p "$devin_home/.config/devin"
+    dcfg="$devin_home/.config/devin/config.json"
+    cat > "$dcfg" <<'DEVIN_CFG_EOF'
+// Devin CLI user config
+{
+  "version": 1, // schema version
+  "devin.org_id": "org-1", /* a block
+  comment */
+  "agent.model": "opus",
+  "docs": "https://example.com/a//b /* not a comment */",
+  "theme_mode": "dark",
+  "hooks": {
+    "Stop": [ { "matcher": "", "hooks": [ { "type": "command", "command": "echo mine" } ] } ],
+    "PostCompaction": [ { "matcher": "", "hooks": [ { "type": "command", "command": "echo old >> $HOME/.config/tws/x" } ] } ],
+  },
+}
+DEVIN_CFG_EOF
+    cp "$dcfg" "$devin_home/original"
+    dwire() ( HOME="$1"; info() { :; }; ok() { :; }; warn() { :; }; hooks_configured=0; configure_devin_hooks )
+    dwire "$devin_home"; dwire "$devin_home"
+    # check_jq NAME FILTER: FILTER must be true for the Devin config.
+    check_jq() {
+        if jq -e "$2" "$dcfg" >/dev/null 2>&1; then
+            printf '  ok   %s\n' "$1"
+        else
+            printf '  FAIL %s\n' "$1"
+            failures=$((failures + 1))
+        fi
+    }
+    check_jq "the config is a JSON object after two runs" 'type == "object"'
+    check_jq "and keeps every other key" \
+        '.version == 1 and ."devin.org_id" == "org-1" and ."agent.model" == "opus" and .theme_mode == "dark"'
+    check_jq "and keeps // and /* inside a string" '.docs == "https://example.com/a//b /* not a comment */"'
+    check_jq "and keeps the user's own Stop hook once" '[.hooks.Stop[] | select(.hooks[0].command == "echo mine")] | length == 1'
+    check_jq "and drops the old tws PostCompaction entry" '.hooks | has("PostCompaction") | not'
+    dtws='select(.hooks[0].command | test("config/tws/"))'
+    check_jq "tws wires only events that Devin has" \
+        "[.hooks | to_entries[] | select([.value[] | $dtws] | length > 0) | .key] | sort == [\"PermissionRequest\",\"PostToolUse\",\"PreToolUse\",\"SessionEnd\",\"SessionStart\",\"Stop\",\"UserPromptSubmit\"]"
+    check_jq "and one tws entry per event, two for PreToolUse and PostToolUse" \
+        "[.hooks | to_entries[] | {(.key): ([.value[] | $dtws] | length)}] | add | del(.Stop) == {\"PermissionRequest\":1,\"PostToolUse\":2,\"PreToolUse\":2,\"SessionEnd\":1,\"SessionStart\":1,\"UserPromptSubmit\":1}"
+    check_jq "and one tws Stop entry" "[.hooks.Stop[] | $dtws] | length == 1"
+    check_jq "no tws matcher uses lookahead" "[.hooks[][] | $dtws | .matcher | select(test(\"\\\\(\\\\?\"))] | length == 0"
+    check_jq "non-tool events use the empty matcher" \
+        "[.hooks | (.UserPromptSubmit, .Stop, .SessionStart, .SessionEnd)[] | $dtws | .matcher] | all(. == \"\")"
+    check_jq "no tws Devin command reads agent_id or carries the Devin guard" \
+        "[.hooks[][] | $dtws | .hooks[0].command | select(test(\"agent_id|DEVIN_PROJECT_DIR\"))] | length == 0"
+    if cmp -s "$devin_home/original" "$dcfg.tws-bak"; then
+        printf '  ok   the first run keeps the commented file as config.json.tws-bak\n'
+    else
+        printf '  FAIL the first run keeps the commented file as config.json.tws-bak\n'
+        failures=$((failures + 1))
+    fi
+    # Removal: the tws strip filter gives back the user's own config.
+    strip_tws='def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
+        .hooks |= (with_entries(.value |= map(select(is_tws | not))) | with_entries(select((.value | length) > 0)))'
+    if [ "$(jq -S "$strip_tws" "$dcfg")" = "$(strip_jsonc < "$devin_home/original" | jq -S "$strip_tws")" ]; then
+        printf '  ok   removing the tws entries gives back the user config\n'
+    else
+        printf '  FAIL removing the tws entries gives back the user config\n'
+        failures=$((failures + 1))
+    fi
+    # No config file and no directory yet.
+    new_home="$HOME/devin-new"; rm -rf "$new_home"; mkdir -p "$new_home"
+    dwire "$new_home"
+    if jq -e '(.hooks.Stop | length) == 1 and (keys == ["hooks"])' "$new_home/.config/devin/config.json" >/dev/null 2>&1 \
+        && [ ! -e "$new_home/.config/devin/config.json.tws-bak" ]; then
+        printf '  ok   a missing config file is made with only the hooks key, and no backup\n'
+    else
+        printf '  FAIL a missing config file is made with only the hooks key, and no backup\n'
+        failures=$((failures + 1))
+    fi
+    # A blank or comment-only file holds no JSON value.
+    for body in '   \n' '// my Devin settings\n'; do
+        blank_home="$HOME/devin-blank"; rm -rf "$blank_home"; mkdir -p "$blank_home/.config/devin"
+        printf "$body" > "$blank_home/.config/devin/config.json"
+        dwire "$blank_home"
+        if jq -e '(.hooks.Stop | length) == 1' "$blank_home/.config/devin/config.json" >/dev/null 2>&1; then
+            printf '  ok   a config of [%s] gets the hooks\n' "$body"
+        else
+            printf '  FAIL a config of [%s] gets the hooks\n' "$body"
+            failures=$((failures + 1))
+        fi
+    done
+    # A symlinked config stays a link.
+    link_home="$HOME/devin-link"; rm -rf "$link_home"; mkdir -p "$link_home/.config/devin"
+    printf '{"theme_mode":"light"}' > "$link_home/real.json"
+    ln -s "$link_home/real.json" "$link_home/.config/devin/config.json"
+    dwire "$link_home"
+    if [ -L "$link_home/.config/devin/config.json" ] && jq -e '.theme_mode == "light" and (.hooks.Stop | length) == 1' "$link_home/real.json" >/dev/null; then
+        printf '  ok   a symlinked config stays a link and gets the hooks\n'
+    else
+        printf '  FAIL a symlinked config stays a link and gets the hooks\n'
+        failures=$((failures + 1))
+    fi
+    # A read-only config (a Nix store link) gets a warning, not a stop.
+    ro_home="$HOME/devin-ro"; rm -rf "$ro_home"; mkdir -p "$ro_home/.config/devin"
+    printf '{"a":1}' > "$ro_home/.config/devin/config.json"; chmod 444 "$ro_home/.config/devin/config.json"
+    if ( set -e; dwire "$ro_home" ) >/dev/null 2>&1 && [ "$(cat "$ro_home/.config/devin/config.json")" = '{"a":1}' ]; then
+        printf '  ok   a read-only config stays unchanged and the installer goes on\n'
+    else
+        printf '  FAIL a read-only config stays unchanged and the installer goes on\n'
+        failures=$((failures + 1))
+    fi
+    chmod 644 "$ro_home/.config/devin/config.json"
+    if ( HOME="$devin_home"; printf '{"a":1} // x' > "$HOME/c.json"; jsonc_object_or_empty "$HOME/c.json" && jsonc_has_extras "$HOME/c.json" ) \
+        && ( printf '[1,]' > "$devin_home/d.json"; ! jsonc_object_or_empty "$devin_home/d.json" ) \
+        && ( printf '{}{}' > "$devin_home/f.json"; ! jsonc_object_or_empty "$devin_home/f.json" ) \
+        && ( printf '// only a comment\n' > "$devin_home/g.json"; jsonc_object_or_empty "$devin_home/g.json" ) \
+        && ( printf '{"a":1}' > "$devin_home/e.json"; ! jsonc_has_extras "$devin_home/e.json" ); then
+        printf '  ok   the plan checks read comments, reject a non-object, and see plain JSON\n'
+    else
+        printf '  FAIL the plan checks for the Devin config\n'
+        failures=$((failures + 1))
+    fi
+
+    # fire_devin EVENT JSON: runs every tws entry of EVENT whose matcher takes the
+    # tool name, in order, as Devin does. Fails a check on any stdout or on more
+    # than one jq call in one command.
+    fire_devin() {
+        local event="$1" json="$2" tool cmd out before
+        tool="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
+        while IFS= read -r cmd; do
+            [ -n "$cmd" ] || continue
+            before="$(count_lines "$JQ_CALLS")"
+            out="$(DEVIN_PROJECT_DIR=/proj run_command "$json" "$cmd")"
+            if [ -n "$out" ]; then
+                printf '  FAIL a Devin %s hook printed [%s]\n' "$event" "$out"
+                failures=$((failures + 1))
+            fi
+            if [ $(( $(count_lines "$JQ_CALLS") - before )) -gt 1 ]; then
+                printf '  FAIL a Devin %s hook ran jq more than once\n' "$event"
+                failures=$((failures + 1))
+            fi
+        done < <(jq -r --arg t "$tool" ".hooks.$event[] | $dtws | select(.matcher as \$m | \$t | test(\$m)) | .hooks[0].command | @json" "$dcfg" | jq -r .)
+    }
+    d_start() { fire_devin SessionStart '{"hook_event_name":"SessionStart","session_id":"s1","source":"startup"}'; }
+    d_prompt() { fire_devin UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt_id":"p1","prompt":"hi"}'; }
+    D_EXEC='{"hook_event_name":"PreToolUse","session_id":"s1","prompt_id":"p1","tool_name":"exec","tool_input":{"command":"ls"}}'
+    D_EXEC_REQ='{"hook_event_name":"PermissionRequest","session_id":"s1","prompt_id":"p1","tool_name":"exec","tool_input":{"command":"ls"}}'
+    D_EXEC_DONE='{"hook_event_name":"PostToolUse","session_id":"s1","prompt_id":"p1","tool_name":"exec","tool_input":{"command":"ls"},"tool_response":{"success":true,"output":"a","error":null}}'
+    D_ASK='{"hook_event_name":"PreToolUse","session_id":"s1","prompt_id":"p1","tool_name":"ask_user_question","tool_input":{"question":"which?"}}'
+    D_ASK_REQ='{"hook_event_name":"PermissionRequest","session_id":"s1","prompt_id":"p1","tool_name":"ask_user_question","tool_input":{"question":"which?"}}'
+    D_ASK_DONE='{"hook_event_name":"PostToolUse","session_id":"s1","prompt_id":"p1","tool_name":"ask_user_question","tool_input":{"question":"which?"},"tool_response":{"success":true,"output":"a","error":null}}'
+    d_stop() { fire_devin Stop '{"hook_event_name":"Stop","session_id":"s1","prompt_id":"p1","stop_hook_active":false}'; }
+    d_end() { fire_devin SessionEnd '{"hook_event_name":"SessionEnd","session_id":"s1","reason":"exit"}'; }
+
+    reset
+    d_start;                                 expect idle "Devin: a new session starts idle"
+    d_prompt;                                expect working "Devin: a prompt starts the turn"
+    fire_devin PreToolUse "$D_EXEC";         expect working "Devin: a tool call keeps it working"
+    expect_heartbeat present "Devin: and touches the heartbeat"
+    fire_devin PostToolUse "$D_EXEC_DONE";   expect working "Devin: a finished tool with no request changes nothing"
+    fire_devin PreToolUse "$D_ASK";          expect waiting "Devin: a question raises waiting"
+    fire_devin PermissionRequest "$D_ASK_REQ"
+    expect_keys 0 "Devin: a question request writes no key"
+    fire_devin PostToolUse "$D_ASK_DONE";    expect working "Devin: the answer resumes the turn"
+    fire_devin PermissionRequest "$D_EXEC_REQ"; expect waiting "Devin: a permission request raises waiting"
+    expect_keys 1 "Devin: and records its key"
+    fire_devin PostToolUse "$D_EXEC_DONE";   expect working "Devin: the grant resumes the turn"
+    expect_keys 0 "Devin: and removes its key"
+    d_stop;                                  expect review "Devin: Stop hands the pane back"
+    fire_devin PreToolUse "$D_EXEC";         expect review "Devin: a later tool call does not repaint review"
+    d_start;                                 expect idle "Devin: SessionStart turns review to idle"
+    d_prompt; FAKE_TMUX_STATE=111 d_stop;    expect idle "Devin: Stop in the pane in view writes idle"
+    # Esc at a permission prompt fires no PostToolUse, and maybe no Stop.
+    d_prompt; fire_devin PermissionRequest "$D_EXEC_REQ"
+    d_prompt;                                expect working "Devin: after Esc, the next prompt ends the wait"
+    expect_keys 0 "Devin: and clears the open request"
+    fire_devin SessionStart '{"hook_event_name":"SessionStart","session_id":"s1","source":"other"}'
+    expect working "Devin: a SessionStart of another source keeps a live turn"
+    d_start;                                 expect idle "Devin: a new session clears a stale working"
+    d_prompt; fire_devin PermissionRequest "$D_EXEC_REQ"
+    d_start;                                 expect idle "Devin: a new session clears a stale wait"
+    expect_keys 0 "Devin: and its permission keys"
+    d_end
+    expect_panes "" "Devin: SessionEnd removes the status file"
+    expect_heartbeat absent "Devin: and the heartbeat"
+    expect_keys 0 "Devin: and the permission keys"
+    reset
+    while IFS= read -r cmd; do
+        PANE_LESS=1 run_command "$D_EXEC_REQ" "$cmd" >/dev/null
+    done < <(jq -r ".hooks[][] | $dtws | .hooks[0].command | @json" "$dcfg" | jq -r .)
+    expect_panes "" "Devin: a hook with no TMUX_PANE writes nothing"
+    bad=0
+    while IFS= read -r cmd; do
+        if printf '%s' "$cmd" | has_direct_write || [ -n "$(printf '%s\n' "$cmd" | unscoped_queries)" ]; then
+            bad=1
+        fi
+    done < <(jq -r ".hooks[][] | $dtws | .hooks[0].command | @json" "$dcfg" | jq -r .)
+    if [ "$bad" = 0 ]; then
+        printf '  ok   Devin commands only rename status files and never guess their pane\n'
+    else
+        printf '  FAIL a Devin command writes "$f" directly or asks tmux for its pane\n'
+        failures=$((failures + 1))
+    fi
+
+    printf '\nthe Claude hooks stay quiet under Devin\n'
+    claude_settings="$wire_home/.claude/settings.json"
+    devin_ps="$HOME/devin-ps"; mkdir -p "$devin_ps"
+    printf '#!/bin/sh\necho "${FAKE_PARENT:-/Users/me/.local/bin/devin}"\n' > "$devin_ps/ps"
+    chmod +x "$devin_ps/ps"
+    claude_cmds() { jq -r ".hooks[][] | $dtws | .hooks[0].command | @json" "$claude_settings" | jq -r .; }
+    quiet=1
+    for how in env path linux; do
+        reset; rm -f "$TRIGGER"
+        while IFS= read -r cmd; do
+            case "$how" in
+                env) out="$(DEVIN_PROJECT_DIR=/proj run_command "$D_EXEC_REQ" "$cmd")" ;;
+                # A guard exits before it reads stdin, so a pipe here could die of SIGPIPE.
+                path) out="$(env "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd" <<< "$D_EXEC_REQ")" ;;
+                linux) out="$(env FAKE_PARENT=devin "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd" <<< "$D_EXEC_REQ")" ;;
+            esac
+            [ -z "$out" ] || quiet=0
+        done < <(claude_cmds)
+        if [ -n "$(panes_written)" ] || [ -e "$TRIGGER" ] || [ -d "$HOME/.config/tws/sessions" ]; then quiet=0; fi
+    done
+    if [ "$quiet" = 1 ] && [ -n "$(claude_cmds)" ]; then
+        printf '  ok   every tws Claude command exits at once under Devin (DEVIN_PROJECT_DIR, or a devin parent)\n'
+    else
+        printf '  FAIL a tws Claude command wrote state or output under Devin\n'
+        failures=$((failures + 1))
+    fi
+    reset
+    while IFS= read -r cmd; do
+        run_command '{"hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$cmd" >/dev/null
+    done < <(jq -r ".hooks.UserPromptSubmit[] | $dtws | .hooks[0].command | @json" "$claude_settings" | jq -r .)
+    expect working "the same Claude prompt hook still works outside Devin"
+    # A Claude Code started from a Devin shell inherits DEVIN_PROJECT_DIR.
+    for parent in /Users/me/.local/share/claude/versions/2.1.3 claude /opt/homebrew/bin/node; do
+        reset
+        while IFS= read -r cmd; do
+            env DEVIN_PROJECT_DIR=/proj FAKE_PARENT="$parent" FAKE_TMUX_STATE=fail "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" \
+                sh -c "$cmd" <<< '{"hook_event_name":"UserPromptSubmit","prompt":"hi"}' >/dev/null
+        done < <(jq -r ".hooks.UserPromptSubmit[] | $dtws | .hooks[0].command | @json" "$claude_settings" | jq -r .)
+        expect working "a Claude prompt hook under $parent still works with an inherited DEVIN_PROJECT_DIR"
+    done
+else
+    printf '  FAIL %s has no configure_devin_hooks to check\n' "$INSTALL_SH"
     failures=$((failures + 1))
 fi
 

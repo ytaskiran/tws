@@ -12,7 +12,7 @@ struct PaneInfo {
     pane_title: String,
 }
 
-/// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi).
+/// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin).
 /// Only scans panes belonging to the given tws-managed session names.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
     if tws_sessions.is_empty() {
@@ -153,10 +153,26 @@ fn identify_agent(command: &str) -> Option<AgentType> {
         "claude" => Some(AgentType::ClaudeCode),
         "codex" => Some(AgentType::Codex),
         "pi" | "pi-coding-agent" => Some(AgentType::Pi),
+        // Devin Desktop runs as `Devin` and `Devin Helper`, so the
+        // case-sensitive match leaves it out.
+        "devin" => devin_session(tokens),
         // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
         // Nix-installed Pi runs as: deno run ... /nix/store/.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
         "node" | "deno" => identify_agent_script(tokens),
         _ => None,
+    }
+}
+
+/// `devin <subcommand>` runs a one-shot command or the ACP server of an editor,
+/// and `devin <path>` opens Devin Desktop (a prompt needs `--`). Only a bare
+/// `devin`, a flag, or `devin cloud` starts an agent session in the pane.
+/// `--help` and `--version` only print.
+fn devin_session<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
+    match tokens.next() {
+        None | Some("cloud") => Some(AgentType::Devin),
+        Some("-h" | "--help" | "-V" | "--version") => None,
+        Some(arg) if arg.starts_with('-') => Some(AgentType::Devin),
+        Some(_) => None,
     }
 }
 
@@ -219,7 +235,7 @@ fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
             let s = s.strip_prefix('\u{2733}').unwrap_or(s).trim_start();
             s.to_string()
         }
-        AgentType::Codex | AgentType::Pi => trimmed.to_string(),
+        AgentType::Codex | AgentType::Pi | AgentType::Devin => trimmed.to_string(),
     }
 }
 
@@ -458,6 +474,58 @@ mod tests {
     }
 
     #[test]
+    fn identify_agent_devin_cli() {
+        assert_eq!(identify_agent("devin"), Some(AgentType::Devin));
+        assert_eq!(
+            identify_agent("/Users/me/.local/bin/devin"),
+            Some(AgentType::Devin)
+        );
+        assert_eq!(
+            identify_agent("/Users/me/.local/share/devin/cli/_versions/3000.11.92/bin/devin"),
+            Some(AgentType::Devin)
+        );
+        assert_eq!(
+            identify_agent("devin -- fix the tests"),
+            Some(AgentType::Devin)
+        );
+        assert_eq!(identify_agent("devin --continue"), Some(AgentType::Devin));
+        assert_eq!(identify_agent("devin cloud"), Some(AgentType::Devin));
+    }
+
+    #[test]
+    fn identify_agent_devin_skips_non_sessions() {
+        assert_eq!(identify_agent("devin acp"), None);
+        assert_eq!(identify_agent("/Users/me/.local/bin/devin acp"), None);
+        assert_eq!(identify_agent("devin update"), None);
+        assert_eq!(identify_agent("devin ."), None);
+        assert_eq!(identify_agent("devin fix the tests"), None);
+        assert_eq!(identify_agent("devin --version"), None);
+        assert_eq!(identify_agent("devin -h"), None);
+        assert_eq!(
+            identify_agent("/Applications/Devin.app/Contents/MacOS/Devin"),
+            None
+        );
+        assert_eq!(
+            identify_agent(
+                "/Applications/Devin.app/Contents/Frameworks/Devin Helper (Renderer).app/Contents/MacOS/Devin Helper (Renderer) --type=renderer"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn find_agent_devin_under_shell_not_editor_acp() {
+        let t = table(&[
+            (100, 1, "-zsh"),
+            (200, 100, "/Users/me/.local/bin/devin"),
+            (300, 1, "nvim"),
+            (400, 300, "/Users/me/.local/bin/devin acp"),
+        ]);
+        assert_eq!(find_agent(&t, 100), Some(AgentType::Devin));
+        assert_eq!(find_agent(&t, 300), None);
+    }
+
+    #[test]
     fn identify_agent_native_installer_path() {
         assert_eq!(
             identify_agent("/Users/me/.local/share/claude/versions/2.1.284"),
@@ -647,6 +715,10 @@ mod tests {
             "codex-task"
         );
         assert_eq!(clean_pane_title("pi-task", AgentType::Pi), "pi-task");
+        assert_eq!(
+            clean_pane_title("devin-task", AgentType::Devin),
+            "devin-task"
+        );
     }
 
     #[test]

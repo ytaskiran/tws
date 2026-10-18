@@ -237,6 +237,7 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
+    local skip="${4:-}"     # permit: a tool name to leave alone
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -266,6 +267,10 @@ status_hook_entry() {
     # every Linux. The size joins the checksum to make a collision less likely.
     local keyof='k=; j=$(jq -cS "{tool_name, tool_input}" 2>/dev/null); '
     keyof+='[ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
+    # jq -cS sorts the keys, so tool_name is the last key of $j. Devin has no
+    # lookahead in its matchers, so the hook itself skips the question tool.
+    local skipq=
+    [ -z "$skip" ] || skipq="case \"\$j\" in *'\"tool_name\":\"$skip\"}') exit 0 ;; esac; "
     local fresh="[ -n \"\$(find \"\$sd\" -type f -mmin -$SUBAGENT_FRESH_MINS 2>/dev/null | head -n 1)\" ]"
     # Only the -t "$TMUX_PANE" form is allowed: it asks about the caller's own pane.
     local seen='v=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_active}#{window_active}#{session_attached}" 2>/dev/null); '
@@ -306,7 +311,7 @@ status_hook_entry() {
             cmd+="put $word; [ \"\$cur\" = $word ] || { $trig; }; :"
             ;;
         permit)
-            cmd+="$keyof"
+            cmd+="$keyof$skipq"
             cmd+='if [ -n "${k:-}" ] && mkdir -p "$pd"; then : > "$pd/$k"; fi; '
             cmd+="if [ \"\$cur\" = working ] || [ -z \"\$cur\" ]; then put $word; $trig; fi; :"
             ;;
@@ -407,6 +412,23 @@ fork_pointer_end_entry() {
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
+# Devin CLI also runs the hooks in ~/.claude/settings.json (read_config_from.claude
+# is on by default), and its own tws hooks already drive a Devin pane. So every
+# tws Claude command exits at once under Devin. Devin sets DEVIN_PROJECT_DIR for
+# its hooks, and Claude Code never does. Devin may give a Claude hook only
+# CLAUDE_PROJECT_DIR, so the parent process name is the first check. A Claude Code
+# that inherits DEVIN_PROJECT_DIR (started from a Devin shell) runs its hooks from
+# claude or node, so they still run. The guard comes after the TMUX_PANE check,
+# so a pane-less hook starts no ps.
+claude_only() {
+    local pane='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    local guard='case $(ps -o comm= -p "$PPID" 2>/dev/null) in devin|*/devin) exit 0 ;; esac; '
+    guard+='[ -z "${DEVIN_PROJECT_DIR:-}" ] || case $(ps -o args= -p "$PPID" 2>/dev/null | awk "{print \$1}") in '
+    guard+='claude|*/claude|*/claude/versions/*|node|*/node) ;; *) exit 0 ;; esac; '
+    printf '%s' "$1" | jq -c --arg p "$pane" --arg g "$guard" \
+        'map(.hooks |= map(.command = $p + $g + (.command | ltrimstr($p))))'
+}
+
 configure_claude_hooks() {
     local settings="$HOME/.claude/settings.json"
 
@@ -469,6 +491,11 @@ configure_claude_hooks() {
     local e_forkptr e_forkptr_end
     e_forkptr=$(fork_pointer_entry)
     e_forkptr_end=$(fork_pointer_end_entry)
+    local e
+    for e in e_prompt e_pretool e_question e_posttool e_notify e_permit e_granted e_granted_fail \
+        e_idle e_stop e_compact e_fail e_substart e_substop e_end e_sessionstart e_forkptr e_forkptr_end; do
+        printf -v "$e" '%s' "$(claude_only "${!e}")"
+    done
 
     # An `&&` list does not trip `set -e`, so a jq failure (a settings.json it
     # cannot parse) must be caught here, or the installer reports success and
@@ -684,6 +711,134 @@ configure_codex_hooks() {
     fi
 }
 
+# A function and not a variable, so a test that changes HOME gets its own path.
+devin_config() { printf '%s\n' "$HOME/.config/devin/config.json"; }
+
+# Devin reads its config as JSON with comments, and jq reads no comments. This
+# removes // and /* */ comments and trailing commas outside of strings. LC_ALL=C
+# reads bytes, so any awk keeps UTF-8 text as it is.
+strip_jsonc() {
+    LC_ALL=C awk '
+    { s = s $0 "\n" }
+    END {
+        n = length(s); i = 1; q = 0; comma = 0
+        while (i <= n) {
+            c = substr(s, i, 1)
+            if (q) {
+                printf "%s", c
+                if (c == "\\") { i++; printf "%s", substr(s, i, 1) } else if (c == "\"") q = 0
+                i++; continue
+            }
+            d = substr(s, i + 1, 1)
+            if (c == "/" && d == "/") { while (i <= n && substr(s, i, 1) != "\n") i++; continue }
+            if (c == "/" && d == "*") { i += 2; while (i <= n && substr(s, i, 2) != "*/") i++; i += 2; continue }
+            if (c == " " || c == "\t" || c == "\n" || c == "\r") { printf "%s", c; i++; continue }
+            if (comma && c != "}" && c != "]") printf ","
+            comma = 0
+            if (c == ",") comma = 1
+            else { printf "%s", c; if (c == "\"") q = 1 }
+            i++
+        }
+        if (comma) printf ","
+    }'
+}
+
+# Succeeds for a missing, blank or comment-only file, or for one JSON object
+# after strip_jsonc.
+jsonc_object_or_empty() {
+    [ ! -s "$1" ] || strip_jsonc < "$1" | jq -se 'length <= 1 and all(.[]; type == "object")' >/dev/null 2>&1
+}
+
+# Succeeds when the file has text that plain JSON does not allow (comments or
+# trailing commas). The write then loses it, so the plan says so.
+jsonc_has_extras() {
+    [ -s "$1" ] && ! jq empty "$1" >/dev/null 2>&1
+}
+
+# Devin CLI keeps user hooks under the "hooks" key of its user config. The merge
+# keeps every other key and every hook that is not a tws hook. Devin has no
+# Notification, PostToolUseFailure, StopFailure or Subagent* event, its matchers
+# have no lookahead, and its payloads have no agent_id and no tool_use_id.
+configure_devin_hooks() {
+    local cfg
+    cfg="$(devin_config)"
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — cannot auto-configure Devin CLI hooks"
+        info "Install jq, then re-run install, or add hooks manually"
+        return
+    fi
+
+    local src tmp
+    src="$(mktemp)"
+    tmp="$(mktemp)"
+    if [ -s "$cfg" ]; then strip_jsonc < "$cfg" > "$src"; fi
+    # A blank or comment-only file holds no JSON value, so it starts as {}.
+    grep -q '[^[:space:]]' "$src" || echo '{}' > "$src"
+
+    local e_prompt e_pretool e_question e_answer e_permit e_granted e_stop e_sessionstart e_end
+    e_prompt=$(status_hook_entry working "" prompt)
+    # There is no tool_use_id, so no in-flight marker. `live` never resumes a
+    # resting state, so a background subagent cannot repaint a `review`.
+    # ponytail: one tool call over 15 min shows idle until the next hook.
+    e_pretool=$(status_hook_entry working "" live)
+    # ask_user_question is the tool name in the Devin binary, but the docs do not
+    # list it. If the name is wrong, a question shows `working`, and nothing sticks.
+    e_question=$(status_hook_entry waiting "^ask_user_question$")
+    e_answer=$(status_hook_entry working "^ask_user_question$")
+    # The match-all permit entry skips the question in the hook, because Devin
+    # matchers have no lookahead. A question then has no key, so granted ignores it.
+    e_permit=$(status_hook_entry waiting "" permit ask_user_question)
+    e_granted=$(status_hook_entry working "" granted)
+    e_stop=$(status_hook_entry review "" stop)
+    # The binary sends source startup or resume, but the docs list no sources. A
+    # new session clears the stale state of the last agent in the pane. Any other
+    # source takes `rest`, so it cannot end a live turn.
+    local e_reset e_rest
+    e_reset=$(status_hook_entry idle "" reset)
+    e_rest=$(status_hook_entry idle "" rest)
+    e_sessionstart=$(jq -cn --argjson a "$e_reset" --argjson b "$e_rest" --arg m "$SESSION_START_MATCHER" '
+        $a | .[0].hooks[0].command = "s=$(jq -r \".source // empty\" 2>/dev/null); case \"$s\" in \($m)) "
+            + .[0].hooks[0].command + " ;; *) " + $b[0].hooks[0].command + " ;; esac"')
+    e_end=$(session_end_hook_entry)
+    # No PostCompaction entry: a manual compaction writes no state, so it needs
+    # no exit, and a `review` from an auto compaction would show in a live turn.
+
+    # See configure_claude_hooks: a jq failure must not count as success.
+    if jq \
+        --argjson prompt "$e_prompt" --argjson pretool "$e_pretool" \
+        --argjson question "$e_question" --argjson answer "$e_answer" \
+        --argjson permit "$e_permit" --argjson granted "$e_granted" \
+        --argjson stop "$e_stop" --argjson sessionstart "$e_sessionstart" \
+        --argjson sessionend "$e_end" '
+        def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
+        .hooks //= {} |
+        .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
+        .hooks.UserPromptSubmit  = ((.hooks.UserPromptSubmit // []) + $prompt) |
+        .hooks.PreToolUse        = ((.hooks.PreToolUse // []) + $pretool + $question) |
+        .hooks.PostToolUse       = ((.hooks.PostToolUse // []) + $answer + $granted) |
+        .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + $permit) |
+        .hooks.Stop              = ((.hooks.Stop // []) + $stop) |
+        .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart) |
+        .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend) |
+        .hooks |= with_entries(select((.value | length) > 0))
+    ' "$src" > "$tmp" && jq -se 'length == 1' "$tmp" >/dev/null 2>&1; then
+        # Write through the path, so a symlinked config stays a link. A read-only
+        # file (a Nix store link) gets a warning, and the installer goes on.
+        if mkdir -p "$(dirname "$cfg")" 2>/dev/null &&
+            { ! jsonc_has_extras "$cfg" || cp "$cfg" "$cfg.tws-bak" 2>/dev/null; } &&
+            { cat "$tmp" > "$cfg"; } 2>/dev/null; then
+            ok "Configured Devin CLI agent status hooks"
+            hooks_configured=1
+        else
+            warn "Could not write $cfg (a read-only or managed file?). Devin CLI hooks are not changed."
+        fi
+    else
+        warn "Could not update $cfg (jq failed — is it valid JSON?). Devin CLI hooks are not changed."
+    fi
+    rm -f "$src" "$tmp"
+}
+
 configure_pi_hooks() {
     local ext_dir="$HOME/.pi/agent/extensions"
     local ext_file="$ext_dir/tws-status.ts"
@@ -837,6 +992,7 @@ configure_agent_hooks() {
     if [ "$plan_claude" -eq 1 ]; then configure_claude_hooks; fi
     if [ "$plan_codex" -eq 1 ]; then configure_codex_hooks; fi
     if [ "$plan_pi" -eq 1 ]; then configure_pi_hooks; fi
+    if [ "$plan_devin" -eq 1 ]; then configure_devin_hooks; fi
 
     # Agents snapshot hook config at session start, so a file already stuck at
     # `working` would outlive this upgrade. Live panes rewrite theirs on the next
@@ -1553,7 +1709,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -1627,6 +1783,19 @@ scan_plan() {
         plan_found+=("Pi")
         plan_pi=1
     fi
+    # Devin Desktop is a different app; these paths belong to the CLI.
+    if [ -d "$HOME/.config/devin" ] || [ -d "$HOME/.local/share/devin/cli" ] || command -v devin &>/dev/null; then
+        plan_found+=("Devin CLI")
+        if [ "$have_jq" -eq 0 ]; then
+            plan_notes+=("Devin CLI hooks need jq — install jq, then run install again")
+        elif ! jsonc_object_or_empty "$(devin_config)"; then
+            plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not a JSON object; fix it, then run install again")
+        elif [ -e "$(devin_config)" ] && [ ! -w "$(devin_config)" ]; then
+            plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not writable (a read-only or managed file)")
+        else
+            plan_devin=1
+        fi
+    fi
 
     plan_conf="$(tmux_conf_path)"
     if [ -n "$plan_conf" ]; then
@@ -1638,7 +1807,7 @@ scan_plan() {
     # A note that starts with a tab is a detail line under the note before it.
     local broken_link tmux_blocked=0
     broken_link="$(tmux_conf_broken_link)"
-    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ]; then
+    if [ $((plan_claude + plan_codex + plan_pi + plan_devin)) -gt 0 ]; then
         if [ -n "$broken_link" ]; then
             plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
             tmux_blocked=1
@@ -1647,7 +1816,7 @@ scan_plan() {
             tmux_blocked=1
         fi
     fi
-    if [ $((plan_claude + plan_codex + plan_pi)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
+    if [ $((plan_claude + plan_codex + plan_pi + plan_devin)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
         if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
             plan_ack=1
         else
@@ -1719,6 +1888,9 @@ print_plan() {
         if [ "$plan_claude" -eq 1 ]; then plan_row "Claude Code status hooks" "$(tilde "$HOME/.claude/settings.json")"; fi
         if [ "$plan_codex" -eq 1 ]; then plan_row "Codex status hooks" "$(tilde "$HOME/.codex/hooks.json"), $(tilde "$HOME/.codex/config.toml")"; fi
         if [ "$plan_codex_daemon" -eq 1 ]; then plan_row "turn off the Codex daemon" "$(tilde "$HOME/.codex/config.toml")"; fi
+        if [ "$plan_devin" -eq 1 ]; then
+            plan_row "Devin CLI status hooks" "$(tilde "$(devin_config)")$(! jsonc_has_extras "$(devin_config)" || printf '  [comments removed, backup first]')"
+        fi
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
@@ -1750,7 +1922,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
