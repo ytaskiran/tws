@@ -574,9 +574,8 @@ configure_codex_feature_flag() {
         ok "Set $line in ~/.codex/config.toml"
     done
     if [ "${plan_codex_daemon:-0}" -eq 1 ]; then
-        info "Restart each open Codex TUI. A running TUI still uses the shared daemon."
-        info "Then stop the daemon: codex app-server daemon stop"
-        info "This also stops any Codex session that still runs in the daemon."
+        info "Restart open Codex TUIs, then stop the daemon (this ends its sessions):"
+        info "  codex app-server daemon stop"
     fi
 }
 
@@ -1619,8 +1618,7 @@ scan_plan() {
                 if confirm_codex_daemon; then
                     plan_codex_daemon=1
                 else
-                    plan_notes+=("Codex daemon_auto_start — left on. Warning: Codex agent status can be wrong")
-                    plan_notes+=($'\t'"when more than one Codex pane runs. Run install again to turn it off.")
+                    plan_notes+=("Codex daemon left on — status can be wrong with 2+ Codex panes")
                 fi
             fi
         fi
@@ -1780,13 +1778,10 @@ confirm_codex_daemon() {
     local answer=""
     (exec </dev/tty) 2>/dev/null || return 1
     cat <<'CODEX_DAEMON_EOF'
-Codex runs all its sessions in one shared background daemon (daemon_auto_start).
-Codex starts its hooks in that daemon, so each hook reports the tmux pane that
-started the daemon, not the pane of the session. With more than one Codex pane,
-tws can show the wrong agent status.
-If you turn off the daemon, each Codex TUI runs its own sessions and tws shows
-the correct status. You lose the `codex agents` overview, and sessions stop
-when you close their TUI.
+The Codex daemon (daemon_auto_start) is on. With it, tws can show the wrong
+status when more than one Codex pane runs.
+Turn it off to fix this. You lose `codex agents`, and a session stops when you
+close its TUI.
 CODEX_DAEMON_EOF
     printf '%s' "Turn off the Codex daemon? [y/N] "
     if ! read -r answer 2>/dev/null < /dev/tty; then
