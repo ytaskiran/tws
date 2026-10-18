@@ -101,14 +101,16 @@ count_lines() {
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
 # inherit. The fake tmux is on the PATH either way, so the real server is never
 # asked. Set FAKE_TMUX_STATE to choose what the fake tmux says about the pane.
+# A here-string, not a pipe: a hook that exits before it reads stdin would kill
+# the writer with SIGPIPE, and pipefail would end the whole run.
 run_command() {
     local json="$1" command="$2" broken=""
     [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
     local state="FAKE_TMUX_STATE=${FAKE_TMUX_STATE:-fail}"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     else
-        printf '%s' "$json" | env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     fi
 }
 
@@ -2169,6 +2171,18 @@ DEVIN_CFG_EOF
         printf '  FAIL a missing config file is made with only the hooks key, and no backup\n'
         failures=$((failures + 1))
     fi
+    # A blank or comment-only file holds no JSON value.
+    for body in '   \n' '// my Devin settings\n'; do
+        blank_home="$HOME/devin-blank"; rm -rf "$blank_home"; mkdir -p "$blank_home/.config/devin"
+        printf "$body" > "$blank_home/.config/devin/config.json"
+        dwire "$blank_home"
+        if jq -e '(.hooks.Stop | length) == 1' "$blank_home/.config/devin/config.json" >/dev/null 2>&1; then
+            printf '  ok   a config of [%s] gets the hooks\n' "$body"
+        else
+            printf '  FAIL a config of [%s] gets the hooks\n' "$body"
+            failures=$((failures + 1))
+        fi
+    done
     # A symlinked config stays a link.
     link_home="$HOME/devin-link"; rm -rf "$link_home"; mkdir -p "$link_home/.config/devin"
     printf '{"theme_mode":"light"}' > "$link_home/real.json"
@@ -2182,6 +2196,8 @@ DEVIN_CFG_EOF
     fi
     if ( HOME="$devin_home"; printf '{"a":1} // x' > "$HOME/c.json"; jsonc_object_or_empty "$HOME/c.json" && jsonc_has_extras "$HOME/c.json" ) \
         && ( printf '[1,]' > "$devin_home/d.json"; ! jsonc_object_or_empty "$devin_home/d.json" ) \
+        && ( printf '{}{}' > "$devin_home/f.json"; ! jsonc_object_or_empty "$devin_home/f.json" ) \
+        && ( printf '// only a comment\n' > "$devin_home/g.json"; jsonc_object_or_empty "$devin_home/g.json" ) \
         && ( printf '{"a":1}' > "$devin_home/e.json"; ! jsonc_has_extras "$devin_home/e.json" ); then
         printf '  ok   the plan checks read comments, reject a non-object, and see plain JSON\n'
     else
@@ -2242,7 +2258,12 @@ DEVIN_CFG_EOF
     d_prompt; fire_devin PermissionRequest "$D_EXEC_REQ"
     d_prompt;                                expect working "Devin: after Esc, the next prompt ends the wait"
     expect_keys 0 "Devin: and clears the open request"
-    d_start;                                 expect working "Devin: SessionStart in a live turn keeps working"
+    fire_devin SessionStart '{"hook_event_name":"SessionStart","session_id":"s1","source":"other"}'
+    expect working "Devin: a SessionStart of another source keeps a live turn"
+    d_start;                                 expect idle "Devin: a new session clears a stale working"
+    d_prompt; fire_devin PermissionRequest "$D_EXEC_REQ"
+    d_start;                                 expect idle "Devin: a new session clears a stale wait"
+    expect_keys 0 "Devin: and its permission keys"
     d_end
     expect_panes "" "Devin: SessionEnd removes the status file"
     expect_heartbeat absent "Devin: and the heartbeat"
@@ -2272,8 +2293,9 @@ DEVIN_CFG_EOF
         while IFS= read -r cmd; do
             case "$how" in
                 env) out="$(DEVIN_PROJECT_DIR=/proj run_command "$D_EXEC_REQ" "$cmd")" ;;
-                path) out="$(printf '%s' "$D_EXEC_REQ" | env "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd")" ;;
-                linux) out="$(printf '%s' "$D_EXEC_REQ" | env FAKE_PARENT=devin "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd")" ;;
+                # A guard exits before it reads stdin, so a pipe here could die of SIGPIPE.
+                path) out="$(env "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd" <<< "$D_EXEC_REQ")" ;;
+                linux) out="$(env FAKE_PARENT=devin "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$cmd" <<< "$D_EXEC_REQ")" ;;
             esac
             [ -z "$out" ] || quiet=0
         done < <(claude_cmds)

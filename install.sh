@@ -738,9 +738,10 @@ strip_jsonc() {
     }'
 }
 
-# Succeeds for a missing or empty file, or for a JSON object after strip_jsonc.
+# Succeeds for a missing, blank or comment-only file, or for one JSON object
+# after strip_jsonc.
 jsonc_object_or_empty() {
-    [ ! -s "$1" ] || strip_jsonc < "$1" | jq -e 'type == "object"' >/dev/null 2>&1
+    [ ! -s "$1" ] || strip_jsonc < "$1" | jq -se 'length <= 1 and all(.[]; type == "object")' >/dev/null 2>&1
 }
 
 # Succeeds when the file has text that plain JSON does not allow (comments or
@@ -766,7 +767,9 @@ configure_devin_hooks() {
     local src tmp
     src="$(mktemp)"
     tmp="$(mktemp)"
-    if [ -s "$cfg" ]; then strip_jsonc < "$cfg" > "$src"; else echo '{}' > "$src"; fi
+    if [ -s "$cfg" ]; then strip_jsonc < "$cfg" > "$src"; fi
+    # A blank or comment-only file holds no JSON value, so it starts as {}.
+    grep -q '[^[:space:]]' "$src" || echo '{}' > "$src"
 
     local e_prompt e_pretool e_question e_answer e_permit e_granted e_stop e_sessionstart e_end
     e_prompt=$(status_hook_entry working "" prompt)
@@ -783,9 +786,15 @@ configure_devin_hooks() {
     e_permit=$(status_hook_entry waiting "" permit ask_user_question)
     e_granted=$(status_hook_entry working "" granted ask_user_question)
     e_stop=$(status_hook_entry review "" stop)
-    # Devin runs subagents in its own process, and the docs do not say which
-    # sources fire SessionStart. `rest` never ends a live turn.
-    e_sessionstart=$(status_hook_entry idle "" rest)
+    # The binary sends source startup or resume, but the docs list no sources. A
+    # new session clears the stale state of the last agent in the pane. Any other
+    # source takes `rest`, so it cannot end a live turn.
+    local e_reset e_rest
+    e_reset=$(status_hook_entry idle "" reset)
+    e_rest=$(status_hook_entry idle "" rest)
+    e_sessionstart=$(jq -cn --argjson a "$e_reset" --argjson b "$e_rest" --arg m "$SESSION_START_MATCHER" '
+        $a | .[0].hooks[0].command = "s=$(jq -r \".source // empty\" 2>/dev/null); case \"$s\" in \($m)) "
+            + .[0].hooks[0].command + " ;; *) " + $b[0].hooks[0].command + " ;; esac"')
     e_end=$(session_end_hook_entry)
     # No PostCompaction entry: a manual compaction writes no state, so it needs
     # no exit, and a `review` from an auto compaction would show in a live turn.
@@ -808,7 +817,7 @@ configure_devin_hooks() {
         .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart) |
         .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend) |
         .hooks |= with_entries(select((.value | length) > 0))
-    ' "$src" > "$tmp"; then
+    ' "$src" > "$tmp" && jq -se 'length == 1' "$tmp" >/dev/null 2>&1; then
         mkdir -p "$(dirname "$cfg")"
         if jsonc_has_extras "$cfg"; then cp "$cfg" "$cfg.tws-bak"; fi
         # Write through the path, so a symlinked config stays a link.
