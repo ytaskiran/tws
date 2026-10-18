@@ -237,7 +237,7 @@ status_hook_entry() {
     local word="$1"
     local matcher="$2"      # "" for match-all
     local mode="${3:-set}"
-    local skip="${4:-}"     # permit/granted: a tool name to leave alone
+    local skip="${4:-}"     # permit: a tool name to leave alone
     local cmd trig
     trig='touch "$HOME/.config/tws/agent.trigger"'
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -321,7 +321,7 @@ status_hook_entry() {
             cmd+='nl=$(printf "\nx"); nl=${nl%x}; '
             cmd+='out=$(jq -cS "(.tool_use_id // \"\"), {tool_name, tool_input}" 2>/dev/null); j=; tid=; '
             cmd+='case "$out" in *"$nl"*) tid=${out%%"$nl"*}; tid=${tid#\"}; tid=${tid%\"}; j=${out#*"$nl"} ;; esac; '
-            cmd+="$unmark$skipq"
+            cmd+="$unmark"
             cmd+='[ -n "$(ls -A "$pd" 2>/dev/null)" ] || exit 0; '
             cmd+='k=; [ -n "$j" ] && k=$(printf %s "$j" | cksum | tr " " -); '
             cmd+='[ -n "$k" ] && [ -e "$pd/$k" ] || exit 0; rm -f "$pd/$k"; '
@@ -416,11 +416,17 @@ fork_pointer_end_entry() {
 # is on by default), and its own tws hooks already drive a Devin pane. So every
 # tws Claude command exits at once under Devin. Devin sets DEVIN_PROJECT_DIR for
 # its hooks, and Claude Code never does. Devin may give a Claude hook only
-# CLAUDE_PROJECT_DIR, so the parent process name is the second check.
+# CLAUDE_PROJECT_DIR, so the parent process name is the first check. A Claude Code
+# that inherits DEVIN_PROJECT_DIR (started from a Devin shell) runs its hooks from
+# claude or node, so they still run. The guard comes after the TMUX_PANE check,
+# so a pane-less hook starts no ps.
 claude_only() {
-    local guard='[ -z "${DEVIN_PROJECT_DIR:-}" ] || exit 0; '
-    guard+='case $(ps -o comm= -p "$PPID" 2>/dev/null) in devin|*/devin) exit 0 ;; esac; '
-    printf '%s' "$1" | jq -c --arg g "$guard" 'map(.hooks |= map(.command = $g + .command))'
+    local pane='[ -n "${TMUX_PANE:-}" ] || exit 0; '
+    local guard='case $(ps -o comm= -p "$PPID" 2>/dev/null) in devin|*/devin) exit 0 ;; esac; '
+    guard+='[ -z "${DEVIN_PROJECT_DIR:-}" ] || case $(ps -o args= -p "$PPID" 2>/dev/null | awk "{print \$1}") in '
+    guard+='claude|*/claude|*/claude/versions/*|node|*/node) ;; *) exit 0 ;; esac; '
+    printf '%s' "$1" | jq -c --arg p "$pane" --arg g "$guard" \
+        'map(.hooks |= map(.command = $p + $g + (.command | ltrimstr($p))))'
 }
 
 configure_claude_hooks() {
@@ -781,10 +787,10 @@ configure_devin_hooks() {
     # list it. If the name is wrong, a question shows `working`, and nothing sticks.
     e_question=$(status_hook_entry waiting "^ask_user_question$")
     e_answer=$(status_hook_entry working "^ask_user_question$")
-    # Match-all entries skip the question in the hook, because Devin matchers have
-    # no lookahead.
+    # The match-all permit entry skips the question in the hook, because Devin
+    # matchers have no lookahead. A question then has no key, so granted ignores it.
     e_permit=$(status_hook_entry waiting "" permit ask_user_question)
-    e_granted=$(status_hook_entry working "" granted ask_user_question)
+    e_granted=$(status_hook_entry working "" granted)
     e_stop=$(status_hook_entry review "" stop)
     # The binary sends source startup or resume, but the docs list no sources. A
     # new session clears the stale state of the last agent in the pane. Any other
@@ -818,12 +824,16 @@ configure_devin_hooks() {
         .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend) |
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$src" > "$tmp" && jq -se 'length == 1' "$tmp" >/dev/null 2>&1; then
-        mkdir -p "$(dirname "$cfg")"
-        if jsonc_has_extras "$cfg"; then cp "$cfg" "$cfg.tws-bak"; fi
-        # Write through the path, so a symlinked config stays a link.
-        cat "$tmp" > "$cfg"
-        ok "Configured Devin CLI agent status hooks"
-        hooks_configured=1
+        # Write through the path, so a symlinked config stays a link. A read-only
+        # file (a Nix store link) gets a warning, and the installer goes on.
+        if mkdir -p "$(dirname "$cfg")" 2>/dev/null &&
+            { ! jsonc_has_extras "$cfg" || cp "$cfg" "$cfg.tws-bak" 2>/dev/null; } &&
+            { cat "$tmp" > "$cfg"; } 2>/dev/null; then
+            ok "Configured Devin CLI agent status hooks"
+            hooks_configured=1
+        else
+            warn "Could not write $cfg (a read-only or managed file?). Devin CLI hooks are not changed."
+        fi
     else
         warn "Could not update $cfg (jq failed — is it valid JSON?). Devin CLI hooks are not changed."
     fi
@@ -1782,6 +1792,8 @@ scan_plan() {
             plan_notes+=("Devin CLI hooks need jq — install jq, then run install again")
         elif ! jsonc_object_or_empty "$(devin_config)"; then
             plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not a JSON object; fix it, then run install again")
+        elif [ -e "$(devin_config)" ] && [ ! -w "$(devin_config)" ]; then
+            plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not writable (a read-only or managed file)")
         else
             plan_devin=1
         fi

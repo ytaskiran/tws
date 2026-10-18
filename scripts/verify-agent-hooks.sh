@@ -2194,6 +2194,16 @@ DEVIN_CFG_EOF
         printf '  FAIL a symlinked config stays a link and gets the hooks\n'
         failures=$((failures + 1))
     fi
+    # A read-only config (a Nix store link) gets a warning, not a stop.
+    ro_home="$HOME/devin-ro"; rm -rf "$ro_home"; mkdir -p "$ro_home/.config/devin"
+    printf '{"a":1}' > "$ro_home/.config/devin/config.json"; chmod 444 "$ro_home/.config/devin/config.json"
+    if ( set -e; dwire "$ro_home" ) >/dev/null 2>&1 && [ "$(cat "$ro_home/.config/devin/config.json")" = '{"a":1}' ]; then
+        printf '  ok   a read-only config stays unchanged and the installer goes on\n'
+    else
+        printf '  FAIL a read-only config stays unchanged and the installer goes on\n'
+        failures=$((failures + 1))
+    fi
+    chmod 644 "$ro_home/.config/devin/config.json"
     if ( HOME="$devin_home"; printf '{"a":1} // x' > "$HOME/c.json"; jsonc_object_or_empty "$HOME/c.json" && jsonc_has_extras "$HOME/c.json" ) \
         && ( printf '[1,]' > "$devin_home/d.json"; ! jsonc_object_or_empty "$devin_home/d.json" ) \
         && ( printf '{}{}' > "$devin_home/f.json"; ! jsonc_object_or_empty "$devin_home/f.json" ) \
@@ -2273,13 +2283,18 @@ DEVIN_CFG_EOF
         PANE_LESS=1 run_command "$D_EXEC_REQ" "$cmd" >/dev/null
     done < <(jq -r ".hooks[][] | $dtws | .hooks[0].command | @json" "$dcfg" | jq -r .)
     expect_panes "" "Devin: a hook with no TMUX_PANE writes nothing"
+    bad=0
     while IFS= read -r cmd; do
         if printf '%s' "$cmd" | has_direct_write || [ -n "$(printf '%s\n' "$cmd" | unscoped_queries)" ]; then
-            printf '  FAIL a Devin command writes "$f" directly or asks tmux for its pane\n'
-            failures=$((failures + 1))
+            bad=1
         fi
     done < <(jq -r ".hooks[][] | $dtws | .hooks[0].command | @json" "$dcfg" | jq -r .)
-    printf '  ok   Devin commands only rename status files and never guess their pane\n'
+    if [ "$bad" = 0 ]; then
+        printf '  ok   Devin commands only rename status files and never guess their pane\n'
+    else
+        printf '  FAIL a Devin command writes "$f" directly or asks tmux for its pane\n'
+        failures=$((failures + 1))
+    fi
 
     printf '\nthe Claude hooks stay quiet under Devin\n'
     claude_settings="$wire_home/.claude/settings.json"
@@ -2312,6 +2327,15 @@ DEVIN_CFG_EOF
         run_command '{"hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$cmd" >/dev/null
     done < <(jq -r ".hooks.UserPromptSubmit[] | $dtws | .hooks[0].command | @json" "$claude_settings" | jq -r .)
     expect working "the same Claude prompt hook still works outside Devin"
+    # A Claude Code started from a Devin shell inherits DEVIN_PROJECT_DIR.
+    for parent in /Users/me/.local/share/claude/versions/2.1.3 claude /opt/homebrew/bin/node; do
+        reset
+        while IFS= read -r cmd; do
+            env DEVIN_PROJECT_DIR=/proj FAKE_PARENT="$parent" FAKE_TMUX_STATE=fail "PATH=$devin_ps:$FAKE_BIN:$SPY_BIN:$PATH" \
+                sh -c "$cmd" <<< '{"hook_event_name":"UserPromptSubmit","prompt":"hi"}' >/dev/null
+        done < <(jq -r ".hooks.UserPromptSubmit[] | $dtws | .hooks[0].command | @json" "$claude_settings" | jq -r .)
+        expect working "a Claude prompt hook under $parent still works with an inherited DEVIN_PROJECT_DIR"
+    done
 else
     printf '  FAIL %s has no configure_devin_hooks to check\n' "$INSTALL_SH"
     failures=$((failures + 1))

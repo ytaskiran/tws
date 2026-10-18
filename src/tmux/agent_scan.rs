@@ -164,11 +164,13 @@ fn identify_agent(command: &str) -> Option<AgentType> {
 }
 
 /// `devin <subcommand>` runs a one-shot command or the ACP server of an editor,
-/// and `devin <path>` opens Devin Desktop. Only a bare `devin`, a flag, or
-/// `devin cloud` starts an agent session in the pane.
+/// and `devin <path>` opens Devin Desktop (a prompt needs `--`). Only a bare
+/// `devin`, a flag, or `devin cloud` starts an agent session in the pane.
+/// `--help` and `--version` only print.
 fn devin_session<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
     match tokens.next() {
         None | Some("cloud") => Some(AgentType::Devin),
+        Some("-h" | "--help" | "-V" | "--version") => None,
         Some(arg) if arg.starts_with('-') => Some(AgentType::Devin),
         Some(_) => None,
     }
@@ -496,6 +498,9 @@ mod tests {
         assert_eq!(identify_agent("/Users/me/.local/bin/devin acp"), None);
         assert_eq!(identify_agent("devin update"), None);
         assert_eq!(identify_agent("devin ."), None);
+        assert_eq!(identify_agent("devin fix the tests"), None);
+        assert_eq!(identify_agent("devin --version"), None);
+        assert_eq!(identify_agent("devin -h"), None);
         assert_eq!(
             identify_agent("/Applications/Devin.app/Contents/MacOS/Devin"),
             None
