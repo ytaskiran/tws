@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use ratatui::layout::Alignment;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use super::agent_meta;
 use crate::core::model::{AgentStatus, AgentType};
@@ -21,20 +22,10 @@ pub const SWEEP_MS: u128 = 900;
 const SWEEP_BAND: f32 = 16.0;
 
 /// Live data the cards show beside the agent list.
-#[derive(Default)]
 pub struct Live<'a> {
     /// Sweep start time in ms by pane id.
-    pub sweeps: Option<&'a HashMap<String, u128>>,
+    pub sweeps: &'a HashMap<String, u128>,
     pub now_ms: u128,
-}
-
-/// Triage lane: 0 needs you, 1 working, 2 quiet.
-pub fn lane(status: AgentStatus) -> u8 {
-    match status {
-        AgentStatus::Waiting | AgentStatus::Review => 0,
-        AgentStatus::Working => 1,
-        AgentStatus::Idle | AgentStatus::Unknown => 2,
-    }
 }
 
 const LANE_NAMES: [&str; 3] = ["needs you", "working", "quiet"];
@@ -52,14 +43,14 @@ enum Row {
 fn rows(agents: &[FlatAgent]) -> Vec<Row> {
     let mut out = Vec::new();
     for (i, a) in agents.iter().enumerate() {
-        let l = lane(a.status);
-        if i == 0 || lane(agents[i - 1].status) != l {
+        let l = a.status.lane();
+        if i == 0 || agents[i - 1].status.lane() != l {
             // Half pads leave only half a row above a heading; a gap keeps
             // the heading nearer its own lane.
             if i > 0 {
                 out.push(Row::Gap);
             }
-            let count = agents.iter().filter(|b| lane(b.status) == l).count();
+            let count = agents.iter().filter(|b| b.status.lane() == l).count();
             out.push(Row::Heading(l, count));
         }
         out.extend((0..CARD_HEIGHT).map(|k| Row::Card(i, k)));
@@ -75,8 +66,8 @@ fn status_style(status: AgentStatus, theme: &Theme) -> Style {
     }
 }
 
-/// The filled status chip, such as ` waiting `. Only the states that ask for
-/// something get a fill, so the eye goes to them first.
+/// The status chip, such as ` waiting `. Working, waiting, and review get a
+/// filled chip; idle is plain text, so the quiet lane stays quiet.
 fn chip(status: AgentStatus, theme: &Theme) -> Option<Span<'static>> {
     let (word, style) = match status {
         AgentStatus::Working => ("working", theme.chip_working),
@@ -108,14 +99,22 @@ fn sigil(kind: AgentType, working: bool, now_ms: u128) -> (&'static str, bool) {
     }
 }
 
-/// Cut `s` to at most `max` chars, and mark a cut with a trailing `…`.
+/// Cut `s` to at most `max` cells, and mark a cut with a trailing `…`.
 fn fit(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if s.width() <= max {
         return s.to_string();
     }
+    // Measure each prefix as a string: a char by char sum misses sequences
+    // such as `❤️`, which is 2 cells wide but 1 + 0 by chars.
+    let end = s
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| s[..end].width() < max)
+        .last()
+        .unwrap_or(0);
     match max {
         0 => String::new(),
-        _ => s.chars().take(max - 1).chain(['…']).collect(),
+        _ => format!("{}…", &s[..end]),
     }
 }
 
@@ -220,14 +219,21 @@ pub fn render(
                             .into_iter()
                             .collect();
                         if a.subagents > 0 {
-                            meta.push(Span::styled(
+                            let sub = Span::styled(
                                 format!(
                                     "   {} {}",
                                     agent_meta::spinner(now_ms),
                                     agent_meta::subagents(a.subagents)
                                 ),
                                 theme.path_dim,
-                            ));
+                            );
+                            // The subagent count gives way before the name.
+                            let left = width.saturating_sub(
+                                6 + width_of(&right) + width_of(&meta) + sub.width(),
+                            );
+                            if left >= a.agent_display_name.width().min(12) {
+                                meta.push(sub);
+                            }
                         }
                         let room = width.saturating_sub(3 + width_of(&right) + 3 + width_of(&meta));
                         let mut title = vec![
@@ -279,9 +285,10 @@ pub fn render(
         .iter()
         .position(|r| *r == Row::Card(cursor, 0))
         .unwrap_or(0);
-    // A lane heading over the first card of its lane scrolls in with it.
+    // A lane heading over the first card of its lane scrolls in with it,
+    // when the pane has room for both.
     let first = match first.checked_sub(1).map(|j| layout[j]) {
-        Some(Row::Heading(..)) => first - 1,
+        Some(Row::Heading(..)) if usize::from(area.height) > CARD_HEIGHT => first - 1,
         _ => first,
     };
     let last = layout
@@ -291,9 +298,16 @@ pub fn render(
     let scroll = super::sticky_scroll(prev_scroll, first, last, lines.len(), area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 
-    if let Some(sweeps) = live.sweeps {
-        sweep(frame, agents, &layout, scroll, area, theme, sweeps, now_ms);
-    }
+    sweep(
+        frame,
+        agents,
+        &layout,
+        scroll,
+        area,
+        theme,
+        live.sweeps,
+        now_ms,
+    );
     scroll
 }
 
@@ -373,12 +387,22 @@ mod tests {
         }
     }
 
+    /// No sweeps, at time 0.
+    fn still() -> Live<'static> {
+        static NONE: std::sync::LazyLock<HashMap<String, u128>> =
+            std::sync::LazyLock::new(HashMap::new);
+        Live {
+            sweeps: &NONE,
+            now_ms: 0,
+        }
+    }
+
     fn screen(agents: &[FlatAgent], cursor: usize, width: u16, height: u16) -> Vec<String> {
         let theme = Theme::build(&Palette::default());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|f| {
-                render(f, agents, cursor, 0, f.area(), &theme, &Live::default());
+                render(f, agents, cursor, 0, f.area(), &theme, &still());
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -397,7 +421,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 7)).unwrap();
         let mut scroll = 0;
         terminal
-            .draw(|f| scroll = render(f, &agents, 3, 0, f.area(), &theme, &Live::default()))
+            .draw(|f| scroll = render(f, &agents, 3, 0, f.area(), &theme, &still()))
             .unwrap();
         assert_eq!(scroll, 10, "card 3 ends on line 16, the last of 17");
         let area = Rect::new(0, 0, 40, 7);
@@ -517,6 +541,55 @@ mod tests {
         assert_eq!(agent_at(&agents, area, 0, 0, 0), None, "heading");
         assert_eq!(agent_at(&agents, area, 0, 0, 1), Some(0));
         assert_eq!(agent_at(&agents, area, 0, 0, 7), Some(1));
+    }
+
+    #[test]
+    fn fit_counts_cells_not_chars() {
+        assert_eq!(fit("日本語テスト", 7), "日本語…");
+        assert_eq!(fit("日本語", 6), "日本語");
+        assert_eq!(fit("abc", 0), "");
+        let hearts = "❤\u{FE0F}".repeat(4);
+        for max in 1..8 {
+            assert!(fit(&hearts, max).width() <= max, "max {max}");
+        }
+    }
+
+    #[test]
+    fn wide_name_keeps_the_chip_on_the_card() {
+        let mut a = agent(0);
+        a.status = AgentStatus::Waiting;
+        a.agent_display_name = "日本語のエージェント名前テスト長い名前です".into();
+        a.thread_name = "スレッド名前がとても長いです".into();
+        let out = screen(&[a], 0, 40, 5);
+        assert!(out[2].trim_end().ends_with("waiting"), "{out:?}");
+        assert!(out[3].trim_end().ends_with("claude"), "{out:?}");
+    }
+
+    /// In a narrow card the subagent count goes before the name does.
+    #[test]
+    fn subagents_give_way_to_the_name() {
+        let mut a = agent(0);
+        a.pin_slot = Some(1);
+        a.subagents = 3;
+        let out = screen(&[a], 0, 40, 5);
+        assert!(out[2].contains("agent-00  1"), "{out:?}");
+        assert!(!out[2].contains("subagents"), "{out:?}");
+        assert!(out[2].trim_end().ends_with("working"), "{out:?}");
+    }
+
+    /// A pane too short for a heading and a card shows the card.
+    #[test]
+    fn one_row_pane_shows_the_card_not_its_lane_heading() {
+        let mut agents: Vec<FlatAgent> = (0..3).map(agent).collect();
+        agents[0].status = AgentStatus::Waiting;
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let mut scroll = 0;
+        terminal
+            .draw(|f| scroll = render(f, &agents, 1, 0, f.area(), &theme, &still()))
+            .unwrap();
+        let area = Rect::new(0, 0, 40, 1);
+        assert_eq!(agent_at(&agents, area, scroll, 0, 0), Some(1));
     }
 
     #[test]

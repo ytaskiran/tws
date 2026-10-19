@@ -146,6 +146,7 @@ pub struct App {
     note_editor: NoteEditor,
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
+    last_recount: Instant,
     agent_trigger: AgentTrigger,
     flash: Option<(String, Instant)>,
     preview_content: Option<Text<'static>>,
@@ -204,6 +205,7 @@ impl App {
             note_editor: NoteEditor::new(),
             md_renderer: MarkdownRenderer::new(NoteStyleSheet::new(&palette)),
             last_refresh: Instant::now(),
+            last_recount: Instant::now(),
             agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
             flash: None,
             preview_content: None,
@@ -256,7 +258,7 @@ impl App {
         if ui_state.agents_view_active {
             self.view_mode = ViewMode::Agents;
         }
-        self.agent_list_cursor = ui_state.agent_list_cursor;
+        self.reanchor_agent_cursor(ui_state.agent_list_pane);
         self.sync_note_editor();
 
         while self.running {
@@ -271,9 +273,13 @@ impl App {
                 self.do_refresh_sessions();
             }
 
-            // Every tick, with no trigger: a recount is a few small readdirs,
-            // and it sees every marker change, whichever hook made it.
-            self.recount_subagents();
+            // Every 250 ms tick, with no trigger: a recount is a few small
+            // readdirs, and it sees every marker change, whichever hook made
+            // it. The 40 ms sweep frames skip it.
+            if self.last_recount.elapsed() >= Duration::from_millis(250) {
+                self.recount_subagents();
+                self.last_recount = Instant::now();
+            }
 
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
@@ -531,7 +537,7 @@ impl App {
                     view_area,
                     &self.theme,
                     &agents_view::Live {
-                        sweeps: Some(&self.sweeps),
+                        sweeps: &self.sweeps,
                         now_ms: crate::components::agent_meta::now_ms(),
                     },
                 );
@@ -2005,10 +2011,18 @@ impl App {
     }
 
     fn do_refresh_sessions(&mut self) {
+        // The cursor is an index into a list that a session change or a
+        // status change reorders, so it follows its pane across the refresh.
+        let anchor = self
+            .state
+            .all_agents_flat()
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
         self.do_agent_scan();
+        self.reanchor_agent_cursor(anchor);
     }
 
     fn do_agent_scan(&mut self) {
@@ -2118,23 +2132,23 @@ impl App {
 
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
-        // An agent that starts to need you gets a sweep. Several at once
-        // go one after another, top to bottom.
-        let now_ms = crate::components::agent_meta::now_ms();
-        let arrived: Vec<String> = self
-            .state
-            .all_agents_flat()
-            .into_iter()
-            .filter(|a| {
-                agents_view::lane(a.status) == 0
-                    && before
-                        .get(&a.pane_id)
-                        .is_none_or(|&s| agents_view::lane(s) != 0)
-            })
-            .map(|a| a.pane_id)
-            .collect();
-        for (k, pane) in arrived.into_iter().enumerate() {
-            self.sweeps.insert(pane, now_ms + 150 * k as u128);
+        // An agent that starts to need you gets a sweep in the agents view.
+        // Several at once go one after another, top to bottom. An agent with
+        // no earlier status (the first scan after a start) gets none.
+        if matches!(self.view_mode, ViewMode::Agents) {
+            let now_ms = crate::components::agent_meta::now_ms();
+            let arrived: Vec<String> = self
+                .state
+                .all_agents_flat()
+                .into_iter()
+                .filter(|a| {
+                    a.status.lane() == 0 && before.get(&a.pane_id).is_some_and(|s| s.lane() != 0)
+                })
+                .map(|a| a.pane_id)
+                .collect();
+            for (k, pane) in arrived.into_iter().enumerate() {
+                self.sweeps.insert(pane, now_ms + 150 * k as u128);
+            }
         }
 
         if !self.pending_pin_restore.is_empty() {
@@ -2150,6 +2164,10 @@ impl App {
                 }
             }
         }
+        // The scan rebuilt every agent with no subagents; count them now, so
+        // no frame draws the zeros.
+        self.recount_subagents();
+        self.last_recount = Instant::now();
 
         self.agent_trigger.acknowledge(observed_trigger);
     }
@@ -2223,7 +2241,11 @@ impl App {
             }
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
-        let agent_list_cursor = self.agent_list_cursor;
+        let agent_list_pane = self
+            .state
+            .all_agents_flat()
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
         let pins: Vec<(String, u8)> = self
             .state
             .agent_sessions
@@ -2234,7 +2256,7 @@ impl App {
             open_nodes,
             selected,
             agents_view_active,
-            agent_list_cursor,
+            agent_list_pane,
             pins,
         };
         if let Err(e) = persistence::save_ui(&ui) {
