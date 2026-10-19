@@ -98,14 +98,17 @@ count_lines() {
 # PANE_LESS=1 the command runs the way a pane-less agent would: no TMUX_PANE to
 # inherit. The fake tmux is on the PATH either way, so the real server is never
 # asked. Set FAKE_TMUX_STATE to choose what the fake tmux says about the pane.
+# The payload goes in as a here-string, not through a pipe: many hooks exit
+# without reading stdin, and then a piped printf gets SIGPIPE, which pipefail
+# turns into a failed run.
 run_command() {
     local json="$1" command="$2" broken=""
     [ "${JQ_BROKEN:-0}" = 1 ] && broken="$BROKEN_BIN:"
     local state="FAKE_TMUX_STATE=${FAKE_TMUX_STATE:-fail}"
     if [ "${PANE_LESS:-0}" = 1 ]; then
-        printf '%s' "$json" | env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env -u TMUX_PANE -u TMUX "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     else
-        printf '%s' "$json" | env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command"
+        env "$state" "PATH=$broken$FAKE_BIN:$SPY_BIN:$PATH" sh -c "$command" <<< "$json"
     fi
 }
 
