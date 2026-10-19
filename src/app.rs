@@ -146,11 +146,14 @@ pub struct App {
     note_editor: NoteEditor,
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
+    last_recount: Instant,
     agent_trigger: AgentTrigger,
     flash: Option<(String, Instant)>,
     preview_content: Option<Text<'static>>,
     preview_pane_id: Option<String>,
     last_preview_refresh: Instant,
+    /// Sweep start ms by pane id, for the agent cards.
+    sweeps: HashMap<String, u128>,
     view_mode: ViewMode,
     agent_list_cursor: usize,
     theme: Theme,
@@ -202,11 +205,13 @@ impl App {
             note_editor: NoteEditor::new(),
             md_renderer: MarkdownRenderer::new(NoteStyleSheet::new(&palette)),
             last_refresh: Instant::now(),
+            last_recount: Instant::now(),
             agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
             flash: None,
             preview_content: None,
             preview_pane_id: None,
             last_preview_refresh: Instant::now(),
+            sweeps: HashMap::new(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
             theme: Theme::build(&palette),
@@ -253,7 +258,7 @@ impl App {
         if ui_state.agents_view_active {
             self.view_mode = ViewMode::Agents;
         }
-        self.agent_list_cursor = ui_state.agent_list_cursor;
+        self.reanchor_agent_cursor(ui_state.agent_list_pane);
         self.sync_note_editor();
 
         while self.running {
@@ -268,18 +273,32 @@ impl App {
                 self.do_refresh_sessions();
             }
 
-            // Every tick, with no trigger: a recount is a few small readdirs,
-            // and it sees every marker change, whichever hook made it.
-            self.recount_subagents();
+            // Every 250 ms tick, with no trigger: a recount is a few small
+            // readdirs, and it sees every marker change, whichever hook made
+            // it. The 40 ms sweep frames skip it.
+            if self.last_recount.elapsed() >= Duration::from_millis(250) {
+                self.recount_subagents();
+                self.last_recount = Instant::now();
+            }
 
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
+
+            let now_ms = crate::components::agent_meta::now_ms();
+            self.sweeps
+                .retain(|_, start| now_ms < *start + agents_view::SWEEP_MS);
 
             self.draw(terminal)?;
             // Handle every queued event before the next refresh and draw. A
             // click then hit-tests the frame you saw, and a mouse sweep costs
             // one draw, not one for each row it crosses.
-            let mut timeout = Duration::from_millis(250);
+            // A 40 ms tick only while a sweep runs; the rest of the app
+            // redraws on the 250 ms poll.
+            let mut timeout = if self.sweeps.is_empty() {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_millis(40)
+            };
             while self.running
                 && let Some(input) = event::poll(timeout)?
             {
@@ -517,6 +536,10 @@ impl App {
                     agents_scroll,
                     view_area,
                     &self.theme,
+                    &agents_view::Live {
+                        sweeps: &self.sweeps,
+                        now_ms: crate::components::agent_meta::now_ms(),
+                    },
                 );
                 if !flat_agents.is_empty() {
                     list_area = Some(view_area);
@@ -1988,13 +2011,28 @@ impl App {
     }
 
     fn do_refresh_sessions(&mut self) {
+        // The cursor is an index into a list that a session change or a
+        // status change reorders, so it follows its pane across the refresh.
+        let anchor = self
+            .state
+            .all_agents_flat()
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
         self.do_agent_scan();
+        self.reanchor_agent_cursor(anchor);
     }
 
     fn do_agent_scan(&mut self) {
+        // Before the scan, which rebuilds every agent with an Unknown status.
+        let before: HashMap<String, crate::core::model::AgentStatus> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| (a.pane_id.clone(), a.status))
+            .collect();
         // Snapshot before reading any status file, so a hook firing mid-scan
         // stays pending for the next poll.
         let observed_trigger = self.agent_trigger.mtime();
@@ -2094,6 +2132,24 @@ impl App {
 
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
+        // An agent that starts to need you gets a sweep in the agents view.
+        // Several at once go one after another, top to bottom. An agent with
+        // no earlier status (the first scan after a start) gets none.
+        if matches!(self.view_mode, ViewMode::Agents) {
+            let now_ms = crate::components::agent_meta::now_ms();
+            let arrived: Vec<String> = self
+                .state
+                .all_agents_flat()
+                .into_iter()
+                .filter(|a| {
+                    a.status.lane() == 0 && before.get(&a.pane_id).is_some_and(|s| s.lane() != 0)
+                })
+                .map(|a| a.pane_id)
+                .collect();
+            for (k, pane) in arrived.into_iter().enumerate() {
+                self.sweeps.insert(pane, now_ms + 150 * k as u128);
+            }
+        }
 
         if !self.pending_pin_restore.is_empty() {
             let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);
@@ -2108,6 +2164,10 @@ impl App {
                 }
             }
         }
+        // The scan rebuilt every agent with no subagents; count them now, so
+        // no frame draws the zeros.
+        self.recount_subagents();
+        self.last_recount = Instant::now();
 
         self.agent_trigger.acknowledge(observed_trigger);
     }
@@ -2181,7 +2241,11 @@ impl App {
             }
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
-        let agent_list_cursor = self.agent_list_cursor;
+        let agent_list_pane = self
+            .state
+            .all_agents_flat()
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
         let pins: Vec<(String, u8)> = self
             .state
             .agent_sessions
@@ -2192,7 +2256,7 @@ impl App {
             open_nodes,
             selected,
             agents_view_active,
-            agent_list_cursor,
+            agent_list_pane,
             pins,
         };
         if let Err(e) = persistence::save_ui(&ui) {

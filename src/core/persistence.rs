@@ -10,8 +10,10 @@ pub struct UiState {
     pub selected: Option<Vec<String>>,
     #[serde(default)]
     pub agents_view_active: bool,
+    /// The pane under the agents view cursor. The list order follows the
+    /// statuses, so an index would point at another agent after a restart.
     #[serde(default)]
-    pub agent_list_cursor: usize,
+    pub agent_list_pane: Option<String>,
     /// Persisted pin assignments: `(pane_id, slot)`. Reapplied on first scan after startup;
     /// entries whose pane_id is no longer live are silently dropped.
     ///

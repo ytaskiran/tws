@@ -75,6 +75,17 @@ pub enum AgentStatus {
     Unknown,
 }
 
+impl AgentStatus {
+    /// Triage lane: 0 needs you, 1 working, 2 quiet.
+    pub fn lane(self) -> u8 {
+        match self {
+            AgentStatus::Waiting | AgentStatus::Review => 0,
+            AgentStatus::Working => 1,
+            AgentStatus::Idle | AgentStatus::Unknown => 2,
+        }
+    }
+}
+
 /// Runtime-only. Represents an AI agent detected in a tmux pane.
 #[derive(Debug, Clone)]
 pub struct AgentSession {

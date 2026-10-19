@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::config::palette::Palette;
 
 /// Darken a color by blending it toward `target` by `fraction` (0.0 = unchanged, 1.0 = target).
-fn darken_toward(color: Color, target: Color, fraction: f32) -> Color {
+pub fn darken_toward(color: Color, target: Color, fraction: f32) -> Color {
     if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, target) {
         let blend =
             |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * fraction).round() as u8 };
@@ -33,6 +33,7 @@ pub struct Theme {
     pub header_view_inactive: Style,
     pub guide: Style,
     pub band: Style,
+    pub card_selected: Style,
     pub header_rule: Style,
     pub header_rule_active: Style,
     pub meta: Style,
@@ -55,6 +56,8 @@ pub struct Theme {
     pub status_working: Style,
     pub status_waiting: Style,
     pub status_idle: Style,
+    pub chip_working: Style,
+    pub chip_waiting: Style,
 
     pub flash: Style,
 
@@ -101,6 +104,7 @@ impl Theme {
             header_view_inactive: Style::new().fg(muted_text),
             guide: Style::new().fg(subtle_border),
             band: Style::new().bg(darken_toward(p.fg, p.bg, 0.95)),
+            card_selected: Style::new().bg(darken_toward(p.fg, p.bg, 0.88)),
             header_rule: Style::new().fg(subtle_border),
             header_rule_active: Style::new().fg(p.accent),
             meta: Style::new().fg(midpoint(p.muted, p.border)),
@@ -124,6 +128,12 @@ impl Theme {
             status_working: Style::new().fg(p.green),
             status_waiting: Style::new().fg(p.accent),
             status_idle: Style::new().fg(muted_text),
+            chip_working: Style::new()
+                .fg(p.green)
+                .bg(darken_toward(p.green, p.bg, 0.7)),
+            chip_waiting: Style::new()
+                .fg(p.accent)
+                .bg(darken_toward(p.accent, p.bg, 0.7)),
 
             flash: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 

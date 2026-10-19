@@ -321,10 +321,14 @@ impl AppState {
                 }
             }
         }
-        // Pinned agents first, by slot ascending; unpinned keep original tree order.
-        result.sort_by_key(|a| match a.pin_slot {
-            Some(slot) => (0u8, slot),
-            None => (1u8, 0u8),
+        // By triage lane, then pinned agents first by slot ascending; the
+        // rest keep tree order.
+        result.sort_by_key(|a| {
+            let pin = match a.pin_slot {
+                Some(slot) => (0u8, slot),
+                None => (1u8, 0u8),
+            };
+            (a.status.lane(), pin)
         });
         result
     }
@@ -770,6 +774,44 @@ mod tests {
         let flat = state.all_agents_flat();
         let ids: Vec<&str> = flat.iter().map(|f| f.pane_id.as_str()).collect();
         assert_eq!(ids, vec!["%c", "%b", "%a", "%d"]);
+    }
+
+    /// The lane wins over the pin: a waiting agent comes before a pinned
+    /// working one, and pins still lead inside their lane.
+    #[test]
+    fn all_agents_flat_sorts_by_lane_then_pin() {
+        let mut state = AppState::with_sample_data();
+        let live = vec![("twsr_edge-device-pipeline_one".to_string(), 0)];
+        state.refresh_sessions(&live);
+
+        use crate::core::model::{AgentSession, AgentStatus, AgentType};
+        let mk = |id: &str, slot: Option<u8>, status: AgentStatus| AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: "twsr_edge-device-pipeline_one".into(),
+            window_index: 0,
+            pane_id: id.into(),
+            display_name: id.into(),
+            renamed: false,
+            pin_slot: slot,
+            status,
+            subagents: 0,
+        };
+        state
+            .agent_sessions
+            .push(mk("%a", Some(1), AgentStatus::Working));
+        state
+            .agent_sessions
+            .push(mk("%b", None, AgentStatus::Waiting));
+        state
+            .agent_sessions
+            .push(mk("%c", None, AgentStatus::Working));
+        state
+            .agent_sessions
+            .push(mk("%d", Some(2), AgentStatus::Review));
+
+        let flat = state.all_agents_flat();
+        let ids: Vec<&str> = flat.iter().map(|f| f.pane_id.as_str()).collect();
+        assert_eq!(ids, vec!["%d", "%b", "%a", "%c"]);
     }
 
     #[test]
