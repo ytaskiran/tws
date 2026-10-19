@@ -1320,11 +1320,13 @@ configure_agent_hooks() {
 # ~/.tmux.conf with a plain file. The blank lines before a dropped block go
 # with it, and a blank line separates the new block from your lines only when
 # the file does not already end with one. So repeated runs add no blank lines.
+# An optional extended regex ($5) drops each whole line that it matches.
 rewrite_conf_block() {
-    local conf="$1" marker="$2" stale="$3" block="$4" tmp
+    local conf="$1" marker="$2" stale="$3" block="$4" stale_re="${5:-}" tmp
     tmp="$(mktemp)"
-    MARKER="$marker" STALE="$stale" awk '
-        index($0, ENVIRON["MARKER"]) || index($0, ENVIRON["STALE"]) { blanks = 0; next }
+    MARKER="$marker" STALE="$stale" STALE_RE="$stale_re" awk '
+        index($0, ENVIRON["MARKER"]) || index($0, ENVIRON["STALE"]) \
+            || (ENVIRON["STALE_RE"] != "" && $0 ~ ENVIRON["STALE_RE"]) { blanks = 0; next }
         /^[[:space:]]*$/ { held[++blanks] = $0; next }
         { for (i = 1; i <= blanks; i++) print held[i]; blanks = 0; print }
         END { for (i = 1; i <= blanks; i++) print held[i] }
@@ -1992,6 +1994,10 @@ install_default_conf() {
 # --- 5e. tmux agent resume hooks (part of the agent hooks) ---
 
 RESUME_MARKER='# tws agent resume'
+# A hook line is tws-owned only when its value is just the tws command, as
+# resume_hook_block prints it (with any binary path). A line that the user
+# merged with their own command does not match, so it stays theirs.
+RESUME_LINE_RE="^[[:space:]]*set -g @resurrect-hook-post-(save|restore)-all '[^'[:space:]]*/tws agents-(save|restore)'[[:space:]]*\$"
 
 # tmux-resurrect runs these after each save and after a restore: `agents-save`
 # records the agents in each pane, and `agents-restore` starts them again after
@@ -2007,7 +2013,7 @@ resume_hook_block() {
 # Succeeds when a config line of yours sets a resurrect hook that is not tws.
 # tmux keeps one value per option, so the tws block would replace it.
 resume_hook_taken() {
-    user_conf_lines | grep -vF 'tws agents-' \
+    user_conf_lines | grep -vE "$RESUME_LINE_RE" \
         | grep -E '(^|[[:space:]])@resurrect-hook-post-(save|restore)-all([[:space:]]|$)' >/dev/null
 }
 
@@ -2045,7 +2051,7 @@ configure_resume_hooks() {
         return
     fi
 
-    if ! rewrite_conf_block "$conf" "$RESUME_MARKER" "tws agents-" "$(resume_hook_block)"; then
+    if ! rewrite_conf_block "$conf" "$RESUME_MARKER" "$RESUME_MARKER" "$(resume_hook_block)" "$RESUME_LINE_RE"; then
         warn "Could not write $conf — skipping the tmux agent resume hooks"
         return
     fi

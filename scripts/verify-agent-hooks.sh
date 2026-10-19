@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^RESUME_LINE_RE=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
 # A harness that runs under Devin must not look like a Devin hook to the Claude
 # commands.
@@ -2823,6 +2823,27 @@ if declare -F configure_resume_hooks >/dev/null && declare -F scan_resume >/dev/
         printf '  ok   a user resurrect hook gets no block and a note with the lines to add\n'
     else
         printf '  FAIL a user resurrect hook — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    # A hook that the user merged with the tws command, as the note asks, is
+    # the user's: the scan plans no block, and a direct run keeps the line.
+    merged="set -g @resurrect-hook-post-save-all 'my-script && /opt/bin/tws agents-save'"
+    printf '%s\n' "set -g @plugin 'tmux-plugins/tmux-resurrect'" "set -g @plugin 'tmux-plugins/tmux-continuum'" \
+        "$merged" > "$conf"
+    before="$(cat "$conf")"
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=0$' && printf '%s\n' "$out" | grep -q 'its own tmux-resurrect hook' \
+        && [ "$(cat "$conf")" = "$before" ]; then
+        printf '  ok   a merged user hook plans no block, leaves the config, and shows the note\n'
+    else
+        printf '  FAIL a merged user hook — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    resume_run
+    if grep -qxF "$merged" "$conf"; then
+        printf '  ok   a run of configure_resume_hooks keeps the merged line\n'
+    else
+        printf '  FAIL a run of configure_resume_hooks removed the merged line — got:\n%s\n' "$(cat "$conf")"
         failures=$((failures + 1))
     fi
 else
