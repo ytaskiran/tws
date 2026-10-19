@@ -387,27 +387,41 @@ session_end_hook_entry() {
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# Emits the SessionStart hook entry that records <session_id>\t<cwd> for this
-# pane, so `tws fork-pane` can fork the session that runs in it.
-fork_pointer_entry() {
-    local cmd
+# Emits the SessionStart hook entry that records <session_id>\t<cwd>\t<agent pid>
+# in sessions/<pane>.<agent>. `tws fork-pane` forks the session from it, and
+# `tws agents-save` keeps it for a resume after a reboot. $PPID is the agent (or,
+# for Devin, its direct child `devin acp`). One jq, no tmux: the Codex hook
+# timeout is 1 s. A subagent session (agent_id set) never replaces the pointer.
+# Devin sends no cwd; the hook's $PWD, Devin's launch dir, stands in (not
+# verified to be the project dir). @tsv escapes a tab in a value, so the cuts at
+# a tab are safe; `read` would merge two tabs and move agent_id into an empty
+# cwd. The write is a rename. A nested run of the same agent (`claude -p` from a
+# Bash tool) inherits TMUX_PANE: when the pointer pid is alive and an ancestor of
+# $PPID (4 levels at most), the hook keeps the main pointer. Only a pointer with
+# another pid starts ps; a dead or unrelated pid (a stale pointer) is replaced.
+pointer_entry() {
+    local agent="$1" cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
-    cmd+='input=$(cat); '
-    cmd+='id=$(printf "%s" "$input" | jq -r ".session_id // empty"); '
-    cmd+='[ -z "$id" ] && exit 0; '
-    cmd+='cwd=$(printf "%s" "$input" | jq -r ".cwd // empty"); '
-    cmd+='[ -z "$cwd" ] && cwd=$PWD; '
-    cmd+='mkdir -p "$HOME/.config/tws/sessions"; '
-    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
+    cmd+='v=$(jq -r "[.session_id // \"\", .cwd // \"\", .agent_id // \"\"] | @tsv" 2>/dev/null) || exit 0; '
+    cmd+='tab=$(printf "\t"); id=${v%%"$tab"*}; v=${v#*"$tab"}; cwd=${v%%"$tab"*}; aid=${v#*"$tab"}; '
+    cmd+='[ -n "$id" ] && [ -z "$aid" ] || exit 0; '
+    cmd+='[ -n "$cwd" ] || cwd=$PWD; '
+    cmd+='d="$HOME/.config/tws/sessions"; f="$d/$TMUX_PANE.'"$agent"'"; t="$d/.$TMUX_PANE.'"$agent"'.$$"; '
+    cmd+='if [ -f "$f" ] && IFS= read -r l < "$f"; then o=${l##*"$tab"}; '
+    cmd+='case $o in ""|*[!0-9]*|"$PPID") ;; *) if kill -0 "$o" 2>/dev/null; then p=$PPID; i=0; '
+    cmd+='while [ "$i" -lt 4 ]; do p=$(ps -o ppid= -p "$p" 2>/dev/null) || break; p=${p##* }; [ "$p" = "$o" ] && exit 0; i=$((i + 1)); done; fi ;; esac; fi; '
+    cmd+='mkdir -p "$d" && printf "%s\t%s\t%s\n" "$id" "$cwd" "$PPID" > "$t" && mv -f "$t" "$f"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# The end-of-session counterpart: drops this pane's fork pointer.
-fork_pointer_end_entry() {
+# The end-of-session counterpart: drops this pane's pointer for the agent, only
+# when the agent wrote it ($PPID is its pid), so a nested run keeps the main one.
+pointer_end_entry() {
     local cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
-    cmd+='rm -f "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
+    cmd+='f="$HOME/.config/tws/sessions/$TMUX_PANE.'"$1"'"; '
+    cmd+='IFS= read -r l 2>/dev/null < "$f" || exit 0; [ "${l##*$(printf "\t")}" = "$PPID" ] && rm -f "$f"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -488,12 +502,12 @@ configure_claude_hooks() {
     e_substop=$(subagent_hook_entry stop)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" reset)
-    local e_forkptr e_forkptr_end
-    e_forkptr=$(fork_pointer_entry)
-    e_forkptr_end=$(fork_pointer_end_entry)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry claude)
+    e_ptr_end=$(pointer_end_entry claude)
     local e
     for e in e_prompt e_pretool e_question e_posttool e_notify e_permit e_granted e_granted_fail \
-        e_idle e_stop e_compact e_fail e_substart e_substop e_end e_sessionstart e_forkptr e_forkptr_end; do
+        e_idle e_stop e_compact e_fail e_substart e_substop e_end e_sessionstart e_ptr e_ptr_end; do
         printf -v "$e" '%s' "$(claude_only "${!e}")"
     done
 
@@ -517,8 +531,8 @@ configure_claude_hooks() {
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
         --argjson sessionstart "$e_sessionstart" \
-        --argjson forkptr "$e_forkptr" \
-        --argjson forkptrend "$e_forkptr_end" '
+        --argjson ptr "$e_ptr" \
+        --argjson ptrend "$e_ptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -535,10 +549,10 @@ configure_claude_hooks() {
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
-        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $ptr + $sessionstart) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $ptrend) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp"; then
@@ -669,6 +683,9 @@ configure_codex_hooks() {
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry codex)
+    e_ptr_end=$(pointer_end_entry codex)
 
     # See configure_claude_hooks: a jq failure must not count as success.
     if jq \
@@ -676,7 +693,8 @@ configure_codex_hooks() {
         --argjson review "$e_review" --argjson compact "$e_compact" \
         --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
-        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" '
+        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" \
+        --argjson ptr "$e_ptr" --argjson ptrend "$e_ptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -692,10 +710,11 @@ configure_codex_hooks() {
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
-        # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
-        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
+        # Codex fires no SessionStart for a subagent (checked on 0.159.3). `rest` still never
+        # overwrites a live state, in case a later Codex fires one.
+        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $ptr + $sessionstart) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
-        .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
+        .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end + $ptrend) |
         # An ESC interrupt fires Interrupt and no Stop; Claude Code has no such hook.
         .hooks.Interrupt          = ((.hooks.Interrupt // []) + $interrupt) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
@@ -801,6 +820,9 @@ configure_devin_hooks() {
         $a | .[0].hooks[0].command = "s=$(jq -r \".source // empty\" 2>/dev/null); case \"$s\" in \($m)) "
             + .[0].hooks[0].command + " ;; *) " + $b[0].hooks[0].command + " ;; esac"')
     e_end=$(session_end_hook_entry)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry devin)
+    e_ptr_end=$(pointer_end_entry devin)
     # No PostCompaction entry: a manual compaction writes no state, so it needs
     # no exit, and a `review` from an auto compaction would show in a live turn.
 
@@ -810,7 +832,8 @@ configure_devin_hooks() {
         --argjson question "$e_question" --argjson answer "$e_answer" \
         --argjson permit "$e_permit" --argjson granted "$e_granted" \
         --argjson stop "$e_stop" --argjson sessionstart "$e_sessionstart" \
-        --argjson sessionend "$e_end" '
+        --argjson sessionend "$e_end" \
+        --argjson ptr "$e_ptr" --argjson ptrend "$e_ptr_end" '
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
         .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
@@ -819,8 +842,8 @@ configure_devin_hooks() {
         .hooks.PostToolUse       = ((.hooks.PostToolUse // []) + $answer + $granted) |
         .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + $permit) |
         .hooks.Stop              = ((.hooks.Stop // []) + $stop) |
-        .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart) |
-        .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend) |
+        .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart + $ptr) |
+        .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend + $ptrend) |
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$src" > "$tmp" && jq -se 'length == 1' "$tmp" >/dev/null 2>&1; then
         # Write through the path, so a symlinked config stays a link. A read-only
@@ -860,6 +883,7 @@ import { basename } from "node:path";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`;
+const SESSIONS_DIR = `${process.env.HOME}/.config/tws/sessions`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
 // Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
@@ -936,14 +960,63 @@ function beat(pane: string) {
   }
 }
 
+// The resume pointer of the pane: <session file>\t<cwd>\t<pid>. `tws agents-save`
+// keeps it for a resume after a reboot (`pi --session <file>`). Pi makes the
+// session file at the first message, and an ephemeral session has none, so
+// turn_start writes it again when it changes. The last content stays in memory,
+// so a turn reads no file. A failure must not break the session.
+let pointer: string | undefined;
+function savePointer(ctx: any) {
+  const pane = process.env.TMUX_PANE;
+  if (!pane) return;
+  const path = `${SESSIONS_DIR}/${pane}.pi`;
+  const tmp = `${SESSIONS_DIR}/.${pane}.pi.${process.pid}`;
+  try {
+    const file = ctx?.sessionManager?.getSessionFile?.();
+    const text = file ? `${file}\t${process.cwd()}\t${process.pid}\n` : undefined;
+    if (text === pointer) return;
+    if (text) {
+      mkdirSync(SESSIONS_DIR, { recursive: true });
+      writeFileSync(tmp, text);
+      renameSync(tmp, path);
+    } else {
+      dropOwnPointer(path);
+    }
+    pointer = text;
+  } catch {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Nothing to clean up that the extension can fix.
+    }
+  }
+}
+
+// A nested Pi in the pane writes its own pid, so only this process's pointer goes.
+function dropOwnPointer(path: string) {
+  if (readFileSync(path, "utf8").split("\t")[2]?.trim() === String(process.pid)) rmSync(path, { force: true });
+}
+
+function dropPointer() {
+  pointer = undefined;
+  try {
+    dropOwnPointer(`${SESSIONS_DIR}/${process.env.TMUX_PANE}.pi`);
+  } catch {
+    // No pointer, or a pointer of a dead process that tws prunes.
+  }
+}
+
 export default function (pi: any) {
   // A new conversation in the pane owns nothing of the last one. `reload` keeps
   // the same session, so it must not reset a pane that waits for the user.
-  pi.on("session_start", async (event: { reason: string }) => {
+  pi.on("session_start", async (event: { reason: string }, ctx: any) => {
+    if (event.reason === "reload") return;
+    savePointer(ctx);
     const path = panePath();
-    if (path && event.reason !== "reload") writeWord(path, "idle");
+    if (path) writeWord(path, "idle");
   });
-  pi.on("turn_start", async () => {
+  pi.on("turn_start", async (_event: unknown, ctx: any) => {
+    savePointer(ctx);
     const path = panePath();
     if (path) writeWord(path, "working");
   });
@@ -973,6 +1046,7 @@ export default function (pi: any) {
     if (event.reason === "reload") return;
     const path = panePath();
     if (!path) return;
+    dropPointer();
     rmSync(`${HEARTBEAT_DIR}/${process.env.TMUX_PANE}`, { force: true });
     if (existsSync(path)) {
       rmSync(path, { force: true });
@@ -1005,6 +1079,7 @@ const TWS_DIR = `${process.env.HOME}/.config/tws`;
 const AGENTS_DIR = `${TWS_DIR}/agents`;
 const HEARTBEAT_DIR = `${TWS_DIR}/heartbeat`;
 const SUBAGENTS_DIR = `${TWS_DIR}/subagents`;
+const SESSIONS_DIR = `${TWS_DIR}/sessions`;
 const TRIGGER = `${TWS_DIR}/agent.trigger`;
 // tws expires a silent `working` pane after 15 min. A turn can think, or run one
 // tool, for longer than that, so the heartbeat beats on a timer while a session
@@ -1030,6 +1105,7 @@ const S = (globalThis[Symbol.for("tws.opencode.status")] ??= {
   lastEvent: 0,
   reloadWord: undefined,
   timer: undefined,
+  pointerId: undefined,
 });
 
 // Only the TUI reports. `opencode run` also loads plugins, and an agent can start
@@ -1058,22 +1134,48 @@ function rm(path, opts) {
   }
 }
 
+// Truncate-then-write would expose an empty file to a reader in between. tws
+// skips the dot temp file. Returns false on a failure, and never throws.
+function put(dir, name, text) {
+  const path = `${dir}/${name}`;
+  const tmp = `${dir}/.${name}.${process.pid}`;
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    rm(tmp);
+    return false;
+  }
+}
+
 // TRIGGER rings only on a change: tws does a full tmux+ps rescan when rung. A
 // stamp writes the same word again, so the mtime becomes the start of a new turn.
 function writeWord(pane, word, stamp = false) {
-  const path = `${AGENTS_DIR}/${pane}`;
-  const cur = readWord(path);
+  const cur = readWord(`${AGENTS_DIR}/${pane}`);
   if (cur === word && !stamp) return;
-  // Truncate-then-write would expose an empty file to a reader in between.
-  const tmp = `${AGENTS_DIR}/.${pane}.${process.pid}`;
+  if (!put(AGENTS_DIR, pane, word) || cur === word) return;
   try {
-    mkdirSync(AGENTS_DIR, { recursive: true });
-    writeFileSync(tmp, word);
-    renameSync(tmp, path);
-    if (cur !== word) writeFileSync(TRIGGER, "");
+    writeFileSync(TRIGGER, "");
   } catch {
-    rm(tmp);
+    // The next change rings it.
   }
+}
+
+// The resume pointer of the pane: <session id>\t<cwd>\t<pid>. `tws agents-save`
+// keeps it for a resume after a reboot (`opencode --session <id>`). A resumed
+// session sends no session.created, so the first busy of a root session writes
+// it. The plugin runs in the opencode process that the tws scan finds.
+function writePointer(pane, sid) {
+  if (S.pointerId === sid || !SAFE_ID.test(sid)) return;
+  let cwd;
+  try {
+    cwd = process.cwd();
+  } catch {
+    return;
+  }
+  if (put(SESSIONS_DIR, `${pane}.opencode`, `${sid}\t${cwd}\t${process.pid}\n`)) S.pointerId = sid;
 }
 
 // A turn that ends in the pane the user is looking at is already read. The query
@@ -1188,6 +1290,7 @@ function resetState() {
   S.aborted.clear();
   S.active = false;
   S.unread = false;
+  S.pointerId = undefined;
 }
 
 function clearPaneFiles(pane) {
@@ -1212,6 +1315,7 @@ function onEvent(pane, event) {
       if (p.status?.type === "busy" || p.status?.type === "retry") {
         turnStart = !S.parent.has(p.sessionID) && !S.busy.has(p.sessionID);
         S.busy.add(p.sessionID);
+        if (!S.parent.has(p.sessionID)) writePointer(pane, p.sessionID);
         if (S.parent.has(p.sessionID) && SAFE_ID.test(p.sessionID)) {
           touch(`${SUBAGENTS_DIR}/${pane}/${p.sessionID}`, `${SUBAGENTS_DIR}/${pane}`);
         }
@@ -1270,6 +1374,9 @@ export const TwsStatus = async () => {
       S.reloadWord = readWord(`${AGENTS_DIR}/${pane}`);
       resetState();
       clearPaneFiles(pane);
+      // A nested opencode in the pane writes its own pid; keep that pointer.
+      const ptr = `${SESSIONS_DIR}/${pane}.opencode`;
+      if (readWord(ptr)?.split("\t")[2]?.trim() === String(process.pid)) rm(ptr);
       try {
         rmSync(`${AGENTS_DIR}/${pane}`);
         writeFileSync(TRIGGER, "");
@@ -1320,11 +1427,13 @@ configure_agent_hooks() {
 # ~/.tmux.conf with a plain file. The blank lines before a dropped block go
 # with it, and a blank line separates the new block from your lines only when
 # the file does not already end with one. So repeated runs add no blank lines.
+# An optional extended regex ($5) drops each whole line that it matches.
 rewrite_conf_block() {
-    local conf="$1" marker="$2" stale="$3" block="$4" tmp
+    local conf="$1" marker="$2" stale="$3" block="$4" stale_re="${5:-}" tmp
     tmp="$(mktemp)"
-    MARKER="$marker" STALE="$stale" awk '
-        index($0, ENVIRON["MARKER"]) || index($0, ENVIRON["STALE"]) { blanks = 0; next }
+    MARKER="$marker" STALE="$stale" STALE_RE="$stale_re" awk '
+        index($0, ENVIRON["MARKER"]) || index($0, ENVIRON["STALE"]) \
+            || (ENVIRON["STALE_RE"] != "" && $0 ~ ENVIRON["STALE_RE"]) { blanks = 0; next }
         /^[[:space:]]*$/ { held[++blanks] = $0; next }
         { for (i = 1; i <= blanks; i++) print held[i]; blanks = 0; print }
         END { for (i = 1; i <= blanks; i++) print held[i] }
@@ -1877,8 +1986,9 @@ confirm_default_conf() {
     echo ""
     warn "Optional: the tws default tmux config"
     echo "   This REPLACES your tmux config with the full setup of the tws author:"
-    echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, mouse, clipboard, and keys."
-    echo "   It downloads these 4 plugins from GitHub, and tmux runs them at each start."
+    echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, tmux-continuum, mouse,"
+    echo "   clipboard, and keys. It downloads these 5 plugins from GitHub, and tmux runs"
+    echo "   them at each start."
     echo "   It needs git, and the theme needs a Nerd Font in your terminal."
     echo "   Each tmux config you have now moves to <file>.tws-backup-<time> first."
     printf '%s' "Install the tws default tmux config? [y/N] "
@@ -1989,6 +2099,76 @@ install_default_conf() {
     export TMUX_PLUGIN_MANAGER_PATH="$TMUX_PLUGIN_DIR/"
 }
 
+# --- 5e. tmux agent resume hooks (part of the agent hooks) ---
+
+RESUME_MARKER='# tws agent resume'
+# A hook line is tws-owned only when its value is just the tws command, as
+# resume_hook_block prints it (with any binary path). A line that the user
+# merged with their own command does not match, so it stays theirs.
+RESUME_LINE_RE="^[[:space:]]*set -g @resurrect-hook-post-(save|restore)-all '[^'[:space:]]*/tws agents-(save|restore)'[[:space:]]*\$"
+
+# tmux-resurrect runs these after each save and after a restore: `agents-save`
+# records the agents in each pane, and `agents-restore` starts them again after
+# a reboot. resurrect reads the options at save and restore time, so the block
+# can go at the end of the config, after the tpm run line. The binary path is
+# absolute and scan_plan checked it with ack_path_is_safe (plan_ack).
+resume_hook_block() {
+    printf '%s\n' "$RESUME_MARKER"
+    printf "set -g @resurrect-hook-post-save-all '%s agents-save'\n" "$INSTALL_DIR/$BINARY_NAME"
+    printf "set -g @resurrect-hook-post-restore-all '%s agents-restore'\n" "$INSTALL_DIR/$BINARY_NAME"
+}
+
+# Succeeds when a config line of yours sets a resurrect hook that is not tws.
+# tmux keeps one value per option, so the tws block would replace it.
+resume_hook_taken() {
+    user_conf_lines | grep -vE "$RESUME_LINE_RE" \
+        | grep -E '(^|[[:space:]])@resurrect-hook-post-(save|restore)-all([[:space:]]|$)' >/dev/null
+}
+
+# Sets plan_resume, or adds notes. scan_plan calls it only with plan_ack, so
+# the binary path is safe. The @plugin lines and @continuum-restore must come
+# before the tpm run line, so the installer cannot append them: the user's own
+# config gets a note, and only the default config (extras/tmux.conf) has them.
+scan_resume() {
+    local line
+    if resume_hook_taken; then
+        plan_notes+=("tmux agent resume hooks — your tmux config sets its own tmux-resurrect hook")
+        plan_notes+=($'\t'"tmux keeps one hook value. To resume agents after a reboot, merge these into yours:")
+        while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(resume_hook_block)"
+    else
+        plan_resume=1
+    fi
+    if ! tmux_conf_has 'tmux-resurrect'; then
+        plan_notes+=("agent resume needs tmux-resurrect and tmux-continuum")
+    fi
+    if ! tmux_conf_has 'tmux-continuum'; then
+        plan_notes+=("tmux-continuum — add these to your tmux config, before the tpm run line:")
+        plan_notes+=($'\t'"  set -g @plugin 'tmux-plugins/tmux-continuum'")
+        plan_notes+=($'\t'"  set -g @continuum-restore 'on'")
+    fi
+}
+
+# Like configure_ack_hooks: the hooks resume the agents that the agent hooks
+# track, so they need hooks_configured.
+configure_resume_hooks() {
+    [ "$hooks_configured" -eq 1 ] || return 0
+
+    local conf
+    if ! conf="$(tmux_conf_for_write)"; then
+        warn "Could not create $HOME/.tmux.conf — skipping this tmux step"
+        return
+    fi
+
+    if ! rewrite_conf_block "$conf" "$RESUME_MARKER" "$RESUME_MARKER" "$(resume_hook_block)" "$RESUME_LINE_RE"; then
+        warn "Could not write $conf — skipping the tmux agent resume hooks"
+        return
+    fi
+    ok "Added tmux-resurrect hooks to $conf (agents resume after a reboot)"
+    if load_into_tmux "$(resume_hook_block)"; then
+        ok "Loaded them into the running tmux server"
+    fi
+}
+
 # --- 6. glow (rich markdown rendering) ---
 
 GLOW_GO_PKG='github.com/charmbracelet/glow@latest'
@@ -2013,7 +2193,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_resume=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2079,6 +2259,7 @@ scan_plan() {
                     plan_codex_daemon=1
                 else
                     plan_notes+=("Codex daemon left on — status can be wrong with 2+ Codex panes")
+                    plan_notes+=($'\t'"Codex panes do not resume after a reboot while the daemon is on.")
                 fi
             fi
         fi
@@ -2135,6 +2316,7 @@ scan_plan() {
             while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
         fi
     fi
+    if [ "$plan_ack" -eq 1 ]; then scan_resume; fi
     # The bar shows what the agent hooks write, so it comes with the ack hooks.
     if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
         if nova_script >/dev/null; then
@@ -2203,6 +2385,7 @@ print_plan() {
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
         if [ "$plan_opencode" -eq 1 ]; then plan_row "OpenCode status plugin" "$(tilde "$plan_oc_dir/plugins/tws-status.js")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
+        if [ "$plan_resume" -eq 1 ]; then plan_row "tmux agent resume hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
         if [ "$plan_bar" -eq 1 ] && [ "$bar_replace" -eq 1 ]; then
             plan_row "tmux status bar (replaces right)" "$conf_label$([ "$bar_backup" -eq 0 ] || printf '  [backup first]')"
@@ -2232,7 +2415,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_resume + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2289,6 +2472,7 @@ apply_plan() {
     if [ "$plan_path" -eq 1 ]; then configure_path "$plan_rc" "$plan_profile"; fi
     configure_agent_hooks
     if [ "$plan_ack" -eq 1 ]; then configure_ack_hooks; fi
+    if [ "$plan_resume" -eq 1 ]; then configure_resume_hooks; fi
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
     if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
@@ -2299,7 +2483,7 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
+    if [ $((plan_path + plan_ack + plan_resume + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
@@ -2308,9 +2492,10 @@ print_manual_steps() {
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
         echo "    $PATH_EXPORT_LINE"
     fi
-    if [ $((plan_ack + plan_fork + plan_bar)) -gt 0 ]; then
+    if [ $((plan_ack + plan_resume + plan_fork + plan_bar)) -gt 0 ]; then
         echo "  In $(tilde "${plan_conf:-$HOME/.tmux.conf}"):"
         if [ "$plan_ack" -eq 1 ]; then ack_hook_block | sed 's/^/    /'; fi
+        if [ "$plan_resume" -eq 1 ]; then resume_hook_block | sed 's/^/    /'; fi
         if [ "$plan_fork" -eq 1 ]; then echo "    $FORK_BINDING"; fi
         if [ "$plan_bar" -eq 1 ]; then bar_block | sed 's/^/    /'; fi
     fi

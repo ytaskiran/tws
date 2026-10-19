@@ -6,6 +6,7 @@ mod core;
 mod event;
 mod fork;
 mod import;
+mod resume;
 mod theme;
 mod tmux;
 mod tui;
@@ -36,6 +37,10 @@ enum Command {
         /// tmux pane id, e.g. %12. Defaults to $TMUX_PANE
         pane_id: Option<String>,
     },
+    /// Save the running agents for tmux-resurrect (called by a tmux hook)
+    AgentsSave,
+    /// Resume the saved agents after a tmux-resurrect restore (called by a tmux hook)
+    AgentsRestore,
     /// Print text for the tmux status bar (called by a tmux #() job)
     Bar {
         #[command(subcommand)]
@@ -68,6 +73,14 @@ fn main() -> std::io::Result<()> {
         Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
         Some(Command::AckPane { pane_id }) => {
             ack_pane(pane_id);
+            Ok(())
+        }
+        Some(Command::AgentsSave) => {
+            resume::run_save();
+            Ok(())
+        }
+        Some(Command::AgentsRestore) => {
+            resume::run_restore();
             Ok(())
         }
         Some(Command::Bar {

@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^pointer_entry()/,/^}/p;/^pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^RESUME_LINE_RE=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
 # A harness that runs under Devin must not look like a Devin hook to the Claude
 # commands.
@@ -926,12 +926,27 @@ if declare -F configure_claude_hooks >/dev/null; then
         fi
     }
     is_tws='(.hooks[0].command | test("config/tws/"))'
-    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the fork pointer plus the reset entry"
-    check_count "$settings" "$is_tws and .matcher == \"\"" 1 "and the fork pointer entry keeps the empty matcher"
+    is_ptr='(.hooks[0].command | test("config/tws/sessions"))'
+    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the session pointer plus the reset entry"
+    check_count "$settings" "$is_ptr and .matcher == \"\" and (.hooks[0].command | test(\"TMUX_PANE[.]claude\\\"\"))" 1 \
+        "and the pointer entry writes .claude with the empty matcher"
+    check_count "$settings" "$is_ptr and (.hooks[0].command | test(\"DEVIN_PROJECT_DIR\"))" 1 \
+        "and the pointer entry carries the claude_only guard"
     check_count "$settings" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and the reset entry matches exactly startup|resume|clear"
     check_count "$settings" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
-    check_count "$hooks" "$is_tws" 1 "Codex SessionStart holds one tws entry"
+    check_count "$hooks" "$is_tws" 2 "Codex SessionStart holds the session pointer plus the rest entry"
+    check_count "$hooks" "$is_ptr and .matcher == \"\" and (.hooks[0].command | test(\"TMUX_PANE[.]codex\\\"\"))" 1 \
+        "and the pointer entry writes .codex with the empty matcher"
+    for f in "$settings" "$hooks"; do
+        n="$(jq '[.hooks.SessionEnd[] | select(.hooks[0].command | test("f=\"[$]HOME/.config/tws/sessions/"))] | length' "$f")"
+        if [ "$n" = 1 ]; then
+            printf '  ok   %s SessionEnd holds one pointer end entry\n' "$(basename "$f")"
+        else
+            printf '  FAIL %s SessionEnd holds %s pointer end entries\n' "$(basename "$f")" "$n"
+            failures=$((failures + 1))
+        fi
+    done
     check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and it matches exactly startup|resume|clear"
     check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
@@ -1263,14 +1278,15 @@ for mode in set prompt live alert tool stop idle_alert reset rest permit granted
     fi
 done
 
-# expect_rename NAME WORD: the last mv moved a dot file holding WORD onto the status file.
+# expect_rename NAME WORD [FILE]: the last mv moved a dot file holding WORD onto
+# FILE (the status file by default).
 expect_rename() {
-    local name="$1" word="$2" line src="" dst="" content="" dot=0
+    local name="$1" word="$2" want="${3:-$STATUS_FILE}" line src="" dst="" content="" dot=0
     line="$(tail -n 1 "$MV_CALLS" 2>/dev/null || true)"
     IFS=$'\t' read -r src dst content <<< "$line" || true
     case "$(basename "$src")" in .*) dot=1 ;; esac
-    if [ "$dst" = "$STATUS_FILE" ] && [ "$content" = "$word" ] \
-        && [ "$(dirname "$src")" = "$(dirname "$STATUS_FILE")" ] && [ "$dot" = 1 ]; then
+    if [ "$dst" = "$want" ] && [ "$content" = "$word" ] \
+        && [ "$(dirname "$src")" = "$(dirname "$want")" ] && [ "$dot" = 1 ]; then
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — last mv was [%s]\n' "$name" "$line"
@@ -1278,9 +1294,10 @@ expect_rename() {
     fi
 }
 
+# expect_no_temp NAME [DIR]: DIR (the status directory by default) holds no dot file.
 expect_no_temp() {
     local name="$1" left
-    left="$(find "$HOME/.config/tws/agents" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
+    left="$(find "${2:-$HOME/.config/tws/agents}" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
     if [ -z "$left" ]; then
         printf '  ok   %s\n' "$name"
     else
@@ -1338,6 +1355,118 @@ if [ ! -s "$MV_CALLS" ] && [ -e "$HEARTBEAT" ]; then
     printf '  ok   the heartbeat touches its own file and does not rename\n'
 else
     printf '  FAIL the heartbeat touches its own file and does not rename\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe session pointers\n'
+# SessionStart writes <session_id>\t<cwd>\t<agent pid> to sessions/<pane>.<agent>,
+# so tws can fork the session and resume it after a reboot.
+SESS_DIR="$HOME/.config/tws/sessions"
+pointer() { run_command "$1" "$(entry_command "$(pointer_entry "$2")")"; }
+pointer_end() { run_command '{}' "$(entry_command "$(pointer_end_entry "$1")")"; }
+# expect_pointer NAME AGENT ID CWD: the pointer holds ID, CWD and a numeric pid.
+expect_pointer() {
+    local name="$1" file="$SESS_DIR/%7.$2" got
+    got="$(cat "$file" 2>/dev/null || true)"
+    if [[ "$got" =~ ^"$3"$'\t'"$4"$'\t'[0-9]+$ ]] && [ "$(tail -c 1 "$file" | od -An -c | tr -d ' ')" = '\n' ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — got [%s]\n' "$name" "$got"
+        failures=$((failures + 1))
+    fi
+}
+expect_no_pointer() {
+    local left
+    left="$(ls -A "$SESS_DIR" 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -z "$left" ]; then
+        printf '  ok   %s\n' "$1"
+    else
+        printf '  FAIL %s — left [%s]\n' "$1" "$left"
+        failures=$((failures + 1))
+    fi
+}
+if declare -F pointer_entry >/dev/null && declare -F pointer_end_entry >/dev/null; then
+    reset; : > "$MV_CALLS"
+    pointer '{"session_id":"s1","cwd":"/a b"}' claude
+    expect_pointer "a Claude SessionStart writes the pointer to %7.claude" claude s1 "/a b"
+    expect_rename "and writes it through a rename" "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)" "$SESS_DIR/%7.claude"
+    expect_no_temp "and leaves no temp file" "$SESS_DIR"
+    reset
+    pointer '{"session_id":"s2","cwd":"/c","agent_id":"a1"}' codex
+    expect_no_pointer "a Codex payload with an agent_id writes nothing"
+    # No cwd puts two tabs side by side; agent_id must not slide into cwd.
+    pointer '{"session_id":"s2","agent_id":"a1"}' codex
+    expect_no_pointer "and so does one with an agent_id and no cwd"
+    rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+    pointer '{"session_id":"s2","cwd":"/c","source":"startup"}' codex
+    expect_pointer "a Codex SessionStart writes %7.codex" codex s2 /c
+    if [ "$(count_lines "$JQ_CALLS")" -le 1 ] && [ "$(count_lines "$FAKE_TMUX_CALLS")" = 0 ]; then
+        printf '  ok   and runs jq at most once and never tmux\n'
+    else
+        printf '  FAIL and runs jq %s time(s) and tmux %s time(s)\n' "$(count_lines "$JQ_CALLS")" "$(count_lines "$FAKE_TMUX_CALLS")"
+        failures=$((failures + 1))
+    fi
+    reset
+    pointer '{"hook_event_name":"SessionStart","source":"startup","session_id":"respected-swordfish","cwd":"/d"}' devin
+    expect_pointer "a Devin SessionStart writes %7.devin" devin respected-swordfish /d
+    # The Devin payload has no cwd, so the hook directory stands in.
+    reset
+    proj="$HOME/proj dir"; mkdir -p "$proj"
+    ( cd "$proj" && pointer '{"hook_event_name":"SessionStart","source":"startup","session_id":"respected-swordfish"}' devin )
+    expect_pointer "a payload with no cwd records \$PWD" devin respected-swordfish "$proj"
+    reset
+    PANE_LESS=1 pointer '{"session_id":"s1","cwd":"/a"}' claude
+    expect_no_pointer "a pane-less run writes nothing"
+    pointer '{"session_id":"","cwd":"/a"}' claude
+    pointer '{"cwd":"/a"}' codex
+    expect_no_pointer "an empty or missing session_id writes nothing"
+    pointer '{"session_id":"s1","cwd":"/a"}' claude
+    pointer '{"session_id":"s2","cwd":"/c"}' codex
+    pointer_end claude
+    if [ ! -e "$SESS_DIR/%7.claude" ] && [ -e "$SESS_DIR/%7.codex" ]; then
+        printf '  ok   the Claude SessionEnd removes %%7.claude and leaves %%7.codex\n'
+    else
+        printf '  FAIL the Claude SessionEnd removes %%7.claude and leaves %%7.codex\n'
+        failures=$((failures + 1))
+    fi
+    # A nested `claude -p` from a Bash tool inherits TMUX_PANE. A real tree:
+    # this script ($$, the main agent) -> a subshell (the nested agent, the
+    # hook's $PPID) -> the hook.
+    expect_main() {
+        if [ "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)" = "main	/m	$$" ]; then
+            printf '  ok   %s\n' "$1"
+        else
+            printf '  FAIL %s — got [%s]\n' "$1" "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)"
+            failures=$((failures + 1))
+        fi
+    }
+    reset; mkdir -p "$SESS_DIR"; printf 'main\t/m\t%s\n' "$$" > "$SESS_DIR/%7.claude"
+    rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+    ( pointer '{"session_id":"nested","cwd":"/n"}' claude; : )
+    expect_main "a nested SessionStart below the live pointer pid keeps the main pointer"
+    if [ "$(count_lines "$JQ_CALLS")" -le 1 ] && [ "$(count_lines "$FAKE_TMUX_CALLS")" = 0 ]; then
+        printf '  ok   and runs jq at most once and never tmux\n'
+    else
+        printf '  FAIL and runs jq %s time(s) and tmux %s time(s)\n' "$(count_lines "$JQ_CALLS")" "$(count_lines "$FAKE_TMUX_CALLS")"
+        failures=$((failures + 1))
+    fi
+    ( pointer_end claude; : )
+    expect_main "a nested SessionEnd keeps the main pointer"
+    sh -c : & dead=$!; wait "$dead" || true
+    printf 'old\t/o\t%s\n' "$dead" > "$SESS_DIR/%7.claude"
+    ( pointer '{"session_id":"s3","cwd":"/s"}' claude; : )
+    expect_pointer "a stale pointer with a dead pid is replaced" claude s3 /s
+    sleep 30 & other=$!
+    printf 'old\t/o\t%s\n' "$other" > "$SESS_DIR/%7.claude"
+    ( pointer '{"session_id":"s4","cwd":"/s"}' claude; : )
+    expect_pointer "a pointer with a live pid that is not an ancestor is replaced" claude s4 /s
+    kill "$other" 2>/dev/null || true; wait "$other" 2>/dev/null || true
+    printf 'main\t/m\t%s\n' "$$" > "$SESS_DIR/%7.claude"
+    pointer_end claude
+    expect_no_pointer "the SessionEnd of the pointer's own agent removes it"
+    reset
+else
+    printf '  FAIL %s has no pointer_entry or pointer_end_entry\n' "$INSTALL_SH"
     failures=$((failures + 1))
 fi
 
@@ -1965,7 +2094,7 @@ fi
 
 # Pi has no shell command to run, so the extension text is the check. beat()
 # must name the heartbeat directory and must not touch the status file. Node runs
-# the real extension below when it can strip types.
+# the real extension for the session pointer when it can strip types.
 if printf '%s' "$pi_ext" | grep -Fq 'HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`' \
     && printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'HEARTBEAT_DIR' \
     && ! printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'utimesSync(path'; then
@@ -2143,13 +2272,15 @@ DEVIN_CFG_EOF
     check_jq "tws wires only events that Devin has" \
         "[.hooks | to_entries[] | select([.value[] | $dtws] | length > 0) | .key] | sort == [\"PermissionRequest\",\"PostToolUse\",\"PreToolUse\",\"SessionEnd\",\"SessionStart\",\"Stop\",\"UserPromptSubmit\"]"
     check_jq "and one tws entry per event, two for PreToolUse and PostToolUse" \
-        "[.hooks | to_entries[] | {(.key): ([.value[] | $dtws] | length)}] | add | del(.Stop) == {\"PermissionRequest\":1,\"PostToolUse\":2,\"PreToolUse\":2,\"SessionEnd\":1,\"SessionStart\":1,\"UserPromptSubmit\":1}"
+        "[.hooks | to_entries[] | {(.key): ([.value[] | $dtws] | length)}] | add | del(.Stop) == {\"PermissionRequest\":1,\"PostToolUse\":2,\"PreToolUse\":2,\"SessionEnd\":2,\"SessionStart\":2,\"UserPromptSubmit\":1}"
+    check_jq "the session pointer entries come last in SessionStart and SessionEnd" \
+        "[.hooks.SessionStart, .hooks.SessionEnd | [.[] | $dtws][-1].hooks[0].command | test(\"TMUX_PANE[.]devin\\\"\")] | all"
     check_jq "and one tws Stop entry" "[.hooks.Stop[] | $dtws] | length == 1"
     check_jq "no tws matcher uses lookahead" "[.hooks[][] | $dtws | .matcher | select(test(\"\\\\(\\\\?\"))] | length == 0"
     check_jq "non-tool events use the empty matcher" \
         "[.hooks | (.UserPromptSubmit, .Stop, .SessionStart, .SessionEnd)[] | $dtws | .matcher] | all(. == \"\")"
     check_jq "no tws Devin command reads agent_id or carries the Devin guard" \
-        "[.hooks[][] | $dtws | .hooks[0].command | select(test(\"agent_id|DEVIN_PROJECT_DIR\"))] | length == 0"
+        "[.hooks[][] | $dtws | .hooks[0].command | select(test(\"config/tws/sessions\") | not) | select(test(\"agent_id|DEVIN_PROJECT_DIR\"))] | length == 0"
     if cmp -s "$devin_home/original" "$dcfg.tws-bak"; then
         printf '  ok   the first run keeps the commented file as config.json.tws-bak\n'
     else
@@ -2685,6 +2816,40 @@ console.log("  timer");
   }
 }
 
+console.log("  session pointer");
+await (async () => {
+  const POINTER = `${TWS}/sessions/%7.opencode`;
+  const pointer = () => (existsSync(POINTER) ? readFileSync(POINTER, "utf8") : "<none>");
+  const want = (id) => `${id}\t${process.cwd()}\t${process.pid}\n`;
+  rmSync(TWS, { recursive: true, force: true });
+  tmux("fail");
+  const hooks = await fresh();
+  const ev = (type, properties) => hooks.event({ event: { type, properties } });
+  const busy = (sessionID) => ev("session.status", { sessionID, status: { type: "busy" } });
+  check(pointer() === "<none>", "init writes no pointer");
+  await busy("ses_root");
+  check(pointer() === want("ses_root"), "a busy root session writes its id, the cwd and the pid to the pointer");
+  utimesSync(POINTER, OLD, OLD);
+  await busy("ses_root");
+  check(mtime(POINTER) === OLD.getTime(), "a repeated busy of the same root does not write the pointer again");
+  await ev("session.created", { info: { id: "ses_kid", parentID: "ses_root" } });
+  await busy("ses_kid");
+  await ev("session.updated", { info: { id: "ses_kid2", parentID: "ses_root" } });
+  await busy("ses_kid2");
+  check(pointer() === want("ses_root"), "a busy child session does not change the pointer");
+  await busy("ses_other");
+  check(pointer() === want("ses_other"), "a second root session that goes busy replaces the id");
+  check(readdirSync(`${TWS}/sessions`).join() === "%7.opencode", "the pointer write leaves no temp file");
+  await hooks.dispose();
+  check(pointer() === "<none>", "the last dispose removes the pointer");
+  const again = await fresh();
+  await again.event({ event: { type: "session.status", properties: { sessionID: "ses_other", status: { type: "busy" } } } });
+  check(pointer() === want("ses_other"), "after a reload the same root writes the pointer again");
+  writeFileSync(POINTER, "ses_x\t/x\t1\n");
+  await again.dispose();
+  check(pointer() === "ses_x\t/x\t1\n", "dispose keeps a pointer that another process wrote");
+})();
+
 console.log("  gate");
 await (async () => {
   rmSync(TWS, { recursive: true, force: true });
@@ -2697,7 +2862,7 @@ await (async () => {
   process.argv[1] = RUN_ARGV;
   process.argv[2] = "run";
   hooks = await TwsStatus();
-  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing");
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing, so no pointer");
   process.argv[1] = RUN_ARGV;
   process.argv[2] = "run";
   process.argv[3] = "review src/cli/tui/worker.ts";
@@ -2763,6 +2928,176 @@ if declare -F configure_opencode_hooks > /dev/null; then
     fi
 else
     printf '  FAIL %s has no configure_opencode_hooks to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+printf '\nPi session pointer\n'
+# Node 22.6 and later can strip the types of the Pi extension, so node runs the
+# text that install.sh writes. A driver calls the handlers as Pi does.
+printf '%s\n' "$pi_ext" | sed '1d;$d' > "$HOME/pi-ext.mts"
+printf 'const x: number = 0;\n' > "$HOME/pi-probe.mts"
+if ! node --experimental-strip-types --no-warnings "$HOME/pi-probe.mts" > /dev/null 2>&1; then
+    printf '  skip this node cannot strip types, so the Pi extension is not run\n'
+else
+    cat > "$HOME/pi-driver.mjs" <<'PI_DRIVER_EOF'
+import { existsSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+
+process.env.TMUX_PANE = "%7";
+process.env.PATH = `${process.env.FAKE_BIN}:${process.env.PATH}`;
+const POINTER = `${process.env.HOME}/.config/tws/sessions/%7.pi`;
+const OLD = new Date("2000-01-01T00:00:00Z");
+const { default: ext } = await import(`${process.env.HOME}/pi-ext.mts`);
+
+let failures = 0;
+function check(cond, msg) {
+  console.log(`  ${cond ? "ok  " : "FAIL"} ${msg}`);
+  if (!cond) failures++;
+}
+const on = {};
+ext({ on: (name, fn) => (on[name] = fn) });
+let file = "/s/a.jsonl";
+const ctx = { sessionManager: { getSessionFile: () => file } };
+const fire = (name, reason) => on[name]({ type: name, reason }, ctx);
+const pointer = () => (existsSync(POINTER) ? readFileSync(POINTER, "utf8") : "<none>");
+const want = (f) => `${f}\t${process.cwd()}\t${process.pid}\n`;
+
+await fire("session_start", "startup");
+check(pointer() === want("/s/a.jsonl"), "session_start writes the session file, the cwd and the pid");
+check(readdirSync(`${process.env.HOME}/.config/tws/sessions`).join() === "%7.pi", "the write leaves no temp file");
+file = "/s/b.jsonl";
+await fire("session_start", "reload");
+check(pointer() === want("/s/a.jsonl"), "a reload session_start writes nothing");
+await fire("turn_start");
+check(pointer() === want("/s/b.jsonl"), "turn_start writes the pointer again after a change");
+utimesSync(POINTER, OLD, OLD);
+await fire("turn_start");
+check(statSync(POINTER).mtimeMs === OLD.getTime(), "turn_start with no change does not write");
+await fire("session_shutdown", "reload");
+check(pointer() === want("/s/b.jsonl"), "a reload session_shutdown keeps the pointer");
+writeFileSync(POINTER, "/s/z.jsonl\t/x\t1\n");
+await fire("session_shutdown", "quit");
+check(pointer() === "/s/z.jsonl\t/x\t1\n", "session_shutdown keeps a pointer that another process wrote");
+await fire("session_start", "startup");
+await fire("session_shutdown", "quit");
+check(pointer() === "<none>", "session_shutdown removes the pointer");
+file = undefined;
+await fire("session_start", "new");
+await fire("turn_start");
+check(pointer() === "<none>", "an ephemeral session writes no pointer");
+ctx.sessionManager = { getSessionFile: () => { throw new Error("boom"); } };
+let threw = false;
+try {
+  await fire("turn_start");
+} catch {
+  threw = true;
+}
+check(!threw && pointer() === "<none>", "a session manager that fails does not throw out of the handler");
+process.exit(failures);
+PI_DRIVER_EOF
+    set +e
+    FAKE_BIN="$FAKE_BIN" node --experimental-strip-types --no-warnings "$HOME/pi-driver.mjs"
+    pi_failures=$?
+    set -e
+    failures=$((failures + pi_failures))
+fi
+
+printf '\nthe tmux-resurrect hooks for agent resume\n'
+# Runs the real resume functions against a throwaway HOME with no tmux server.
+resume_home="$HOME/resume"
+rm -rf "$resume_home"; mkdir -p "$resume_home"
+if declare -F configure_resume_hooks >/dev/null && declare -F scan_resume >/dev/null; then
+    want="$(printf '%s\n' '# tws agent resume' \
+        "set -g @resurrect-hook-post-save-all '/opt/bin/tws agents-save'" \
+        "set -g @resurrect-hook-post-restore-all '/opt/bin/tws agents-restore'")"
+    got="$( INSTALL_DIR=/opt/bin; BINARY_NAME=tws; resume_hook_block )"
+    if [ "$got" = "$want" ]; then
+        printf '  ok   the block holds both hooks with the absolute binary path\n'
+    else
+        printf '  FAIL the block — got:\n%s\n' "$got"
+        failures=$((failures + 1))
+    fi
+    resume_run() (
+        HOME="$resume_home"; unset XDG_CONFIG_HOME; INSTALL_DIR=/opt/bin; BINARY_NAME=tws
+        info() { :; }; ok() { :; }; warn() { :; }
+        hooks_configured=1 tmux_live=0
+        configure_resume_hooks
+    )
+    printf 'set -g mouse on\n' > "$resume_home/.tmux.conf"
+    resume_run; resume_run
+    conf="$resume_home/.tmux.conf"
+    if [ "$(grep -c '^# tws agent resume$' "$conf")" = 1 ] && [ "$(grep -c 'tws agents-save' "$conf")" = 1 ] \
+        && [ "$(grep -c 'tws agents-restore' "$conf")" = 1 ] && grep -q '^set -g mouse on$' "$conf"; then
+        printf '  ok   two runs leave one marker block and the user lines\n'
+    else
+        printf '  FAIL two runs — got:\n%s\n' "$(cat "$conf")"
+        failures=$((failures + 1))
+    fi
+    # scan_resume prints plan_resume, then the notes, one per line.
+    resume_scan() (
+        HOME="$resume_home"; unset XDG_CONFIG_HOME; INSTALL_DIR=/opt/bin; BINARY_NAME=tws
+        plan_resume=0 plan_notes=()
+        scan_resume
+        printf 'plan_resume=%s\n' "$plan_resume"
+        printf '%s\n' ${plan_notes[@]+"${plan_notes[@]}"}
+    )
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=1$' \
+        && printf '%s\n' "$out" | grep -q 'agent resume needs tmux-resurrect and tmux-continuum' \
+        && printf '%s\n' "$out" | grep -qF "set -g @continuum-restore 'on'" \
+        && printf '%s\n' "$out" | grep -q 'before the tpm run line'; then
+        printf '  ok   a config with only the tws block plans the hooks and notes the missing plugins\n'
+    else
+        printf '  FAIL a config with only the tws block — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    printf '%s\n' "set -g @plugin 'tmux-plugins/tmux-resurrect'" "set -g @plugin 'tmux-plugins/tmux-continuum'" \
+        "set -g @resurrect-hook-post-save-all 'my-script'" > "$conf"
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=0$' && printf '%s\n' "$out" | grep -q 'tws agents-save' \
+        && ! printf '%s\n' "$out" | grep -q 'needs tmux-resurrect' && ! printf '%s\n' "$out" | grep -q 'tpm run line'; then
+        printf '  ok   a user resurrect hook gets no block and a note with the lines to add\n'
+    else
+        printf '  FAIL a user resurrect hook — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    # A hook that the user merged with the tws command, as the note asks, is
+    # the user's: the scan plans no block, and a direct run keeps the line.
+    merged="set -g @resurrect-hook-post-save-all 'my-script && /opt/bin/tws agents-save'"
+    printf '%s\n' "set -g @plugin 'tmux-plugins/tmux-resurrect'" "set -g @plugin 'tmux-plugins/tmux-continuum'" \
+        "$merged" > "$conf"
+    before="$(cat "$conf")"
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=0$' && printf '%s\n' "$out" | grep -q 'its own tmux-resurrect hook' \
+        && [ "$(cat "$conf")" = "$before" ]; then
+        printf '  ok   a merged user hook plans no block, leaves the config, and shows the note\n'
+    else
+        printf '  FAIL a merged user hook — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    resume_run
+    if grep -qxF "$merged" "$conf"; then
+        printf '  ok   a run of configure_resume_hooks keeps the merged line\n'
+    else
+        printf '  FAIL a run of configure_resume_hooks removed the merged line — got:\n%s\n' "$(cat "$conf")"
+        failures=$((failures + 1))
+    fi
+else
+    printf '  FAIL %s has no configure_resume_hooks or scan_resume to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+# In the default config, continuum and the hooks must come before the tpm run
+# line, because tpm reads @plugin and @continuum-restore when it runs.
+extras="$(dirname "$INSTALL_SH")/extras/tmux.conf"
+if awk '
+    /^run .~\/\.tmux\/plugins\/tpm\/tpm.$/ { run = NR }
+    !run && $0 == "set -g @plugin '\''tmux-plugins/tmux-continuum'\''" { a = 1 }
+    !run && $0 == "set -g @continuum-restore '\''on'\''" { b = 1 }
+    !run && $0 == "set -g @resurrect-hook-post-save-all '\''@TWS_BIN@ agents-save'\''" { c = 1 }
+    !run && $0 == "set -g @resurrect-hook-post-restore-all '\''@TWS_BIN@ agents-restore'\''" { d = 1 }
+    END { exit !(run && a && b && c && d) }' "$extras"; then
+    printf '  ok   extras/tmux.conf has continuum and the hooks above the tpm run line\n'
+else
+    printf '  FAIL extras/tmux.conf lacks continuum or the hooks above the tpm run line\n'
     failures=$((failures + 1))
 fi
 

@@ -65,6 +65,38 @@ that you already use:
 This feature works with Claude Code only. Codex, Pi, Devin and OpenCode panes do not support
 forking. `codex resume` appends to the parent session instead of forking it.
 
+### Resume agents after a reboot
+
+tmux-resurrect restores your panes after a reboot, but each pane comes back
+with a plain shell. tws resumes each agent (Claude Code, Codex, Pi, Devin CLI,
+OpenCode) in its old pane, in its old conversation and directory. The agent
+comes back idle. A turn that ran at the reboot does not continue.
+
+This needs [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) and
+[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum). Continuum
+saves at its default save interval (15 minutes) and restores when tmux starts.
+`install.sh` adds the two resurrect hooks to your tmux config:
+
+    set -g @resurrect-hook-post-save-all '/path/to/tws agents-save'
+    set -g @resurrect-hook-post-restore-all '/path/to/tws agents-restore'
+
+It does not add plugin lines to your own config. If continuum is missing, the
+plan shows the lines to add before the tpm `run` line. The default config
+([`extras/tmux.conf`](extras/tmux.conf)) has all of them.
+
+Restart each running agent after `install.sh`, because a running agent keeps
+its old hooks. A `prefix + C-r` on a running tmux server resumes nothing.
+
+Known limits:
+
+- Codex with `daemon_auto_start` on does not resume. The installer asks to turn it off.
+- An agent that you closed less than one save interval before a reboot comes back one time.
+- A directory name with a tab or a backslash resumes the agent in the wrong directory.
+- A restored agent keeps its saved line until it gets a new message. If you change its conversation before that, the next reboot can resume the old one.
+- In the first seconds after a restore, tws can type into a pane that you attached to.
+- A second tmux server (`tmux -L`) uses the same snapshot. A save on it replaces the snapshot of the first server.
+- After an OpenCode reload, a subagent session can take the resume pointer until the next main-session message.
+
 ### Read a pane by moving into it
 
 An agent pane in the review state means that the agent finished and you did not
@@ -229,7 +261,7 @@ question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
 your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
 - agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`; it also asks to turn off `daemon_auto_start`, because hooks in the shared Codex daemon cannot tell which pane they belong to. After a yes, restart your open Codex TUIs and run `codex app-server daemon stop`), Pi (`~/.pi/agent/extensions/`), Devin CLI (the `hooks` key of `~/.config/devin/config.json`; it keeps your other keys and hooks. It makes the file if it is missing. jq cannot keep comments, so a file with comments loses them, and the installer first copies it to `config.json.tws-bak`). Devin CLI also runs the hooks in `~/.claude/settings.json`, so the tws Claude hooks do nothing under Devin and the Devin hooks report the pane, and OpenCode (`~/.config/opencode/plugins/`). Only the OpenCode TUI reports status. `opencode run`, `opencode serve` and `opencode attach` panes show no status. `opencode serve`, `opencode web`, `opencode acp` and the other tool subcommands do not show as agents,
-- the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
+- the tmux ack hooks, the agent resume hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
 - a `PATH` line for `~/.local/bin` in your shell rc and profile, if your shell does not find it,
 - `glow`, with `brew` or `go`, if it is missing.
 
@@ -242,9 +274,9 @@ Re-run the same command any time to upgrade. A re-run replaces the tws lines in 
 
 Before the plan, the script offers the full tmux setup of the tws author:
 [`extras/tmux.conf`](extras/tmux.conf). It has TPM, tmux-sensible,
-tmux-resurrect, the tmux-nova theme with the tws segments, mouse, clipboard,
-and keys. It needs `git`, and the theme needs a [Nerd Font](https://www.nerdfonts.com/).
-It downloads the 4 plugins from GitHub, and tmux runs them at each start.
+tmux-resurrect, tmux-continuum, the tmux-nova theme with the tws segments, mouse,
+clipboard, and keys. It needs `git`, and the theme needs a [Nerd Font](https://www.nerdfonts.com/).
+It downloads the 5 plugins from GitHub, and tmux runs them at each start.
 
 > **Warning:** this option replaces your tmux config. The default answer is no.
 

@@ -9,7 +9,19 @@ struct PaneInfo {
     window_index: u32,
     pane_id: String,
     pane_pid: u32,
+    pane_index: u32,
+    current_command: String,
     pane_title: String,
+}
+
+/// One tmux pane with its stable key and the agent that runs in it.
+pub struct LivePane {
+    pub pane_id: String,
+    /// `session_name:window_index.pane_index`
+    pub key: String,
+    pub current_command: String,
+    /// Agent type, then the agent pid and its direct children.
+    pub agent: Option<(AgentType, Vec<u32>)>,
 }
 
 /// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin, OpenCode).
@@ -49,7 +61,7 @@ fn list_all_panes() -> Option<String> {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}\t#{pane_title}",
+            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}",
         ])
         .output()
         .ok()?;
@@ -77,17 +89,21 @@ fn list_all_processes() -> Option<String> {
 fn parse_panes(raw: &str) -> Vec<PaneInfo> {
     raw.lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(5, '\t');
+            let mut parts = line.splitn(7, '\t');
             let session_name = parts.next()?.to_string();
             let window_index = parts.next()?.parse::<u32>().ok()?;
+            let pane_index = parts.next()?.parse::<u32>().ok()?;
             let pane_id = parts.next()?.to_string();
             let pane_pid = parts.next()?.parse::<u32>().ok()?;
+            let current_command = parts.next()?.to_string();
             let pane_title = parts.next().unwrap_or("").to_string();
             Some(PaneInfo {
                 session_name,
                 window_index,
                 pane_id,
                 pane_pid,
+                pane_index,
+                current_command,
                 pane_title,
             })
         })
@@ -301,7 +317,7 @@ const MAX_AGENT_DEPTH: usize = 3;
 
 /// Breadth-first search from `pane_pid`, so the shallowest agent wins.
 /// The `seen` set stops a cycle in bad `ps` data.
-fn find_agent(table: &ProcessTable, pane_pid: u32) -> Option<AgentType> {
+fn find_agent(table: &ProcessTable, pane_pid: u32) -> Option<(AgentType, u32)> {
     let mut seen = HashSet::new();
     let mut level = vec![pane_pid];
     for _ in 0..=MAX_AGENT_DEPTH {
@@ -311,7 +327,7 @@ fn find_agent(table: &ProcessTable, pane_pid: u32) -> Option<AgentType> {
                 continue;
             }
             if let Some(agent_type) = table.commands.get(&pid).and_then(|c| identify_agent(c)) {
-                return Some(agent_type);
+                return Some((agent_type, pid));
             }
             if let Some(kids) = table.children.get(&pid) {
                 next.extend(kids);
@@ -326,7 +342,7 @@ fn match_agents(panes: &[PaneInfo], table: &ProcessTable) -> Vec<AgentSession> {
     panes
         .iter()
         .filter_map(|pane| {
-            let agent_type = find_agent(table, pane.pane_pid)?;
+            let (agent_type, _) = find_agent(table, pane.pane_pid)?;
             Some(AgentSession {
                 agent_type,
                 tmux_session_name: pane.session_name.clone(),
@@ -344,7 +360,31 @@ fn match_agents(panes: &[PaneInfo], table: &ProcessTable) -> Vec<AgentSession> {
 
 fn find_pane_agent(panes: &[PaneInfo], table: &ProcessTable, pane_id: &str) -> Option<AgentType> {
     let pane = panes.iter().find(|p| p.pane_id == pane_id)?;
-    find_agent(table, pane.pane_pid)
+    find_agent(table, pane.pane_pid).map(|a| a.0)
+}
+
+fn live_pane(pane: &PaneInfo, table: &ProcessTable) -> LivePane {
+    let agent = find_agent(table, pane.pane_pid).map(|(agent_type, pid)| {
+        let mut pids = vec![pid];
+        pids.extend(table.children.get(&pid).into_iter().flatten());
+        (agent_type, pids)
+    });
+    LivePane {
+        pane_id: pane.pane_id.clone(),
+        key: format!(
+            "{}:{}.{}",
+            pane.session_name, pane.window_index, pane.pane_index
+        ),
+        current_command: pane.current_command.clone(),
+        agent,
+    }
+}
+
+/// Scans every pane, tws-managed or not. `None` when tmux or ps fails.
+pub fn scan_live_panes() -> Option<Vec<LivePane>> {
+    let panes = parse_panes(&list_all_panes()?);
+    let table = parse_processes(&list_all_processes()?);
+    Some(panes.iter().map(|p| live_pane(p, &table)).collect())
 }
 
 /// Unlike `scan_agents`, this deliberately skips the tws-session filter:
@@ -361,7 +401,7 @@ mod tests {
 
     #[test]
     fn parse_panes_basic() {
-        let raw = "twsr_dev\t0\t%0\t12345\tsome title\ntwsr_dev\t1\t%1\t12346\t\n";
+        let raw = "twsr_dev\t0\t0\t%0\t12345\tzsh\tsome title\ntwsr_dev\t1\t0\t%1\t12346\tzsh\t\n";
         let panes = parse_panes(raw);
         assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].session_name, "twsr_dev");
@@ -379,8 +419,56 @@ mod tests {
             window_index: 0,
             pane_id: pane_id.into(),
             pane_pid,
+            pane_index: 0,
+            current_command: "".into(),
             pane_title: "".into(),
         }
+    }
+
+    fn pane_full(pane_id: &str, pane_pid: u32) -> PaneInfo {
+        PaneInfo {
+            session_name: "s".into(),
+            window_index: 1,
+            pane_index: 0,
+            current_command: "zsh".into(),
+            ..pane(pane_id, pane_pid)
+        }
+    }
+
+    #[test]
+    fn parse_panes_reads_pane_index_and_current_command() {
+        let raw = "twsr_a b\t1\t0\t%42\t51200\tzsh\tmy title\twith tab\n";
+        let p = &parse_panes(raw)[0];
+        assert_eq!(p.session_name, "twsr_a b");
+        assert_eq!(p.pane_index, 0);
+        assert_eq!(p.current_command, "zsh");
+        assert_eq!(p.pane_title, "my title\twith tab");
+    }
+
+    #[test]
+    fn find_agent_returns_agent_pid() {
+        let t = table(&[
+            (100, 1, "zsh"),
+            (200, 100, "claude"),
+            (300, 200, "node helper"),
+        ]);
+        assert_eq!(find_agent(&t, 100), Some((AgentType::ClaudeCode, 200)));
+    }
+
+    #[test]
+    fn live_pane_lists_agent_pid_and_direct_children_only() {
+        // claude(200) -> bash(300) -> claude -p(400): 400 is a grandchild, not listed.
+        let t = table(&[
+            (100, 1, "zsh"),
+            (200, 100, "claude"),
+            (300, 200, "bash"),
+            (400, 300, "claude -p x"),
+        ]);
+        let lp = live_pane(&pane_full("%1", 100), &t);
+        assert_eq!(lp.key, "s:1.0");
+        let (ty, pids) = lp.agent.unwrap();
+        assert_eq!(ty, AgentType::ClaudeCode);
+        assert_eq!(pids, vec![200, 300]);
     }
 
     fn table(rows: &[(u32, u32, &str)]) -> ProcessTable {
@@ -416,7 +504,10 @@ mod tests {
     #[test]
     fn find_agent_at_depth_0() {
         let t = table(&[(100, 1, "claude")]);
-        assert_eq!(find_agent(&t, 100), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            find_agent(&t, 100).map(|a| a.0),
+            Some(AgentType::ClaudeCode)
+        );
     }
 
     #[test]
@@ -431,14 +522,14 @@ mod tests {
                 "node /opt/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
             ),
         ]);
-        assert_eq!(find_agent(&t, 100), Some(AgentType::Codex));
-        assert_eq!(find_agent(&t, 300), Some(AgentType::Pi));
+        assert_eq!(find_agent(&t, 100).map(|a| a.0), Some(AgentType::Codex));
+        assert_eq!(find_agent(&t, 300).map(|a| a.0), Some(AgentType::Pi));
     }
 
     #[test]
     fn find_agent_opencode_at_depth_1() {
         let t = table(&[(100, 1, "/bin/zsh"), (200, 100, "opencode")]);
-        assert_eq!(find_agent(&t, 100), Some(AgentType::OpenCode));
+        assert_eq!(find_agent(&t, 100).map(|a| a.0), Some(AgentType::OpenCode));
     }
 
     #[test]
@@ -451,7 +542,10 @@ mod tests {
             (500, 400, "sh"),
             (600, 500, "codex"),
         ]);
-        assert_eq!(find_agent(&t, 100), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            find_agent(&t, 100).map(|a| a.0),
+            Some(AgentType::ClaudeCode)
+        );
         let deep = table(&[
             (100, 1, "sh"),
             (200, 100, "sh"),
@@ -459,7 +553,7 @@ mod tests {
             (400, 300, "sh"),
             (500, 400, "claude"),
         ]);
-        assert_eq!(find_agent(&deep, 100), None);
+        assert_eq!(find_agent(&deep, 100).map(|a| a.0), None);
     }
 
     #[test]
@@ -471,19 +565,22 @@ mod tests {
             (200, 100, "claude"),
         ]);
         // The deeper codex has the lower pid. Depth still decides.
-        assert_eq!(find_agent(&t, 100), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            find_agent(&t, 100).map(|a| a.0),
+            Some(AgentType::ClaudeCode)
+        );
     }
 
     #[test]
     fn find_agent_survives_cycle() {
         let t = table(&[(100, 200, "sh"), (200, 100, "sh")]);
-        assert_eq!(find_agent(&t, 100), None);
+        assert_eq!(find_agent(&t, 100).map(|a| a.0), None);
     }
 
     #[test]
     fn find_agent_none_for_missing_pane_pid() {
         let t = table(&[(100, 1, "claude")]);
-        assert_eq!(find_agent(&t, 999), None);
+        assert_eq!(find_agent(&t, 999).map(|a| a.0), None);
     }
 
     #[test]
@@ -574,8 +671,8 @@ mod tests {
             (300, 1, "nvim"),
             (400, 300, "/Users/me/.local/bin/devin acp"),
         ]);
-        assert_eq!(find_agent(&t, 100), Some(AgentType::Devin));
-        assert_eq!(find_agent(&t, 300), None);
+        assert_eq!(find_agent(&t, 100).map(|a| a.0), Some(AgentType::Devin));
+        assert_eq!(find_agent(&t, 300).map(|a| a.0), None);
     }
 
     #[test]
@@ -721,7 +818,7 @@ mod tests {
             (300, 200, "sh -c vite"),
             (400, 300, "node /Users/me/code/pi/node_modules/.bin/vite"),
         ]);
-        assert_eq!(find_agent(&t, 100), None);
+        assert_eq!(find_agent(&t, 100).map(|a| a.0), None);
     }
 
     #[test]
