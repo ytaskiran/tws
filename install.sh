@@ -873,6 +873,7 @@ import { basename } from "node:path";
 
 const AGENTS_DIR = `${process.env.HOME}/.config/tws/agents`;
 const HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`;
+const SESSIONS_DIR = `${process.env.HOME}/.config/tws/sessions`;
 const TRIGGER = `${process.env.HOME}/.config/tws/agent.trigger`;
 
 // Only $TMUX_PANE names the pane this agent runs in. Asking tmux instead
@@ -949,14 +950,58 @@ function beat(pane: string) {
   }
 }
 
+// The resume pointer of the pane: <session file>\t<cwd>\t<pid>. `tws agents-save`
+// keeps it for a resume after a reboot (`pi --session <file>`). Pi makes the
+// session file at the first message, and an ephemeral session has none, so
+// turn_start writes it again when it changes. The last content stays in memory,
+// so a turn reads no file. A failure must not break the session.
+let pointer: string | undefined;
+function savePointer(ctx: any) {
+  const pane = process.env.TMUX_PANE;
+  if (!pane) return;
+  const path = `${SESSIONS_DIR}/${pane}.pi`;
+  const tmp = `${SESSIONS_DIR}/.${pane}.pi.${process.pid}`;
+  try {
+    const file = ctx?.sessionManager?.getSessionFile?.();
+    const text = file ? `${file}\t${process.cwd()}\t${process.pid}\n` : undefined;
+    if (text === pointer) return;
+    if (text) {
+      mkdirSync(SESSIONS_DIR, { recursive: true });
+      writeFileSync(tmp, text);
+      renameSync(tmp, path);
+    } else {
+      rmSync(path, { force: true });
+    }
+    pointer = text;
+  } catch {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Nothing to clean up that the extension can fix.
+    }
+  }
+}
+
+function dropPointer() {
+  pointer = undefined;
+  try {
+    rmSync(`${SESSIONS_DIR}/${process.env.TMUX_PANE}.pi`, { force: true });
+  } catch {
+    // A pointer of a dead process is pruned by tws.
+  }
+}
+
 export default function (pi: any) {
   // A new conversation in the pane owns nothing of the last one. `reload` keeps
   // the same session, so it must not reset a pane that waits for the user.
-  pi.on("session_start", async (event: { reason: string }) => {
+  pi.on("session_start", async (event: { reason: string }, ctx: any) => {
+    if (event.reason === "reload") return;
+    savePointer(ctx);
     const path = panePath();
-    if (path && event.reason !== "reload") writeWord(path, "idle");
+    if (path) writeWord(path, "idle");
   });
-  pi.on("turn_start", async () => {
+  pi.on("turn_start", async (_event: unknown, ctx: any) => {
+    savePointer(ctx);
     const path = panePath();
     if (path) writeWord(path, "working");
   });
@@ -986,6 +1031,7 @@ export default function (pi: any) {
     if (event.reason === "reload") return;
     const path = panePath();
     if (!path) return;
+    dropPointer();
     rmSync(`${HEARTBEAT_DIR}/${process.env.TMUX_PANE}`, { force: true });
     if (existsSync(path)) {
       rmSync(path, { force: true });
@@ -1018,6 +1064,7 @@ const TWS_DIR = `${process.env.HOME}/.config/tws`;
 const AGENTS_DIR = `${TWS_DIR}/agents`;
 const HEARTBEAT_DIR = `${TWS_DIR}/heartbeat`;
 const SUBAGENTS_DIR = `${TWS_DIR}/subagents`;
+const SESSIONS_DIR = `${TWS_DIR}/sessions`;
 const TRIGGER = `${TWS_DIR}/agent.trigger`;
 // tws expires a silent `working` pane after 15 min. A turn can think, or run one
 // tool, for longer than that, so the heartbeat beats on a timer while a session
@@ -1043,6 +1090,7 @@ const S = (globalThis[Symbol.for("tws.opencode.status")] ??= {
   lastEvent: 0,
   reloadWord: undefined,
   timer: undefined,
+  pointerId: undefined,
 });
 
 // Only the TUI reports. `opencode run` also loads plugins, and an agent can start
@@ -1071,22 +1119,48 @@ function rm(path, opts) {
   }
 }
 
+// Truncate-then-write would expose an empty file to a reader in between. tws
+// skips the dot temp file. Returns false on a failure, and never throws.
+function put(dir, name, text) {
+  const path = `${dir}/${name}`;
+  const tmp = `${dir}/.${name}.${process.pid}`;
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    rm(tmp);
+    return false;
+  }
+}
+
 // TRIGGER rings only on a change: tws does a full tmux+ps rescan when rung. A
 // stamp writes the same word again, so the mtime becomes the start of a new turn.
 function writeWord(pane, word, stamp = false) {
-  const path = `${AGENTS_DIR}/${pane}`;
-  const cur = readWord(path);
+  const cur = readWord(`${AGENTS_DIR}/${pane}`);
   if (cur === word && !stamp) return;
-  // Truncate-then-write would expose an empty file to a reader in between.
-  const tmp = `${AGENTS_DIR}/.${pane}.${process.pid}`;
+  if (!put(AGENTS_DIR, pane, word) || cur === word) return;
   try {
-    mkdirSync(AGENTS_DIR, { recursive: true });
-    writeFileSync(tmp, word);
-    renameSync(tmp, path);
-    if (cur !== word) writeFileSync(TRIGGER, "");
+    writeFileSync(TRIGGER, "");
   } catch {
-    rm(tmp);
+    // The next change rings it.
   }
+}
+
+// The resume pointer of the pane: <session id>\t<cwd>\t<pid>. `tws agents-save`
+// keeps it for a resume after a reboot (`opencode --session <id>`). A resumed
+// session sends no session.created, so the first busy of a root session writes
+// it. The plugin runs in the opencode process that the tws scan finds.
+function writePointer(pane, sid) {
+  if (S.pointerId === sid || !SAFE_ID.test(sid)) return;
+  let cwd;
+  try {
+    cwd = process.cwd();
+  } catch {
+    return;
+  }
+  if (put(SESSIONS_DIR, `${pane}.opencode`, `${sid}\t${cwd}\t${process.pid}\n`)) S.pointerId = sid;
 }
 
 // A turn that ends in the pane the user is looking at is already read. The query
@@ -1201,6 +1275,7 @@ function resetState() {
   S.aborted.clear();
   S.active = false;
   S.unread = false;
+  S.pointerId = undefined;
 }
 
 function clearPaneFiles(pane) {
@@ -1225,6 +1300,7 @@ function onEvent(pane, event) {
       if (p.status?.type === "busy" || p.status?.type === "retry") {
         turnStart = !S.parent.has(p.sessionID) && !S.busy.has(p.sessionID);
         S.busy.add(p.sessionID);
+        if (!S.parent.has(p.sessionID)) writePointer(pane, p.sessionID);
         if (S.parent.has(p.sessionID) && SAFE_ID.test(p.sessionID)) {
           touch(`${SUBAGENTS_DIR}/${pane}/${p.sessionID}`, `${SUBAGENTS_DIR}/${pane}`);
         }
@@ -1283,6 +1359,7 @@ export const TwsStatus = async () => {
       S.reloadWord = readWord(`${AGENTS_DIR}/${pane}`);
       resetState();
       clearPaneFiles(pane);
+      rm(`${SESSIONS_DIR}/${pane}.opencode`);
       try {
         rmSync(`${AGENTS_DIR}/${pane}`);
         writeFileSync(TRIGGER, "");

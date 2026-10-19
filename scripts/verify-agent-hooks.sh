@@ -2059,7 +2059,7 @@ fi
 
 # Pi has no shell command to run, so the extension text is the check. beat()
 # must name the heartbeat directory and must not touch the status file. Node runs
-# the real extension below when it can strip types.
+# the real extension for the session pointer when it can strip types.
 if printf '%s' "$pi_ext" | grep -Fq 'HEARTBEAT_DIR = `${process.env.HOME}/.config/tws/heartbeat`' \
     && printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'HEARTBEAT_DIR' \
     && ! printf '%s' "$pi_ext" | sed -n '/^function beat/,/^}/p' | grep -Fq 'utimesSync(path'; then
@@ -2781,6 +2781,38 @@ console.log("  timer");
   }
 }
 
+console.log("  session pointer");
+await (async () => {
+  const POINTER = `${TWS}/sessions/%7.opencode`;
+  const pointer = () => (existsSync(POINTER) ? readFileSync(POINTER, "utf8") : "<none>");
+  const want = (id) => `${id}\t${process.cwd()}\t${process.pid}\n`;
+  rmSync(TWS, { recursive: true, force: true });
+  tmux("fail");
+  const hooks = await fresh();
+  const ev = (type, properties) => hooks.event({ event: { type, properties } });
+  const busy = (sessionID) => ev("session.status", { sessionID, status: { type: "busy" } });
+  check(pointer() === "<none>", "init writes no pointer");
+  await busy("ses_root");
+  check(pointer() === want("ses_root"), "a busy root session writes its id, the cwd and the pid to the pointer");
+  utimesSync(POINTER, OLD, OLD);
+  await busy("ses_root");
+  check(mtime(POINTER) === OLD.getTime(), "a repeated busy of the same root does not write the pointer again");
+  await ev("session.created", { info: { id: "ses_kid", parentID: "ses_root" } });
+  await busy("ses_kid");
+  await ev("session.updated", { info: { id: "ses_kid2", parentID: "ses_root" } });
+  await busy("ses_kid2");
+  check(pointer() === want("ses_root"), "a busy child session does not change the pointer");
+  await busy("ses_other");
+  check(pointer() === want("ses_other"), "a second root session that goes busy replaces the id");
+  check(readdirSync(`${TWS}/sessions`).join() === "%7.opencode", "the pointer write leaves no temp file");
+  await hooks.dispose();
+  check(pointer() === "<none>", "the last dispose removes the pointer");
+  const again = await fresh();
+  await again.event({ event: { type: "session.status", properties: { sessionID: "ses_other", status: { type: "busy" } } } });
+  check(pointer() === want("ses_other"), "after a reload the same root writes the pointer again");
+  await again.dispose();
+})();
+
 console.log("  gate");
 await (async () => {
   rmSync(TWS, { recursive: true, force: true });
@@ -2793,7 +2825,7 @@ await (async () => {
   process.argv[1] = RUN_ARGV;
   process.argv[2] = "run";
   hooks = await TwsStatus();
-  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing");
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing, so no pointer");
   process.argv[1] = RUN_ARGV;
   process.argv[2] = "run";
   process.argv[3] = "review src/cli/tui/worker.ts";
@@ -2860,6 +2892,72 @@ if declare -F configure_opencode_hooks > /dev/null; then
 else
     printf '  FAIL %s has no configure_opencode_hooks to check\n' "$INSTALL_SH"
     failures=$((failures + 1))
+fi
+
+printf '\nPi session pointer\n'
+# Node 22.6 and later can strip the types of the Pi extension, so node runs the
+# text that install.sh writes. A driver calls the handlers as Pi does.
+printf '%s\n' "$pi_ext" | sed '1d;$d' > "$HOME/pi-ext.mts"
+printf 'const x: number = 0;\n' > "$HOME/pi-probe.mts"
+if ! node --experimental-strip-types --no-warnings "$HOME/pi-probe.mts" > /dev/null 2>&1; then
+    printf '  skip this node cannot strip types, so the Pi extension is not run\n'
+else
+    cat > "$HOME/pi-driver.mjs" <<'PI_DRIVER_EOF'
+import { existsSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
+
+process.env.TMUX_PANE = "%7";
+process.env.PATH = `${process.env.FAKE_BIN}:${process.env.PATH}`;
+const POINTER = `${process.env.HOME}/.config/tws/sessions/%7.pi`;
+const OLD = new Date("2000-01-01T00:00:00Z");
+const { default: ext } = await import(`${process.env.HOME}/pi-ext.mts`);
+
+let failures = 0;
+function check(cond, msg) {
+  console.log(`  ${cond ? "ok  " : "FAIL"} ${msg}`);
+  if (!cond) failures++;
+}
+const on = {};
+ext({ on: (name, fn) => (on[name] = fn) });
+let file = "/s/a.jsonl";
+const ctx = { sessionManager: { getSessionFile: () => file } };
+const fire = (name, reason) => on[name]({ type: name, reason }, ctx);
+const pointer = () => (existsSync(POINTER) ? readFileSync(POINTER, "utf8") : "<none>");
+const want = (f) => `${f}\t${process.cwd()}\t${process.pid}\n`;
+
+await fire("session_start", "startup");
+check(pointer() === want("/s/a.jsonl"), "session_start writes the session file, the cwd and the pid");
+check(readdirSync(`${process.env.HOME}/.config/tws/sessions`).join() === "%7.pi", "the write leaves no temp file");
+file = "/s/b.jsonl";
+await fire("session_start", "reload");
+check(pointer() === want("/s/a.jsonl"), "a reload session_start writes nothing");
+await fire("turn_start");
+check(pointer() === want("/s/b.jsonl"), "turn_start writes the pointer again after a change");
+utimesSync(POINTER, OLD, OLD);
+await fire("turn_start");
+check(statSync(POINTER).mtimeMs === OLD.getTime(), "turn_start with no change does not write");
+await fire("session_shutdown", "reload");
+check(pointer() === want("/s/b.jsonl"), "a reload session_shutdown keeps the pointer");
+await fire("session_shutdown", "quit");
+check(pointer() === "<none>", "session_shutdown removes the pointer");
+file = undefined;
+await fire("session_start", "new");
+await fire("turn_start");
+check(pointer() === "<none>", "an ephemeral session writes no pointer");
+ctx.sessionManager = { getSessionFile: () => { throw new Error("boom"); } };
+let threw = false;
+try {
+  await fire("turn_start");
+} catch {
+  threw = true;
+}
+check(!threw && pointer() === "<none>", "a session manager that fails does not throw out of the handler");
+process.exit(failures);
+PI_DRIVER_EOF
+    set +e
+    FAKE_BIN="$FAKE_BIN" node --experimental-strip-types --no-warnings "$HOME/pi-driver.mjs"
+    pi_failures=$?
+    set -e
+    failures=$((failures + pi_failures))
 fi
 
 printf '\nthe tmux-resurrect hooks for agent resume\n'
