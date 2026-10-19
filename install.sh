@@ -392,9 +392,10 @@ session_end_hook_entry() {
 # `tws agents-save` keeps it for a resume after a reboot. $PPID is the agent (or,
 # for Devin, its direct child `devin acp`). One jq, no tmux: the Codex hook
 # timeout is 1 s. A subagent session (agent_id set) never replaces the pointer.
-# Devin sends no cwd and runs its hooks in the project directory, so $PWD stands
-# in. @tsv escapes a tab in a value, so the cuts at a tab are safe; `read` would
-# merge two tabs and move agent_id into an empty cwd. The write is a rename.
+# Devin sends no cwd; the hook's $PWD, Devin's launch dir, stands in (not
+# verified to be the project dir). @tsv escapes a tab in a value, so the cuts at
+# a tab are safe; `read` would merge two tabs and move agent_id into an empty
+# cwd. The write is a rename.
 pointer_entry() {
     local agent="$1" cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -701,7 +702,8 @@ configure_codex_hooks() {
         .hooks.Stop               = ((.hooks.Stop // []) + $review) |
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
-        # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
+        # Codex fires no SessionStart for a subagent (checked on 0.159.3). `rest` still never
+        # overwrites a live state, in case a later Codex fires one.
         .hooks.SessionStart       = ((.hooks.SessionStart // []) + $ptr + $sessionstart) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
         .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end + $ptrend) |
@@ -1969,8 +1971,9 @@ confirm_default_conf() {
     echo ""
     warn "Optional: the tws default tmux config"
     echo "   This REPLACES your tmux config with the full setup of the tws author:"
-    echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, mouse, clipboard, and keys."
-    echo "   It downloads these 4 plugins from GitHub, and tmux runs them at each start."
+    echo "   TPM, tmux-sensible, tmux-nova (theme), tmux-resurrect, tmux-continuum, mouse,"
+    echo "   clipboard, and keys. It downloads these 5 plugins from GitHub, and tmux runs"
+    echo "   them at each start."
     echo "   It needs git, and the theme needs a Nerd Font in your terminal."
     echo "   Each tmux config you have now moves to <file>.tws-backup-<time> first."
     printf '%s' "Install the tws default tmux config? [y/N] "
