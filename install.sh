@@ -141,7 +141,7 @@ configure_path() {
     info "Restart your shell or run: source $rc_file"
 }
 
-# --- 4. Agent hooks (Claude Code + Codex + Pi) ---
+# --- 4. Agent hooks (Claude Code + Codex + Pi + OpenCode) ---
 
 # Emits a Claude/Codex hook "entry" JSON array for a single status word.
 # agent.trigger stays guarded in every mode — ringing it per tool call would
@@ -986,6 +986,309 @@ PI_EXT_EOF
     hooks_configured=1
 }
 
+configure_opencode_hooks() {
+    local oc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+    local plugin_file="$oc_dir/plugins/tws-status.js"
+
+    if [ ! -d "$oc_dir" ]; then
+        info "OpenCode config not found — skipping agent hooks"
+        return
+    fi
+
+    # OpenCode loads plugins from ~/.config/opencode/plugins/*.{js,ts}. Overwriting
+    # this file wholesale is safe and idempotent since tws owns it outright.
+    if ! { mkdir -p "$oc_dir/plugins" && cat > "$plugin_file" <<'OPENCODE_PLUGIN_EOF'
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+
+const TWS_DIR = `${process.env.HOME}/.config/tws`;
+const AGENTS_DIR = `${TWS_DIR}/agents`;
+const HEARTBEAT_DIR = `${TWS_DIR}/heartbeat`;
+const SUBAGENTS_DIR = `${TWS_DIR}/subagents`;
+const TRIGGER = `${TWS_DIR}/agent.trigger`;
+// tws expires a silent `working` pane after 15 min. A turn can think, or run one
+// tool, for longer than that, so the heartbeat beats on a timer while a session
+// is busy.
+const BEAT_MS = 60_000;
+// Equals MAX_TOOL_SECS in tws, the cap of an in-flight marker. A session that
+// leaked into `busy` gets a bounded exit: the beat stops, and tws expires the
+// pane 15 min later.
+const MAX_SILENT_MS = 4 * 60 * 60 * 1000;
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const EVENTS = /^(session\.(created|updated|status|idle|deleted|error)|permission\.(asked|replied)|question\.(asked|replied|rejected))$/;
+
+// Every copy of the plugin in this process shares one state, so a second load or
+// a reload cannot split it.
+const S = (globalThis[Symbol.for("tws.opencode.status")] ??= {
+  instances: 0,
+  busy: new Set(),
+  asks: new Map(),
+  parent: new Map(),
+  aborted: new Set(),
+  active: false,
+  unread: false,
+  lastEvent: 0,
+  reloadWord: undefined,
+  timer: undefined,
+});
+
+// Only the TUI reports. `opencode run` also loads plugins, and an agent can start
+// it from a tool in its own pane: it would then overwrite the status of that
+// agent. `opencode serve` runs the sessions of every attached TUI, so its pane is
+// not the pane of those sessions. Only argv[1] counts: a prompt of `opencode run`
+// can name the worker script.
+function isTui() {
+  return /(^|\/)tui\/worker\.[cm]?[jt]s$/.test(process.argv[1] ?? "");
+}
+
+function readWord(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+// A failed removal must not break the session.
+function rm(path, opts) {
+  try {
+    rmSync(path, { force: true, ...opts });
+  } catch {
+    // Nothing to clean up that the plugin can fix.
+  }
+}
+
+// TRIGGER rings only on a change: tws does a full tmux+ps rescan when rung. A
+// stamp writes the same word again, so the mtime becomes the start of a new turn.
+function writeWord(pane, word, stamp = false) {
+  const path = `${AGENTS_DIR}/${pane}`;
+  const cur = readWord(path);
+  if (cur === word && !stamp) return;
+  // Truncate-then-write would expose an empty file to a reader in between.
+  const tmp = `${AGENTS_DIR}/.${pane}.${process.pid}`;
+  try {
+    mkdirSync(AGENTS_DIR, { recursive: true });
+    writeFileSync(tmp, word);
+    renameSync(tmp, path);
+    if (cur !== word) writeFileSync(TRIGGER, "");
+  } catch {
+    rm(tmp);
+  }
+}
+
+// A turn that ends in the pane the user is looking at is already read. The query
+// names the pane with -t, so it reads this pane and not the active one. Any
+// failure means the pane is not known to be in view.
+function turnEndWord(pane) {
+  try {
+    const seen = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_active}#{window_active}#{session_attached}"], {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return /^11[1-9]/.test(seen.trim()) ? "idle" : "review";
+  } catch {
+    return "review";
+  }
+}
+
+function touch(file, dir) {
+  const now = new Date();
+  try {
+    utimesSync(file, now, now);
+  } catch {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, "");
+    } catch {
+      // A liveness file that cannot be written must not break the session.
+    }
+  }
+}
+
+// The heartbeat proves liveness and leaves the status file alone, so the status
+// mtime stays the turn start.
+function beat(pane) {
+  touch(`${HEARTBEAT_DIR}/${pane}`, HEARTBEAT_DIR);
+  for (const sid of S.busy) {
+    if (S.parent.has(sid) && SAFE_ID.test(sid)) touch(`${SUBAGENTS_DIR}/${pane}/${sid}`, `${SUBAGENTS_DIR}/${pane}`);
+  }
+}
+
+function rootOf(sid) {
+  const seen = new Set();
+  while (S.parent.has(sid) && !seen.has(sid)) {
+    seen.add(sid);
+    sid = S.parent.get(sid);
+  }
+  return sid;
+}
+
+function settleSession(pane, sid) {
+  const wasBusy = S.busy.delete(sid);
+  for (const [id, owner] of S.asks) if (owner === sid) S.asks.delete(id);
+  if (S.parent.has(sid)) {
+    if (SAFE_ID.test(sid)) rm(`${SUBAGENTS_DIR}/${pane}/${sid}`);
+    return;
+  }
+  const aborted = S.aborted.delete(sid);
+  // opencode sends more than one idle event for one turn end, so only the one
+  // that ends a busy root can leave a result unread. An abort leaves the flag as
+  // it is: an earlier root can still hold an unread result.
+  if (!aborted && wasBusy) S.unread = true;
+  // An abort stops the subagents of the turn too.
+  if (aborted) for (const child of [...S.busy]) if (rootOf(child) === sid) settleSession(pane, child);
+}
+
+// The pane word is the state of every session in this process: an open question
+// or permission request is `waiting`, a busy session is `working`, and the end of
+// the last busy session ends the turn. A background subagent keeps the pane
+// `working` after its parent goes idle.
+function recompute(pane, turnStart = false) {
+  // Only a busy session can ask, so no request outlives the last busy session.
+  if (S.busy.size === 0) S.asks.clear();
+  // The timer changes first, so a failed file call cannot leave a timer running.
+  if (S.busy.size > 0 && !S.timer) {
+    S.timer = setInterval(() => {
+      if (Date.now() - S.lastEvent > MAX_SILENT_MS) {
+        clearInterval(S.timer);
+        S.timer = undefined;
+        return;
+      }
+      beat(pane);
+    }, BEAT_MS);
+    S.timer.unref?.();
+  } else if (S.busy.size === 0 && S.timer) {
+    clearInterval(S.timer);
+    S.timer = undefined;
+  }
+  if (S.asks.size > 0) {
+    S.active = true;
+    writeWord(pane, "waiting");
+  } else if (S.busy.size > 0) {
+    S.active = true;
+    writeWord(pane, "working", turnStart);
+  } else if (S.active) {
+    // opencode sends more than one idle event for one turn end. Only the first
+    // one writes, so a later one cannot undo the acknowledgment of a `review`.
+    S.active = false;
+    rm(`${SUBAGENTS_DIR}/${pane}`, { recursive: true });
+    const end = S.unread ? turnEndWord(pane) : "idle";
+    S.unread = false;
+    writeWord(pane, end);
+  }
+}
+
+function resetState() {
+  if (S.timer) clearInterval(S.timer);
+  S.timer = undefined;
+  S.busy.clear();
+  S.asks.clear();
+  S.parent.clear();
+  S.aborted.clear();
+  S.active = false;
+  S.unread = false;
+}
+
+function clearPaneFiles(pane) {
+  rm(`${HEARTBEAT_DIR}/${pane}`);
+  rm(`${SUBAGENTS_DIR}/${pane}`, { recursive: true });
+  rm(`${TWS_DIR}/inflight/${pane}`, { recursive: true });
+  rm(`${TWS_DIR}/permissions/${pane}`, { recursive: true });
+}
+
+function onEvent(pane, event) {
+  if (!EVENTS.test(event?.type ?? "")) return;
+  S.lastEvent = Date.now();
+  const p = event.properties ?? {};
+  let turnStart = false;
+  switch (event.type) {
+    case "session.created":
+    case "session.updated":
+      if (p.info?.id && p.info.parentID) S.parent.set(p.info.id, p.info.parentID);
+      return;
+    case "session.status":
+      if (!p.sessionID) return;
+      if (p.status?.type === "busy" || p.status?.type === "retry") {
+        turnStart = !S.parent.has(p.sessionID) && !S.busy.has(p.sessionID);
+        S.busy.add(p.sessionID);
+        if (S.parent.has(p.sessionID) && SAFE_ID.test(p.sessionID)) {
+          touch(`${SUBAGENTS_DIR}/${pane}/${p.sessionID}`, `${SUBAGENTS_DIR}/${pane}`);
+        }
+      } else {
+        settleSession(pane, p.sessionID);
+      }
+      break;
+    case "session.idle":
+      if (!p.sessionID) return;
+      settleSession(pane, p.sessionID);
+      break;
+    case "session.deleted":
+      if (!p.info?.id) return;
+      settleSession(pane, p.info.id);
+      S.parent.delete(p.info.id);
+      break;
+    case "session.error":
+      if (p.sessionID && !S.parent.has(p.sessionID) && p.error?.name === "MessageAbortedError") S.aborted.add(p.sessionID);
+      return;
+    case "permission.asked":
+    case "question.asked":
+      if (p.id && p.sessionID) S.asks.set(p.id, p.sessionID);
+      break;
+    case "permission.replied":
+    case "question.replied":
+    case "question.rejected":
+      S.asks.delete(p.requestID);
+      break;
+  }
+  recompute(pane, turnStart);
+}
+
+export const TwsStatus = async () => {
+  // Only $TMUX_PANE names the pane this agent runs in. An agent outside a pane
+  // has nothing to report and must write nothing.
+  const pane = process.env.TMUX_PANE;
+  if (!pane || !SAFE_ID.test(pane.replace(/^%/, "")) || !isTui()) return {};
+  // A new opencode process in the pane owns nothing of the last agent there. A
+  // reload in the same process keeps an unread `review`: S lives on globalThis,
+  // so only a re-init in the same process sees `reloadWord`.
+  if (S.instances++ === 0) {
+    const keep = S.reloadWord === "review";
+    S.reloadWord = undefined;
+    resetState();
+    clearPaneFiles(pane);
+    writeWord(pane, keep ? "review" : "idle");
+  }
+  return {
+    event: async ({ event }) => onEvent(pane, event),
+    "tool.execute.before": async () => {
+      S.lastEvent = Date.now();
+      if (S.busy.size > 0) beat(pane);
+    },
+    dispose: async () => {
+      if (--S.instances > 0) return;
+      S.reloadWord = readWord(`${AGENTS_DIR}/${pane}`);
+      resetState();
+      clearPaneFiles(pane);
+      try {
+        rmSync(`${AGENTS_DIR}/${pane}`);
+        writeFileSync(TRIGGER, "");
+      } catch {
+        // No status file: nothing changed, so the trigger stays quiet.
+      }
+    },
+  };
+};
+OPENCODE_PLUGIN_EOF
+    } 2>/dev/null; then
+        warn "Could not write $plugin_file (a read-only or managed directory?). The OpenCode plugin is not changed."
+        return
+    fi
+
+    ok "Configured OpenCode agent status plugin"
+    hooks_configured=1
+}
+
 # Configures the agents that scan_plan found. The user already approved them
 # with the plan question, so nothing here asks.
 configure_agent_hooks() {
@@ -993,6 +1296,7 @@ configure_agent_hooks() {
     if [ "$plan_codex" -eq 1 ]; then configure_codex_hooks; fi
     if [ "$plan_pi" -eq 1 ]; then configure_pi_hooks; fi
     if [ "$plan_devin" -eq 1 ]; then configure_devin_hooks; fi
+    if [ "$plan_opencode" -eq 1 ]; then configure_opencode_hooks; fi
 
     # Agents snapshot hook config at session start, so a file already stuck at
     # `working` would outlive this upgrade. Live panes rewrite theirs on the next
@@ -1709,7 +2013,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -1796,6 +2100,11 @@ scan_plan() {
             plan_devin=1
         fi
     fi
+    plan_oc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+    if [ -d "$plan_oc_dir" ]; then
+        plan_found+=("OpenCode")
+        plan_opencode=1
+    fi
 
     plan_conf="$(tmux_conf_path)"
     if [ -n "$plan_conf" ]; then
@@ -1807,7 +2116,7 @@ scan_plan() {
     # A note that starts with a tab is a detail line under the note before it.
     local broken_link tmux_blocked=0
     broken_link="$(tmux_conf_broken_link)"
-    if [ $((plan_claude + plan_codex + plan_pi + plan_devin)) -gt 0 ]; then
+    if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ]; then
         if [ -n "$broken_link" ]; then
             plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
             tmux_blocked=1
@@ -1816,7 +2125,7 @@ scan_plan() {
             tmux_blocked=1
         fi
     fi
-    if [ $((plan_claude + plan_codex + plan_pi + plan_devin)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
+    if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
         if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
             plan_ack=1
         else
@@ -1892,6 +2201,7 @@ print_plan() {
             plan_row "Devin CLI status hooks" "$(tilde "$(devin_config)")$(! jsonc_has_extras "$(devin_config)" || printf '  [comments removed, backup first]')"
         fi
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
+        if [ "$plan_opencode" -eq 1 ]; then plan_row "OpenCode status plugin" "$(tilde "$plan_oc_dir/plugins/tws-status.js")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
         if [ "$plan_bar" -eq 1 ] && [ "$bar_replace" -eq 1 ]; then
@@ -1922,7 +2232,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws

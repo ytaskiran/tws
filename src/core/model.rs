@@ -34,6 +34,7 @@ pub enum AgentType {
     Codex,
     Pi,
     Devin,
+    OpenCode,
 }
 
 impl AgentType {
@@ -43,6 +44,7 @@ impl AgentType {
             AgentType::Codex => "Codex",
             AgentType::Pi => "Pi",
             AgentType::Devin => "Devin",
+            AgentType::OpenCode => "OpenCode",
         }
     }
 
@@ -52,6 +54,7 @@ impl AgentType {
             AgentType::Codex => ">_",
             AgentType::Pi => "π",
             AgentType::Devin => "δ",
+            AgentType::OpenCode => "\u{25A3}", // ▣ white square containing black small square (opencode's TUI glyph)
         }
     }
 }
