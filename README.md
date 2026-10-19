@@ -74,8 +74,8 @@ comes back idle. A turn that ran at the reboot does not continue.
 
 This needs [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) and
 [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum). Continuum
-saves every 15 minutes and restores when tmux starts. `install.sh` adds the two
-resurrect hooks to your tmux config:
+saves at its default save interval (15 minutes) and restores when tmux starts.
+`install.sh` adds the two resurrect hooks to your tmux config:
 
     set -g @resurrect-hook-post-save-all '/path/to/tws agents-save'
     set -g @resurrect-hook-post-restore-all '/path/to/tws agents-restore'
@@ -92,6 +92,10 @@ Known limits:
 - Codex with `daemon_auto_start` on does not resume. The installer asks to turn it off.
 - An agent that you closed less than one save interval before a reboot comes back one time.
 - A directory name with a tab or a backslash resumes the agent in the wrong directory.
+- A restored agent keeps its saved line until it gets a new message. If you change its conversation before that, the next reboot can resume the old one.
+- In the first seconds after a restore, tws can type into a pane that you attached to.
+- A second tmux server (`tmux -L`) uses the same snapshot. A save on it replaces the snapshot of the first server.
+- After an OpenCode reload, a subagent session can take the resume pointer until the next main-session message.
 
 ### Read a pane by moving into it
 
