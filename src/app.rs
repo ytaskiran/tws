@@ -151,6 +151,8 @@ pub struct App {
     preview_content: Option<Text<'static>>,
     preview_pane_id: Option<String>,
     last_preview_refresh: Instant,
+    /// Sweep start ms by pane id, for the agent cards.
+    sweeps: HashMap<String, u128>,
     view_mode: ViewMode,
     agent_list_cursor: usize,
     theme: Theme,
@@ -207,6 +209,7 @@ impl App {
             preview_content: None,
             preview_pane_id: None,
             last_preview_refresh: Instant::now(),
+            sweeps: HashMap::new(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
             theme: Theme::build(&palette),
@@ -275,11 +278,21 @@ impl App {
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
 
+            let now_ms = crate::components::agent_meta::now_ms();
+            self.sweeps
+                .retain(|_, start| now_ms < *start + agents_view::SWEEP_MS);
+
             self.draw(terminal)?;
             // Handle every queued event before the next refresh and draw. A
             // click then hit-tests the frame you saw, and a mouse sweep costs
             // one draw, not one for each row it crosses.
-            let mut timeout = Duration::from_millis(250);
+            // A 40 ms tick only while a sweep runs; the rest of the app
+            // redraws on the 250 ms poll.
+            let mut timeout = if self.sweeps.is_empty() {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_millis(40)
+            };
             while self.running
                 && let Some(input) = event::poll(timeout)?
             {
@@ -517,6 +530,10 @@ impl App {
                     agents_scroll,
                     view_area,
                     &self.theme,
+                    &agents_view::Live {
+                        sweeps: Some(&self.sweeps),
+                        now_ms: crate::components::agent_meta::now_ms(),
+                    },
                 );
                 if !flat_agents.is_empty() {
                     list_area = Some(view_area);
@@ -1995,6 +2012,13 @@ impl App {
     }
 
     fn do_agent_scan(&mut self) {
+        // Before the scan, which rebuilds every agent with an Unknown status.
+        let before: HashMap<String, crate::core::model::AgentStatus> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| (a.pane_id.clone(), a.status))
+            .collect();
         // Snapshot before reading any status file, so a hook firing mid-scan
         // stays pending for the next poll.
         let observed_trigger = self.agent_trigger.mtime();
@@ -2094,6 +2118,24 @@ impl App {
 
         let status_map = crate::core::status::load_statuses();
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
+        // An agent that starts to need you gets a sweep. Several at once
+        // go one after another, top to bottom.
+        let now_ms = crate::components::agent_meta::now_ms();
+        let arrived: Vec<String> = self
+            .state
+            .all_agents_flat()
+            .into_iter()
+            .filter(|a| {
+                agents_view::lane(a.status) == 0
+                    && before
+                        .get(&a.pane_id)
+                        .is_none_or(|&s| agents_view::lane(s) != 0)
+            })
+            .map(|a| a.pane_id)
+            .collect();
+        for (k, pane) in arrived.into_iter().enumerate() {
+            self.sweeps.insert(pane, now_ms + 150 * k as u128);
+        }
 
         if !self.pending_pin_restore.is_empty() {
             let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);

@@ -326,6 +326,8 @@ impl AppState {
             Some(slot) => (0u8, slot),
             None => (1u8, 0u8),
         });
+        // Then by triage lane, so the agents view index and its cards agree.
+        result.sort_by_key(|a| crate::components::agents_view::lane(a.status));
         result
     }
 }

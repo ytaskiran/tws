@@ -1,21 +1,110 @@
-//! Prototype v2: agents as status-first lines. The dot and the agent name are
-//! the loud part; the workspace path trails dim. Pin slots sit in a quiet gutter.
+//! Agents as cards in triage lanes: a tinted surface with a status bar on the
+//! left, the name and a status chip on the first line, and the path and a live
+//! harness sigil under it. Structure comes from the surfaces, not from borders.
+//! A card that starts to need you gets a sweep of light.
+
+use std::collections::HashMap;
 
 use ratatui::layout::Alignment;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::agent_meta;
-use crate::core::model::AgentStatus;
+use crate::core::model::{AgentStatus, AgentType};
 use crate::core::state::FlatAgent;
-use crate::core::status::status_glyph;
-use crate::theme::Theme;
+use crate::theme::{Theme, darken_toward};
+
+/// Rows of a card: a half pad, the title, the path, and a half pad. The two
+/// half pads of neighbor cards make one blank row between them.
+const CARD_HEIGHT: usize = 4;
+pub const SWEEP_MS: u128 = 900;
+const SWEEP_BAND: f32 = 16.0;
+
+/// Live data the cards show beside the agent list.
+#[derive(Default)]
+pub struct Live<'a> {
+    /// Sweep start time in ms by pane id.
+    pub sweeps: Option<&'a HashMap<String, u128>>,
+    pub now_ms: u128,
+}
+
+/// Triage lane: 0 needs you, 1 working, 2 quiet.
+pub fn lane(status: AgentStatus) -> u8 {
+    match status {
+        AgentStatus::Waiting | AgentStatus::Review => 0,
+        AgentStatus::Working => 1,
+        AgentStatus::Idle | AgentStatus::Unknown => 2,
+    }
+}
+
+const LANE_NAMES: [&str; 3] = ["needs you", "working", "quiet"];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Row {
+    Heading(u8, usize),
+    /// Agent index, row inside the card.
+    Card(usize, usize),
+    Gap,
+}
+
+/// The screen rows top to bottom. `render` and `agent_at` both use it, so the
+/// draw and the hit test cannot disagree. `agents` comes sorted by lane.
+fn rows(agents: &[FlatAgent]) -> Vec<Row> {
+    let mut out = Vec::new();
+    for (i, a) in agents.iter().enumerate() {
+        let l = lane(a.status);
+        if i == 0 || lane(agents[i - 1].status) != l {
+            // Half pads leave only half a row above a heading; a gap keeps
+            // the heading nearer its own lane.
+            if i > 0 {
+                out.push(Row::Gap);
+            }
+            let count = agents.iter().filter(|b| lane(b.status) == l).count();
+            out.push(Row::Heading(l, count));
+        }
+        out.extend((0..CARD_HEIGHT).map(|k| Row::Card(i, k)));
+    }
+    out
+}
 
 fn status_style(status: AgentStatus, theme: &Theme) -> Style {
     match status {
         AgentStatus::Working => theme.status_working,
         AgentStatus::Waiting | AgentStatus::Review => theme.status_waiting,
         _ => theme.status_idle,
+    }
+}
+
+/// The filled status chip, such as ` waiting `. Only the states that ask for
+/// something get a fill, so the eye goes to them first.
+fn chip(status: AgentStatus, theme: &Theme) -> Option<Span<'static>> {
+    let (word, style) = match status {
+        AgentStatus::Working => ("working", theme.chip_working),
+        AgentStatus::Waiting => ("waiting", theme.chip_waiting),
+        AgentStatus::Review => ("review", theme.chip_waiting),
+        AgentStatus::Idle => ("idle", theme.status_idle),
+        AgentStatus::Unknown => return None,
+    };
+    Some(Span::styled(format!(" {word} "), style))
+}
+
+/// The harness sigil: the harness icon, animated from the clock while the
+/// agent works. Claude cycles its own spinner glyphs, the Codex cursor blinks,
+/// and the other icons pulse bold, so a new harness needs no change here.
+fn sigil(kind: AgentType, working: bool, now_ms: u128) -> (&'static str, bool) {
+    const CLAUDE: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
+    let tick = (now_ms / 250) as usize;
+    if !working {
+        return (kind.icon(), false);
+    }
+    match kind {
+        AgentType::ClaudeCode => {
+            // Up the glyphs and back down, as Claude Code does.
+            let i = tick % 10;
+            (CLAUDE[if i < 6 { i } else { 10 - i }], false)
+        }
+        AgentType::Codex => (if tick % 4 < 2 { ">_" } else { "> " }, false),
+        _ => (kind.icon(), tick % 4 < 2),
     }
 }
 
@@ -30,18 +119,39 @@ fn fit(s: &str, max: usize) -> String {
     }
 }
 
+fn width_of(spans: &[Span]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// One card row: `left` at the start, `right` two cells from the end, and the
+/// card surface under the full width.
+fn card_line(
+    mut left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    surface: Style,
+    width: usize,
+) -> Line<'static> {
+    let used = width_of(&left) + width_of(&right);
+    let margin = if right.is_empty() { 0 } else { 2 };
+    left.push(Span::raw(" ".repeat(width.saturating_sub(used + margin))));
+    left.extend(right);
+    left.push(Span::raw(
+        " ".repeat(margin.min(width.saturating_sub(used))),
+    ));
+    Line::from(left).style(surface)
+}
+
 /// The index of the agent drawn at screen cell (`x`, `y`) when `render` drew
-/// into `area` with offset `scroll`. An agent owns its subagent line too.
+/// into `area` with offset `scroll`. Gaps and lane headings belong to no agent.
 pub fn agent_at(agents: &[FlatAgent], area: Rect, scroll: u16, x: u16, y: u16) -> Option<usize> {
     if !area.contains(Position { x, y }) {
         return None;
     }
     let line = usize::from(y - area.y) + usize::from(scroll);
-    agents
-        .iter()
-        .enumerate()
-        .flat_map(|(i, a)| std::iter::repeat_n(i, 1 + usize::from(a.subagents > 0)))
-        .nth(line)
+    match rows(agents).get(line) {
+        Some(&Row::Card(i, _)) => Some(i),
+        _ => None,
+    }
 }
 
 /// `prev_scroll` is the offset of the last frame; the return value is the
@@ -53,6 +163,7 @@ pub fn render(
     prev_scroll: u16,
     area: Rect,
     theme: &Theme,
+    live: &Live,
 ) -> u16 {
     if agents.is_empty() {
         let top = area.height.saturating_sub(1) / 2;
@@ -63,110 +174,177 @@ pub fn render(
     }
 
     let width = area.width as usize;
-    let name_width = agents
+    let now_ms = live.now_ms;
+    let layout = rows(agents);
+    let surface = |i: usize| {
+        if i == cursor {
+            theme.card_selected
+        } else {
+            theme.band
+        }
+    };
+
+    let lines: Vec<Line<'static>> = layout
         .iter()
-        .map(|a| a.agent_display_name.chars().count())
-        .max()
+        .map(|row| match *row {
+            Row::Gap => Line::from(""),
+            Row::Heading(l, count) => {
+                let style = if l == 0 {
+                    theme.status_waiting.bold()
+                } else {
+                    theme.path_dim
+                };
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(LANE_NAMES[usize::from(l)], style),
+                    Span::styled(format!("  {count}"), theme.meta),
+                ])
+            }
+            Row::Card(i, k) => {
+                let a = &agents[i];
+                let bar = || Span::styled("▌ ", status_style(a.status, theme));
+                let indent = || Span::raw(" ");
+                // A half pad: the surface fills the lower (or upper) half of
+                // the cell, so the card edge sits mid-row.
+                let half_pad = |glyph: &str| {
+                    let fg = surface(i).bg.unwrap_or(Color::Reset);
+                    Line::from(Span::styled(glyph.repeat(width), Style::default().fg(fg)))
+                };
+                match k {
+                    0 => half_pad("▄"),
+                    1 => {
+                        let right: Vec<Span> = chip(a.status, theme).into_iter().collect();
+                        let mut meta: Vec<Span> = a
+                            .pin_slot
+                            .map(|slot| Span::styled(format!("  {slot}"), theme.pin_digit))
+                            .into_iter()
+                            .collect();
+                        if a.subagents > 0 {
+                            meta.push(Span::styled(
+                                format!(
+                                    "   {} {}",
+                                    agent_meta::spinner(now_ms),
+                                    agent_meta::subagents(a.subagents)
+                                ),
+                                theme.path_dim,
+                            ));
+                        }
+                        let room = width.saturating_sub(3 + width_of(&right) + 3 + width_of(&meta));
+                        let mut title = vec![
+                            bar(),
+                            indent(),
+                            Span::styled(
+                                fit(&a.agent_display_name, room),
+                                theme.agent_name_loud.bold(),
+                            ),
+                        ];
+                        title.extend(meta);
+                        card_line(title, right, surface(i), width)
+                    }
+                    2 => {
+                        // The path gives way first, so the harness stays on screen.
+                        let working = a.status == AgentStatus::Working;
+                        let (glyph, bold) = sigil(a.agent_type, working, now_ms);
+                        let mut style = if working {
+                            theme.status_working
+                        } else {
+                            theme.path_dim
+                        };
+                        if bold {
+                            style = style.bold();
+                        }
+                        let right = vec![
+                            Span::styled(format!("{glyph} "), style),
+                            Span::styled(agent_meta::kind_label(a.agent_type), theme.meta),
+                        ];
+                        let room = width.saturating_sub(3 + width_of(&right) + 3);
+                        let path = fit(
+                            &format!("{} / {}", a.thread_name, a.session_display_name),
+                            room,
+                        );
+                        card_line(
+                            vec![bar(), indent(), Span::styled(path, theme.path_dim)],
+                            right,
+                            surface(i),
+                            width,
+                        )
+                    }
+                    _ => half_pad("▀"),
+                }
+            }
+        })
+        .collect();
+
+    let first = layout
+        .iter()
+        .position(|r| *r == Row::Card(cursor, 0))
         .unwrap_or(0);
-
-    let now_ms = agent_meta::now_ms();
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    // The first and last lines of the selected agent, so the scroll can keep
-    // its subagent line on screen without hiding the agent line.
-    let (mut cursor_first, mut cursor_last) = (0, 0);
-    for (i, a) in agents.iter().enumerate() {
-        let selected = i == cursor;
-        if selected {
-            cursor_first = lines.len();
-        }
-        lines.push({
-            let bar = if selected {
-                Span::styled("▎", theme.selection_bar)
-            } else {
-                Span::raw(" ")
-            };
-            let pin = match a.pin_slot {
-                Some(slot) => Span::styled(format!(" {}  ", slot), theme.pin_digit),
-                None => Span::raw("    "),
-            };
-            let pad = " ".repeat(name_width - a.agent_display_name.chars().count() + 6);
-            let mut spans = vec![
-                bar,
-                pin,
-                Span::styled(
-                    format!("{} ", status_glyph(a.status)),
-                    status_style(a.status, theme),
-                ),
-                Span::styled(a.agent_display_name.clone(), theme.agent_name_loud),
-                Span::raw(pad),
-            ];
-            // The harness name at the right edge, as in the sessions view. The path
-            // gives way first, so the meta stays on screen in a narrow pane.
-            let meta = agent_meta::kind_label(a.agent_type).to_string();
-            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-            let room = width.saturating_sub(used + meta.chars().count() + 3);
-            spans.push(Span::styled(
-                fit(
-                    &format!("{} / {}", a.thread_name, a.session_display_name),
-                    room,
-                ),
-                theme.path_dim,
-            ));
-            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-            let gap = width.saturating_sub(used + meta.chars().count() + 2).max(1);
-            spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(Span::styled(meta, theme.meta));
-            item_line(spans, selected, width, theme)
-        });
-        // The subagent line is part of the agent: same bar, same highlight, and
-        // the cursor does not stop on it. The spinner sits under the name.
-        if a.subagents > 0 {
-            let bar = if selected {
-                Span::styled("▎", theme.selection_bar)
-            } else {
-                Span::raw(" ")
-            };
-            let text = format!(
-                "{} {} working",
-                agent_meta::spinner(now_ms),
-                agent_meta::subagents(a.subagents)
-            );
-            let spans = vec![bar, Span::raw("      "), Span::styled(text, theme.path_dim)];
-            lines.push(item_line(spans, selected, width, theme));
-        }
-        if selected {
-            cursor_last = lines.len() - 1;
-        }
-    }
-
-    let scroll = super::sticky_scroll(
-        prev_scroll,
-        cursor_first,
-        cursor_last,
-        lines.len(),
-        area.height,
-    );
+    // A lane heading over the first card of its lane scrolls in with it.
+    let first = match first.checked_sub(1).map(|j| layout[j]) {
+        Some(Row::Heading(..)) => first - 1,
+        _ => first,
+    };
+    let last = layout
+        .iter()
+        .position(|r| *r == Row::Card(cursor, CARD_HEIGHT - 1))
+        .unwrap_or(first);
+    let scroll = super::sticky_scroll(prev_scroll, first, last, lines.len(), area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+
+    if let Some(sweeps) = live.sweeps {
+        sweep(frame, agents, &layout, scroll, area, theme, sweeps, now_ms);
+    }
     scroll
 }
 
-/// A selected line is padded to the full width, so its tint covers the row.
-fn item_line(
-    mut spans: Vec<Span<'static>>,
-    selected: bool,
-    width: usize,
+/// A band of accent light that crosses each card whose sweep runs. It only
+/// tints the cell backgrounds, so the text stays as drawn.
+#[allow(clippy::too_many_arguments)]
+fn sweep(
+    frame: &mut Frame,
+    agents: &[FlatAgent],
+    layout: &[Row],
+    scroll: u16,
+    area: Rect,
     theme: &Theme,
-) -> Line<'static> {
-    if !selected {
-        return Line::from(spans);
+    sweeps: &HashMap<String, u128>,
+    now_ms: u128,
+) {
+    let Some(light) = theme.status_waiting.fg else {
+        return;
+    };
+    let buf = frame.buffer_mut();
+    for (line, row) in layout.iter().enumerate().skip(usize::from(scroll)) {
+        let y = area.y as usize + line - usize::from(scroll);
+        if y >= usize::from(area.bottom()) {
+            break;
+        }
+        let Row::Card(i, k) = *row else { continue };
+        let pad = k == 0 || k == CARD_HEIGHT - 1;
+        let Some(&start) = sweeps.get(&agents[i].pane_id) else {
+            continue;
+        };
+        let Some(t) = now_ms.checked_sub(start).filter(|&t| t < SWEEP_MS) else {
+            continue;
+        };
+        let p = t as f32 / SWEEP_MS as f32;
+        // Ease out, so the band slows as it leaves.
+        let p = 1.0 - (1.0 - p).powi(2);
+        let travel = f32::from(area.width) + 2.0 * SWEEP_BAND;
+        let center = f32::from(area.x) - SWEEP_BAND + p * travel;
+        for x in area.left()..area.right() {
+            let d = (f32::from(x) - center).abs() / SWEEP_BAND;
+            if d < 1.0 {
+                let cell = &mut buf[(x, y as u16)];
+                let strength = 0.32 * (1.0 - d * d);
+                if pad {
+                    cell.fg = darken_toward(cell.fg, light, strength);
+                } else {
+                    cell.bg = darken_toward(cell.bg, light, strength);
+                }
+            }
+        }
     }
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    if width > used {
-        spans.push(Span::raw(" ".repeat(width - used)));
-    }
-    let mut line = Line::from(spans);
-    line.style = theme.highlight;
-    line
 }
 
 #[cfg(test)]
@@ -195,158 +373,158 @@ mod tests {
         }
     }
 
-    /// Agent 0 has a subagent line, so the list has 6 lines for 5 agents. On
-    /// a scrolled frame, the hit test must name the agent drawn at each line.
-    #[test]
-    fn agent_at_agrees_with_a_scrolled_render() {
-        let mut agents: Vec<FlatAgent> = (0..5).map(agent).collect();
-        agents[0].subagents = 2;
+    fn screen(agents: &[FlatAgent], cursor: usize, width: u16, height: u16) -> Vec<String> {
         let theme = Theme::build(&Palette::default());
-        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
-        let mut scroll = 0;
-        terminal
-            .draw(|f| scroll = render(f, &agents, 4, 0, f.area(), &theme))
-            .unwrap();
-        assert_eq!(scroll, 3, "6 lines, 3 visible, the last agent selected");
-        let area = Rect::new(0, 0, 40, 3);
-        let top: String = (0..40)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect();
-        assert!(top.contains("agent-02"), "top line is not agent 2: {top:?}");
-        assert_eq!(agent_at(&agents, area, scroll, 0, 0), Some(2));
-        assert_eq!(agent_at(&agents, area, scroll, 39, 2), Some(4));
-        assert_eq!(agent_at(&agents, area, 0, 0, 1), Some(0), "subagent line");
-        assert_eq!(agent_at(&agents, area, 0, 0, 2), Some(1));
-        assert_eq!(
-            agent_at(&agents, area, scroll, 0, 3),
-            None,
-            "below the area"
-        );
-        assert_eq!(
-            agent_at(&agents, area, scroll, 40, 0),
-            None,
-            "right of the area"
-        );
-    }
-
-    fn screen(agents: &[FlatAgent], cursor: usize, height: u16) -> String {
-        let theme = Theme::build(&Palette::default());
-        let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|f| {
-                render(f, agents, cursor, 0, f.area(), &theme);
+                render(f, agents, cursor, 0, f.area(), &theme, &Live::default());
             })
             .unwrap();
         let buf = terminal.backend().buffer();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// A lane heading, then cards of 4 rows. A 7-row pane scrolled to the
+    /// last card shows the end of card 2, then card 3. The half pads belong to
+    /// their card, and the hit test must agree.
+    #[test]
+    fn agent_at_agrees_with_a_scrolled_render() {
+        let agents: Vec<FlatAgent> = (0..4).map(agent).collect();
+        let theme = Theme::build(&Palette::default());
+        let mut terminal = Terminal::new(TestBackend::new(40, 7)).unwrap();
+        let mut scroll = 0;
+        terminal
+            .draw(|f| scroll = render(f, &agents, 3, 0, f.area(), &theme, &Live::default()))
+            .unwrap();
+        assert_eq!(scroll, 10, "card 3 ends on line 16, the last of 17");
+        let area = Rect::new(0, 0, 40, 7);
+        let row = |y: u16| -> String {
+            (0..40)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect()
+        };
+        assert!(row(1).contains("t / s"), "{:?}", row(1));
+        assert!(row(4).contains("agent-03"), "{:?}", row(4));
+        assert_eq!(agent_at(&agents, area, scroll, 0, 0), Some(2));
+        assert_eq!(agent_at(&agents, area, scroll, 0, 2), Some(2), "bottom pad");
+        assert_eq!(agent_at(&agents, area, scroll, 0, 3), Some(3), "top pad");
+        assert_eq!(agent_at(&agents, area, scroll, 39, 6), Some(3));
+        assert_eq!(
+            agent_at(&agents, area, scroll, 40, 0),
+            None,
+            "right of area"
+        );
+        assert_eq!(
+            agent_at(&agents[..1], area, 0, 0, 5),
+            None,
+            "past the last card"
+        );
     }
 
     #[test]
-    fn rows_show_the_harness_without_an_age() {
-        let a = agent(0);
-        let mut b = agent(1);
-        b.agent_type = AgentType::Codex;
-        let out = screen(&[a, b], 0, 3);
-        assert!(out.contains("claude"), "missing kind:\n{out}");
-        assert!(out.contains("codex"), "missing kind:\n{out}");
-        assert!(!out.contains(" · "), "age shown:\n{out}");
+    fn card_shows_name_chip_path_and_harness() {
+        let mut a = agent(0);
+        a.status = AgentStatus::Waiting;
+        a.pin_slot = Some(3);
+        a.agent_type = AgentType::Codex;
+        let out = screen(&[a], 0, 40, 5);
+        assert!(out[0].contains("needs you  1"), "lane: {out:?}");
+        assert_eq!(out[1], "▄".repeat(40), "top pad: {out:?}");
+        assert_eq!(out[4], "▀".repeat(40), "bottom pad: {out:?}");
+        assert!(out[2].contains("agent-00  3"), "name and pin: {out:?}");
+        assert!(out[2].trim_end().ends_with("waiting"), "chip: {out:?}");
+        assert!(out[3].contains("t / s"), "path: {out:?}");
+        assert!(out[3].trim_end().ends_with(">_ codex"), "harness: {out:?}");
     }
 
     #[test]
-    fn long_path_is_cut_so_the_meta_stays_visible() {
+    fn unknown_status_has_no_chip() {
+        let mut a = agent(0);
+        a.status = AgentStatus::Unknown;
+        let out = screen(&[a], 0, 40, 5);
+        assert!(out[2].trim_end().ends_with("agent-00"), "{out:?}");
+    }
+
+    #[test]
+    fn long_path_is_cut_so_the_harness_stays_visible() {
         let mut a = agent(0);
         a.thread_name = "project-operations-analytics".into();
         a.session_display_name = "cortex-pr-123-review".into();
-        let out = screen(&[a], 0, 1);
-        assert!(out.contains('…'), "path not marked as cut:\n{out}");
+        let out = screen(&[a], 0, 40, 5);
+        assert!(out[3].contains('…'), "path not marked as cut: {out:?}");
         assert!(
-            out.trim_end().ends_with("claude"),
-            "meta pushed off:\n{out}"
+            out[3].trim_end().ends_with("claude"),
+            "meta pushed off: {out:?}"
         );
     }
 
     #[test]
-    fn selected_agent_stays_visible_past_the_bottom_edge() {
-        let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
-        let out = screen(&agents, 9, 3);
-        assert!(out.contains("agent-09"), "cursor row scrolled off:\n{out}");
-    }
-
-    #[test]
-    fn subagents_get_their_own_line_under_the_agent() {
+    fn subagents_show_on_the_title_row() {
         let mut a = agent(0);
         a.subagents = 3;
-        let out = screen(&[a, agent(1)], 1, 3);
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].contains("agent-00"), "agent line:\n{out}");
-        assert!(
-            lines[1].contains("3 subagents working"),
-            "subagent line:\n{out}"
-        );
-        // The spinner starts the text, in the column of the agent name.
-        let name_col = lines[0].chars().position(|c| c == 'a').unwrap();
-        let spinner = lines[1].chars().nth(name_col).unwrap();
-        assert!(
-            ('\u{2800}'..='\u{28FF}').contains(&spinner),
-            "no spinner under the name:\n{out}"
-        );
-        assert!(lines[2].contains("agent-01"), "next agent:\n{out}");
-        assert!(
-            !lines[0].contains("subagent"),
-            "count on the agent line:\n{out}"
-        );
-    }
-
-    #[test]
-    fn one_subagent_reads_singular() {
-        let mut a = agent(0);
-        a.subagents = 1;
-        let out = screen(&[a], 0, 2);
-        assert!(out.contains("1 subagent working"), "singular:\n{out}");
-    }
-
-    #[test]
-    fn subagent_line_of_the_selected_agent_stays_visible() {
-        let mut agents: Vec<FlatAgent> = (0..10).map(agent).collect();
-        agents[9].subagents = 2;
-        let out = screen(&agents, 9, 3);
-        assert!(out.contains("agent-09"), "cursor row scrolled off:\n{out}");
-        assert!(
-            out.contains("2 subagents working"),
-            "its line scrolled off:\n{out}"
-        );
-    }
-
-    #[test]
-    fn one_row_pane_shows_the_selected_agent_not_its_subagent_line() {
-        let mut agents: Vec<FlatAgent> = (0..3).map(agent).collect();
-        agents[2].subagents = 2;
-        let out = screen(&agents, 2, 1);
-        assert!(out.contains("agent-02"), "agent line hidden:\n{out}");
-    }
-
-    #[test]
-    fn subagent_lines_above_push_the_cursor_down() {
-        let mut agents: Vec<FlatAgent> = (0..4).map(agent).collect();
-        for a in &mut agents[..3] {
+        let out = screen(&[a, agent(1)], 1, 40, 10);
+        assert!(out[2].contains("agent-00"), "{out:?}");
+        assert!(out[2].contains("3 subagents"), "{out:?}");
+        assert!(out[2].trim_end().ends_with("working"), "chip: {out:?}");
+        let one = {
+            let mut a = agent(0);
             a.subagents = 1;
-        }
-        // Agent 3 sits on line 6, below a 3-line screen.
-        let out = screen(&agents, 3, 3);
-        assert!(out.contains("agent-03"), "cursor row scrolled off:\n{out}");
+            screen(&[a], 0, 40, 5)
+        };
+        assert!(one[2].contains("1 subagent "), "{one:?}");
+        assert!(out[6].contains("agent-01"), "next card: {out:?}");
+    }
+
+    #[test]
+    fn selected_card_stays_visible_past_the_bottom_edge() {
+        let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
+        let out = screen(&agents, 9, 40, 4);
+        assert!(out[1].contains("agent-09"), "{out:?}");
+    }
+
+    #[test]
+    fn one_row_pane_shows_the_top_of_the_selected_card() {
+        let agents: Vec<FlatAgent> = (0..3).map(agent).collect();
+        let out = screen(&agents, 2, 40, 1);
+        assert!(out[0].starts_with('▄'), "{out:?}");
+        assert_eq!(agent_at(&agents, Rect::new(0, 0, 40, 1), 9, 0, 0), Some(2));
     }
 
     #[test]
     fn list_starts_at_the_top_when_the_cursor_fits() {
         let agents: Vec<FlatAgent> = (0..10).map(agent).collect();
-        let out = screen(&agents, 1, 3);
-        assert!(out.contains("agent-00"), "list scrolled too early:\n{out}");
+        let out = screen(&agents, 1, 40, 11);
+        assert!(
+            out[2].contains("agent-00"),
+            "list scrolled too early: {out:?}"
+        );
+    }
+
+    /// Each lane gets a heading; the hit test skips the headings.
+    #[test]
+    fn lanes_add_headings_the_hit_test_skips() {
+        let mut agents: Vec<FlatAgent> = (0..3).map(agent).collect();
+        agents[0].status = AgentStatus::Waiting;
+        agents[2].status = AgentStatus::Idle;
+        let layout = rows(&agents);
+        assert_eq!(layout[0], Row::Heading(0, 1));
+        assert_eq!(layout[1], Row::Card(0, 0));
+        assert_eq!(layout[6], Row::Heading(1, 1));
+        let area = Rect::new(0, 0, 40, 40);
+        assert_eq!(agent_at(&agents, area, 0, 0, 0), None, "heading");
+        assert_eq!(agent_at(&agents, area, 0, 0, 1), Some(0));
+        assert_eq!(agent_at(&agents, area, 0, 0, 7), Some(1));
+    }
+
+    #[test]
+    fn claude_sigil_goes_up_the_glyphs_and_back_down() {
+        let frames: String = (0..10)
+            .map(|t| sigil(AgentType::ClaudeCode, true, t * 250).0)
+            .collect();
+        assert_eq!(frames, "·✢✳✶✻✽✻✶✳✢");
+        assert_eq!(sigil(AgentType::ClaudeCode, false, 999), ("✳", false));
     }
 }
