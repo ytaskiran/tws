@@ -57,6 +57,47 @@ impl AgentType {
             AgentType::OpenCode => "\u{25A3}", // ▣ white square containing black small square (opencode's TUI glyph)
         }
     }
+
+    /// Short name used in pointer file names and the snapshot file.
+    #[allow(dead_code)]
+    pub fn pointer_name(&self) -> &'static str {
+        match self {
+            AgentType::ClaudeCode => "claude",
+            AgentType::Codex => "codex",
+            AgentType::Pi => "pi",
+            AgentType::Devin => "devin",
+            AgentType::OpenCode => "opencode",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn from_pointer_name(s: &str) -> Option<AgentType> {
+        [
+            AgentType::ClaudeCode,
+            AgentType::Codex,
+            AgentType::Pi,
+            AgentType::Devin,
+            AgentType::OpenCode,
+        ]
+        .into_iter()
+        .find(|a| a.pointer_name() == s)
+    }
+
+    /// The command that resumes a saved session.
+    #[allow(dead_code)]
+    pub fn resume_argv(&self, session_ref: &str) -> Vec<String> {
+        let (bin, flag) = match self {
+            AgentType::ClaudeCode => ("claude", Some("--resume")),
+            AgentType::Codex => ("codex", None),
+            AgentType::Pi => ("pi", Some("--session")),
+            AgentType::Devin => ("devin", Some("--resume")),
+            AgentType::OpenCode => ("opencode", Some("--session")),
+        };
+        let mut v = vec![bin.to_string()];
+        v.push(flag.unwrap_or("resume").to_string());
+        v.push(session_ref.to_string());
+        v
+    }
 }
 
 /// Live activity state of an agent, derived from hook events.

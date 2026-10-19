@@ -15,7 +15,6 @@ struct PaneInfo {
 }
 
 /// One tmux pane with its stable key and the agent that runs in it.
-#[allow(dead_code)]
 pub struct LivePane {
     pub pane_id: String,
     /// `session_name:window_index.pane_index`

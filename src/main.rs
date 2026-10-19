@@ -6,6 +6,7 @@ mod core;
 mod event;
 mod fork;
 mod import;
+mod resume;
 mod theme;
 mod tmux;
 mod tui;
