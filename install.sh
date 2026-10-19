@@ -995,10 +995,9 @@ configure_opencode_hooks() {
         return
     fi
 
-    mkdir -p "$oc_dir/plugins"
     # OpenCode loads plugins from ~/.config/opencode/plugins/*.{js,ts}. Overwriting
     # this file wholesale is safe and idempotent since tws owns it outright.
-    cat > "$plugin_file" <<'OPENCODE_PLUGIN_EOF'
+    if ! { mkdir -p "$oc_dir/plugins" && cat > "$plugin_file" <<'OPENCODE_PLUGIN_EOF'
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 
@@ -1011,10 +1010,15 @@ const TRIGGER = `${TWS_DIR}/agent.trigger`;
 // tool, for longer than that, so the heartbeat beats on a timer while a session
 // is busy.
 const BEAT_MS = 60_000;
+// Equals MAX_TOOL_SECS in tws, the cap of an in-flight marker. A session that
+// leaked into `busy` gets a bounded exit: the beat stops, and tws expires the
+// pane 15 min later.
+const MAX_SILENT_MS = 4 * 60 * 60 * 1000;
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const EVENTS = /^(session\.(created|updated|status|idle|deleted|error)|permission\.(asked|replied)|question\.(asked|replied|rejected))$/;
 
-// opencode loads the plugin once for each project directory, and all copies run
-// in one process for one pane, so they share one state.
+// Every copy of the plugin in this process shares one state, so a second load or
+// a reload cannot split it.
 const S = (globalThis[Symbol.for("tws.opencode.status")] ??= {
   instances: 0,
   busy: new Set(),
@@ -1022,16 +1026,19 @@ const S = (globalThis[Symbol.for("tws.opencode.status")] ??= {
   parent: new Map(),
   aborted: new Set(),
   active: false,
-  lastEnd: "done",
+  unread: false,
+  lastEvent: 0,
+  reloadWord: undefined,
   timer: undefined,
 });
 
 // Only the TUI reports. `opencode run` also loads plugins, and an agent can start
 // it from a tool in its own pane: it would then overwrite the status of that
 // agent. `opencode serve` runs the sessions of every attached TUI, so its pane is
-// not the pane of those sessions.
+// not the pane of those sessions. Only argv[1] counts: a prompt of `opencode run`
+// can name the worker script.
 function isTui() {
-  return process.argv.some((a) => /(^|\/)tui\/worker\.[cm]?[jt]s$/.test(a));
+  return /(^|\/)tui\/worker\.[cm]?[jt]s$/.test(process.argv[1] ?? "");
 }
 
 function readWord(path) {
@@ -1042,19 +1049,30 @@ function readWord(path) {
   }
 }
 
-// TRIGGER rings only on a change: tws does a full tmux+ps rescan when rung.
-function writeWord(pane, word) {
+// A failed removal must not break the session.
+function rm(path, opts) {
+  try {
+    rmSync(path, { force: true, ...opts });
+  } catch {
+    // Nothing to clean up that the plugin can fix.
+  }
+}
+
+// TRIGGER rings only on a change: tws does a full tmux+ps rescan when rung. A
+// stamp writes the same word again, so the mtime becomes the start of a new turn.
+function writeWord(pane, word, stamp = false) {
   const path = `${AGENTS_DIR}/${pane}`;
-  if (readWord(path) === word) return;
+  const cur = readWord(path);
+  if (cur === word && !stamp) return;
   // Truncate-then-write would expose an empty file to a reader in between.
   const tmp = `${AGENTS_DIR}/.${pane}.${process.pid}`;
   try {
     mkdirSync(AGENTS_DIR, { recursive: true });
     writeFileSync(tmp, word);
     renameSync(tmp, path);
-    writeFileSync(TRIGGER, "");
+    if (cur !== word) writeFileSync(TRIGGER, "");
   } catch {
-    rmSync(tmp, { force: true });
+    rm(tmp);
   }
 }
 
@@ -1093,7 +1111,7 @@ function touch(file, dir) {
 function beat(pane) {
   touch(`${HEARTBEAT_DIR}/${pane}`, HEARTBEAT_DIR);
   for (const sid of S.busy) {
-    if (S.parent.has(sid)) touch(`${SUBAGENTS_DIR}/${pane}/${sid}`, `${SUBAGENTS_DIR}/${pane}`);
+    if (S.parent.has(sid) && SAFE_ID.test(sid)) touch(`${SUBAGENTS_DIR}/${pane}/${sid}`, `${SUBAGENTS_DIR}/${pane}`);
   }
 }
 
@@ -1107,14 +1125,17 @@ function rootOf(sid) {
 }
 
 function settleSession(pane, sid) {
-  S.busy.delete(sid);
+  const wasBusy = S.busy.delete(sid);
   for (const [id, owner] of S.asks) if (owner === sid) S.asks.delete(id);
   if (S.parent.has(sid)) {
-    if (SAFE_ID.test(sid)) rmSync(`${SUBAGENTS_DIR}/${pane}/${sid}`, { force: true });
+    if (SAFE_ID.test(sid)) rm(`${SUBAGENTS_DIR}/${pane}/${sid}`);
     return;
   }
   const aborted = S.aborted.delete(sid);
-  S.lastEnd = aborted ? "abort" : "done";
+  // opencode sends more than one idle event for one turn end, so only the one
+  // that ends a busy root can leave a result unread. An abort leaves the flag as
+  // it is: an earlier root can still hold an unread result.
+  if (!aborted && wasBusy) S.unread = true;
   // An abort stops the subagents of the turn too.
   if (aborted) for (const child of [...S.busy]) if (rootOf(child) === sid) settleSession(pane, child);
 }
@@ -1123,28 +1144,38 @@ function settleSession(pane, sid) {
 // or permission request is `waiting`, a busy session is `working`, and the end of
 // the last busy session ends the turn. A background subagent keeps the pane
 // `working` after its parent goes idle.
-function recompute(pane) {
+function recompute(pane, turnStart = false) {
   // Only a busy session can ask, so no request outlives the last busy session.
   if (S.busy.size === 0) S.asks.clear();
+  // The timer changes first, so a failed file call cannot leave a timer running.
+  if (S.busy.size > 0 && !S.timer) {
+    S.timer = setInterval(() => {
+      if (Date.now() - S.lastEvent > MAX_SILENT_MS) {
+        clearInterval(S.timer);
+        S.timer = undefined;
+        return;
+      }
+      beat(pane);
+    }, BEAT_MS);
+    S.timer.unref?.();
+  } else if (S.busy.size === 0 && S.timer) {
+    clearInterval(S.timer);
+    S.timer = undefined;
+  }
   if (S.asks.size > 0) {
     S.active = true;
     writeWord(pane, "waiting");
   } else if (S.busy.size > 0) {
     S.active = true;
-    writeWord(pane, "working");
+    writeWord(pane, "working", turnStart);
   } else if (S.active) {
     // opencode sends more than one idle event for one turn end. Only the first
     // one writes, so a later one cannot undo the acknowledgment of a `review`.
     S.active = false;
-    rmSync(`${SUBAGENTS_DIR}/${pane}`, { recursive: true, force: true });
-    writeWord(pane, S.lastEnd === "abort" ? "idle" : turnEndWord(pane));
-  }
-  if (S.busy.size > 0 && !S.timer) {
-    S.timer = setInterval(() => beat(pane), BEAT_MS);
-    S.timer.unref?.();
-  } else if (S.busy.size === 0 && S.timer) {
-    clearInterval(S.timer);
-    S.timer = undefined;
+    rm(`${SUBAGENTS_DIR}/${pane}`, { recursive: true });
+    const end = S.unread ? turnEndWord(pane) : "idle";
+    S.unread = false;
+    writeWord(pane, end);
   }
 }
 
@@ -1156,19 +1187,22 @@ function resetState() {
   S.parent.clear();
   S.aborted.clear();
   S.active = false;
-  S.lastEnd = "done";
+  S.unread = false;
 }
 
 function clearPaneFiles(pane) {
-  rmSync(`${HEARTBEAT_DIR}/${pane}`, { force: true });
-  rmSync(`${SUBAGENTS_DIR}/${pane}`, { recursive: true, force: true });
-  rmSync(`${TWS_DIR}/inflight/${pane}`, { recursive: true, force: true });
-  rmSync(`${TWS_DIR}/permissions/${pane}`, { recursive: true, force: true });
+  rm(`${HEARTBEAT_DIR}/${pane}`);
+  rm(`${SUBAGENTS_DIR}/${pane}`, { recursive: true });
+  rm(`${TWS_DIR}/inflight/${pane}`, { recursive: true });
+  rm(`${TWS_DIR}/permissions/${pane}`, { recursive: true });
 }
 
 function onEvent(pane, event) {
-  const p = event?.properties ?? {};
-  switch (event?.type) {
+  if (!EVENTS.test(event?.type ?? "")) return;
+  S.lastEvent = Date.now();
+  const p = event.properties ?? {};
+  let turnStart = false;
+  switch (event.type) {
     case "session.created":
     case "session.updated":
       if (p.info?.id && p.info.parentID) S.parent.set(p.info.id, p.info.parentID);
@@ -1176,6 +1210,7 @@ function onEvent(pane, event) {
     case "session.status":
       if (!p.sessionID) return;
       if (p.status?.type === "busy" || p.status?.type === "retry") {
+        turnStart = !S.parent.has(p.sessionID) && !S.busy.has(p.sessionID);
         S.busy.add(p.sessionID);
         if (S.parent.has(p.sessionID) && SAFE_ID.test(p.sessionID)) {
           touch(`${SUBAGENTS_DIR}/${pane}/${p.sessionID}`, `${SUBAGENTS_DIR}/${pane}`);
@@ -1194,22 +1229,19 @@ function onEvent(pane, event) {
       S.parent.delete(p.info.id);
       break;
     case "session.error":
-      if (p.sessionID && p.error?.name === "MessageAbortedError") S.aborted.add(p.sessionID);
+      if (p.sessionID && !S.parent.has(p.sessionID) && p.error?.name === "MessageAbortedError") S.aborted.add(p.sessionID);
       return;
     case "permission.asked":
-    case "permission.updated":
     case "question.asked":
       if (p.id && p.sessionID) S.asks.set(p.id, p.sessionID);
       break;
     case "permission.replied":
     case "question.replied":
     case "question.rejected":
-      S.asks.delete(p.requestID ?? p.permissionID);
+      S.asks.delete(p.requestID);
       break;
-    default:
-      return;
   }
-  recompute(pane);
+  recompute(pane, turnStart);
 }
 
 export const TwsStatus = async () => {
@@ -1217,19 +1249,25 @@ export const TwsStatus = async () => {
   // has nothing to report and must write nothing.
   const pane = process.env.TMUX_PANE;
   if (!pane || !SAFE_ID.test(pane.replace(/^%/, "")) || !isTui()) return {};
-  // A new opencode process in the pane owns nothing of the last agent there.
+  // A new opencode process in the pane owns nothing of the last agent there. A
+  // reload in the same process keeps an unread `review`: S lives on globalThis,
+  // so only a re-init in the same process sees `reloadWord`.
   if (S.instances++ === 0) {
+    const keep = S.reloadWord === "review";
+    S.reloadWord = undefined;
     resetState();
     clearPaneFiles(pane);
-    writeWord(pane, "idle");
+    writeWord(pane, keep ? "review" : "idle");
   }
   return {
     event: async ({ event }) => onEvent(pane, event),
     "tool.execute.before": async () => {
+      S.lastEvent = Date.now();
       if (S.busy.size > 0) beat(pane);
     },
     dispose: async () => {
       if (--S.instances > 0) return;
+      S.reloadWord = readWord(`${AGENTS_DIR}/${pane}`);
       resetState();
       clearPaneFiles(pane);
       try {
@@ -1242,6 +1280,10 @@ export const TwsStatus = async () => {
   };
 };
 OPENCODE_PLUGIN_EOF
+    } 2>/dev/null; then
+        warn "Could not write $plugin_file (a read-only or managed directory?). The OpenCode plugin is not changed."
+        return
+    fi
 
     ok "Configured OpenCode agent status plugin"
     hooks_configured=1
