@@ -33,6 +33,7 @@ pub enum AgentType {
     ClaudeCode,
     Codex,
     Pi,
+    Devin,
     OpenCode,
 }
 
@@ -42,6 +43,7 @@ impl AgentType {
             AgentType::ClaudeCode => "Claude Code",
             AgentType::Codex => "Codex",
             AgentType::Pi => "Pi",
+            AgentType::Devin => "Devin",
             AgentType::OpenCode => "OpenCode",
         }
     }
@@ -51,6 +53,7 @@ impl AgentType {
             AgentType::ClaudeCode => "\u{2733}", // ✳ eight spoked asterisk (matches Claude's pane title symbol)
             AgentType::Codex => ">_",
             AgentType::Pi => "π",
+            AgentType::Devin => "δ",
             AgentType::OpenCode => "\u{25A3}", // ▣ white square containing black small square (opencode's TUI glyph)
         }
     }

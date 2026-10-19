@@ -6,6 +6,11 @@ pub fn is_managed(name: &str) -> bool {
     name.starts_with("twsr_")
 }
 
+/// False when tmux cannot start at all, for example when it is not installed.
+pub fn installed() -> bool {
+    Command::new("tmux").arg("-V").output().is_ok()
+}
+
 pub fn list_sessions() -> Vec<String> {
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
