@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
 # A harness that runs under Devin must not look like a Devin hook to the Claude
 # commands.
@@ -2763,6 +2763,85 @@ if declare -F configure_opencode_hooks > /dev/null; then
     fi
 else
     printf '  FAIL %s has no configure_opencode_hooks to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+printf '\nthe tmux-resurrect hooks for agent resume\n'
+# Runs the real resume functions against a throwaway HOME with no tmux server.
+resume_home="$HOME/resume"
+rm -rf "$resume_home"; mkdir -p "$resume_home"
+if declare -F configure_resume_hooks >/dev/null && declare -F scan_resume >/dev/null; then
+    want="$(printf '%s\n' '# tws agent resume' \
+        "set -g @resurrect-hook-post-save-all '/opt/bin/tws agents-save'" \
+        "set -g @resurrect-hook-post-restore-all '/opt/bin/tws agents-restore'")"
+    got="$( INSTALL_DIR=/opt/bin; BINARY_NAME=tws; resume_hook_block )"
+    if [ "$got" = "$want" ]; then
+        printf '  ok   the block holds both hooks with the absolute binary path\n'
+    else
+        printf '  FAIL the block — got:\n%s\n' "$got"
+        failures=$((failures + 1))
+    fi
+    resume_run() (
+        HOME="$resume_home"; unset XDG_CONFIG_HOME; INSTALL_DIR=/opt/bin; BINARY_NAME=tws
+        info() { :; }; ok() { :; }; warn() { :; }
+        hooks_configured=1 tmux_live=0
+        configure_resume_hooks
+    )
+    printf 'set -g mouse on\n' > "$resume_home/.tmux.conf"
+    resume_run; resume_run
+    conf="$resume_home/.tmux.conf"
+    if [ "$(grep -c '^# tws agent resume$' "$conf")" = 1 ] && [ "$(grep -c 'tws agents-save' "$conf")" = 1 ] \
+        && [ "$(grep -c 'tws agents-restore' "$conf")" = 1 ] && grep -q '^set -g mouse on$' "$conf"; then
+        printf '  ok   two runs leave one marker block and the user lines\n'
+    else
+        printf '  FAIL two runs — got:\n%s\n' "$(cat "$conf")"
+        failures=$((failures + 1))
+    fi
+    # scan_resume prints plan_resume, then the notes, one per line.
+    resume_scan() (
+        HOME="$resume_home"; unset XDG_CONFIG_HOME; INSTALL_DIR=/opt/bin; BINARY_NAME=tws
+        plan_resume=0 plan_notes=()
+        scan_resume
+        printf 'plan_resume=%s\n' "$plan_resume"
+        printf '%s\n' ${plan_notes[@]+"${plan_notes[@]}"}
+    )
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=1$' \
+        && printf '%s\n' "$out" | grep -q 'agent resume needs tmux-resurrect and tmux-continuum' \
+        && printf '%s\n' "$out" | grep -qF "set -g @continuum-restore 'on'" \
+        && printf '%s\n' "$out" | grep -q 'before the tpm run line'; then
+        printf '  ok   a config with only the tws block plans the hooks and notes the missing plugins\n'
+    else
+        printf '  FAIL a config with only the tws block — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+    printf '%s\n' "set -g @plugin 'tmux-plugins/tmux-resurrect'" "set -g @plugin 'tmux-plugins/tmux-continuum'" \
+        "set -g @resurrect-hook-post-save-all 'my-script'" > "$conf"
+    out="$(resume_scan)"
+    if printf '%s\n' "$out" | grep -q '^plan_resume=0$' && printf '%s\n' "$out" | grep -q 'tws agents-save' \
+        && ! printf '%s\n' "$out" | grep -q 'needs tmux-resurrect' && ! printf '%s\n' "$out" | grep -q 'tpm run line'; then
+        printf '  ok   a user resurrect hook gets no block and a note with the lines to add\n'
+    else
+        printf '  FAIL a user resurrect hook — got:\n%s\n' "$out"
+        failures=$((failures + 1))
+    fi
+else
+    printf '  FAIL %s has no configure_resume_hooks or scan_resume to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+# In the default config, continuum and the hooks must come before the tpm run
+# line, because tpm reads @plugin and @continuum-restore when it runs.
+extras="$(dirname "$INSTALL_SH")/extras/tmux.conf"
+if awk '
+    /^run .~\/\.tmux\/plugins\/tpm\/tpm.$/ { run = NR }
+    !run && $0 == "set -g @plugin '\''tmux-plugins/tmux-continuum'\''" { a = 1 }
+    !run && $0 == "set -g @continuum-restore '\''on'\''" { b = 1 }
+    !run && $0 == "set -g @resurrect-hook-post-save-all '\''@TWS_BIN@ agents-save'\''" { c = 1 }
+    !run && $0 == "set -g @resurrect-hook-post-restore-all '\''@TWS_BIN@ agents-restore'\''" { d = 1 }
+    END { exit !(run && a && b && c && d) }' "$extras"; then
+    printf '  ok   extras/tmux.conf has continuum and the hooks above the tpm run line\n'
+else
+    printf '  FAIL extras/tmux.conf lacks continuum or the hooks above the tpm run line\n'
     failures=$((failures + 1))
 fi
 

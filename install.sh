@@ -1989,6 +1989,72 @@ install_default_conf() {
     export TMUX_PLUGIN_MANAGER_PATH="$TMUX_PLUGIN_DIR/"
 }
 
+# --- 5e. tmux agent resume hooks (part of the agent hooks) ---
+
+RESUME_MARKER='# tws agent resume'
+
+# tmux-resurrect runs these after each save and after a restore: `agents-save`
+# records the agents in each pane, and `agents-restore` starts them again after
+# a reboot. resurrect reads the options at save and restore time, so the block
+# can go at the end of the config, after the tpm run line. The binary path is
+# absolute and scan_plan checked it with ack_path_is_safe (plan_ack).
+resume_hook_block() {
+    printf '%s\n' "$RESUME_MARKER"
+    printf "set -g @resurrect-hook-post-save-all '%s agents-save'\n" "$INSTALL_DIR/$BINARY_NAME"
+    printf "set -g @resurrect-hook-post-restore-all '%s agents-restore'\n" "$INSTALL_DIR/$BINARY_NAME"
+}
+
+# Succeeds when a config line of yours sets a resurrect hook that is not tws.
+# tmux keeps one value per option, so the tws block would replace it.
+resume_hook_taken() {
+    user_conf_lines | grep -vF 'tws agents-' \
+        | grep -E '(^|[[:space:]])@resurrect-hook-post-(save|restore)-all([[:space:]]|$)' >/dev/null
+}
+
+# Sets plan_resume, or adds notes. scan_plan calls it only with plan_ack, so
+# the binary path is safe. The @plugin lines and @continuum-restore must come
+# before the tpm run line, so the installer cannot append them: the user's own
+# config gets a note, and only the default config (extras/tmux.conf) has them.
+scan_resume() {
+    local line
+    if resume_hook_taken; then
+        plan_notes+=("tmux agent resume hooks — your tmux config sets its own tmux-resurrect hook")
+        plan_notes+=($'\t'"tmux keeps one hook value. To resume agents after a reboot, merge these into yours:")
+        while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(resume_hook_block)"
+    else
+        plan_resume=1
+    fi
+    if ! tmux_conf_has 'tmux-resurrect'; then
+        plan_notes+=("agent resume needs tmux-resurrect and tmux-continuum")
+    fi
+    if ! tmux_conf_has 'tmux-continuum'; then
+        plan_notes+=("tmux-continuum — add these to your tmux config, before the tpm run line:")
+        plan_notes+=($'\t'"  set -g @plugin 'tmux-plugins/tmux-continuum'")
+        plan_notes+=($'\t'"  set -g @continuum-restore 'on'")
+    fi
+}
+
+# Like configure_ack_hooks: the hooks resume the agents that the agent hooks
+# track, so they need hooks_configured.
+configure_resume_hooks() {
+    [ "$hooks_configured" -eq 1 ] || return 0
+
+    local conf
+    if ! conf="$(tmux_conf_for_write)"; then
+        warn "Could not create $HOME/.tmux.conf — skipping this tmux step"
+        return
+    fi
+
+    if ! rewrite_conf_block "$conf" "$RESUME_MARKER" "tws agents-" "$(resume_hook_block)"; then
+        warn "Could not write $conf — skipping the tmux agent resume hooks"
+        return
+    fi
+    ok "Added tmux-resurrect hooks to $conf (agents resume after a reboot)"
+    if load_into_tmux "$(resume_hook_block)"; then
+        ok "Loaded them into the running tmux server"
+    fi
+}
+
 # --- 6. glow (rich markdown rendering) ---
 
 GLOW_GO_PKG='github.com/charmbracelet/glow@latest'
@@ -2013,7 +2079,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_resume=0 plan_fork=0 plan_bar=0 plan_glow=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2079,6 +2145,7 @@ scan_plan() {
                     plan_codex_daemon=1
                 else
                     plan_notes+=("Codex daemon left on — status can be wrong with 2+ Codex panes")
+                    plan_notes+=($'\t'"Codex panes do not resume after a reboot while the daemon is on.")
                 fi
             fi
         fi
@@ -2135,6 +2202,7 @@ scan_plan() {
             while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
         fi
     fi
+    if [ "$plan_ack" -eq 1 ]; then scan_resume; fi
     # The bar shows what the agent hooks write, so it comes with the ack hooks.
     if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
         if nova_script >/dev/null; then
@@ -2203,6 +2271,7 @@ print_plan() {
         if [ "$plan_pi" -eq 1 ]; then plan_row "Pi status extension" "$(tilde "$HOME/.pi/agent/extensions/tws-status.ts")"; fi
         if [ "$plan_opencode" -eq 1 ]; then plan_row "OpenCode status plugin" "$(tilde "$plan_oc_dir/plugins/tws-status.js")"; fi
         if [ "$plan_ack" -eq 1 ]; then plan_row "tmux ack hooks" "$conf_label"; fi
+        if [ "$plan_resume" -eq 1 ]; then plan_row "tmux agent resume hooks" "$conf_label"; fi
         if [ "$plan_fork" -eq 1 ]; then plan_row "tmux fork binding (prefix+F)" "$conf_label  [experimental]"; fi
         if [ "$plan_bar" -eq 1 ] && [ "$bar_replace" -eq 1 ]; then
             plan_row "tmux status bar (replaces right)" "$conf_label$([ "$bar_backup" -eq 0 ] || printf '  [backup first]')"
@@ -2232,7 +2301,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_resume + plan_fork + plan_bar + plan_glow)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2289,6 +2358,7 @@ apply_plan() {
     if [ "$plan_path" -eq 1 ]; then configure_path "$plan_rc" "$plan_profile"; fi
     configure_agent_hooks
     if [ "$plan_ack" -eq 1 ]; then configure_ack_hooks; fi
+    if [ "$plan_resume" -eq 1 ]; then configure_resume_hooks; fi
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
     if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
@@ -2299,7 +2369,7 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
+    if [ $((plan_path + plan_ack + plan_resume + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
@@ -2308,9 +2378,10 @@ print_manual_steps() {
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
         echo "    $PATH_EXPORT_LINE"
     fi
-    if [ $((plan_ack + plan_fork + plan_bar)) -gt 0 ]; then
+    if [ $((plan_ack + plan_resume + plan_fork + plan_bar)) -gt 0 ]; then
         echo "  In $(tilde "${plan_conf:-$HOME/.tmux.conf}"):"
         if [ "$plan_ack" -eq 1 ]; then ack_hook_block | sed 's/^/    /'; fi
+        if [ "$plan_resume" -eq 1 ]; then resume_hook_block | sed 's/^/    /'; fi
         if [ "$plan_fork" -eq 1 ]; then echo "    $FORK_BINDING"; fi
         if [ "$plan_bar" -eq 1 ]; then bar_block | sed 's/^/    /'; fi
     fi
