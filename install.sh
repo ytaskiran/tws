@@ -387,27 +387,32 @@ session_end_hook_entry() {
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# Emits the SessionStart hook entry that records <session_id>\t<cwd> for this
-# pane, so `tws fork-pane` can fork the session that runs in it.
-fork_pointer_entry() {
-    local cmd
+# Emits the SessionStart hook entry that records <session_id>\t<cwd>\t<agent pid>
+# in sessions/<pane>.<agent>. `tws fork-pane` forks the session from it, and
+# `tws agents-save` keeps it for a resume after a reboot. $PPID is the agent (or,
+# for Devin, its direct child `devin acp`). One jq, no tmux: the Codex hook
+# timeout is 1 s. A subagent session (agent_id set) never replaces the pointer.
+# Devin sends no cwd and runs its hooks in the project directory, so $PWD stands
+# in. @tsv escapes a tab in a value, so the cuts at a tab are safe; `read` would
+# merge two tabs and move agent_id into an empty cwd. The write is a rename.
+pointer_entry() {
+    local agent="$1" cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
-    cmd+='input=$(cat); '
-    cmd+='id=$(printf "%s" "$input" | jq -r ".session_id // empty"); '
-    cmd+='[ -z "$id" ] && exit 0; '
-    cmd+='cwd=$(printf "%s" "$input" | jq -r ".cwd // empty"); '
-    cmd+='[ -z "$cwd" ] && cwd=$PWD; '
-    cmd+='mkdir -p "$HOME/.config/tws/sessions"; '
-    cmd+='printf "%s\t%s\n" "$id" "$cwd" > "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
+    cmd+='v=$(jq -r "[.session_id // \"\", .cwd // \"\", .agent_id // \"\"] | @tsv" 2>/dev/null) || exit 0; '
+    cmd+='tab=$(printf "\t"); id=${v%%"$tab"*}; v=${v#*"$tab"}; cwd=${v%%"$tab"*}; aid=${v#*"$tab"}; '
+    cmd+='[ -n "$id" ] && [ -z "$aid" ] || exit 0; '
+    cmd+='[ -n "$cwd" ] || cwd=$PWD; '
+    cmd+='d="$HOME/.config/tws/sessions"; t="$d/.$TMUX_PANE.'"$agent"'.$$"; '
+    cmd+='mkdir -p "$d" && printf "%s\t%s\t%s\n" "$id" "$cwd" "$PPID" > "$t" && mv -f "$t" "$d/$TMUX_PANE.'"$agent"'"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# The end-of-session counterpart: drops this pane's fork pointer.
-fork_pointer_end_entry() {
+# The end-of-session counterpart: drops this pane's pointer for the agent.
+pointer_end_entry() {
     local cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
-    cmd+='rm -f "$HOME/.config/tws/sessions/$TMUX_PANE"; :'
+    cmd+='rm -f "$HOME/.config/tws/sessions/$TMUX_PANE.'"$1"'"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -488,12 +493,12 @@ configure_claude_hooks() {
     e_substop=$(subagent_hook_entry stop)
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" reset)
-    local e_forkptr e_forkptr_end
-    e_forkptr=$(fork_pointer_entry)
-    e_forkptr_end=$(fork_pointer_end_entry)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry claude)
+    e_ptr_end=$(pointer_end_entry claude)
     local e
     for e in e_prompt e_pretool e_question e_posttool e_notify e_permit e_granted e_granted_fail \
-        e_idle e_stop e_compact e_fail e_substart e_substop e_end e_sessionstart e_forkptr e_forkptr_end; do
+        e_idle e_stop e_compact e_fail e_substart e_substop e_end e_sessionstart e_ptr e_ptr_end; do
         printf -v "$e" '%s' "$(claude_only "${!e}")"
     done
 
@@ -517,8 +522,8 @@ configure_claude_hooks() {
         --argjson fail "$e_fail" \
         --argjson end "$e_end" \
         --argjson sessionstart "$e_sessionstart" \
-        --argjson forkptr "$e_forkptr" \
-        --argjson forkptrend "$e_forkptr_end" '
+        --argjson ptr "$e_ptr" \
+        --argjson ptrend "$e_ptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -535,10 +540,10 @@ configure_claude_hooks() {
         .hooks.Stop             = ((.hooks.Stop // []) + $stop) |
         .hooks.SubagentStart    = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop     = ((.hooks.SubagentStop // []) + $substop) |
-        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $forkptr + $sessionstart) |
+        .hooks.SessionStart     = ((.hooks.SessionStart // []) + $ptr + $sessionstart) |
         .hooks.PostCompact      = ((.hooks.PostCompact // []) + $compact) |
         .hooks.StopFailure      = ((.hooks.StopFailure // []) + $fail) |
-        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $forkptrend) |
+        .hooks.SessionEnd       = ((.hooks.SessionEnd // []) + $end + $ptrend) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$settings" > "$tmp"; then
@@ -669,6 +674,9 @@ configure_codex_hooks() {
     e_end=$(session_end_hook_entry)
     e_sessionstart=$(status_hook_entry idle "$SESSION_START_MATCHER" rest)
     e_interrupt=$(status_hook_entry idle "" interrupt)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry codex)
+    e_ptr_end=$(pointer_end_entry codex)
 
     # See configure_claude_hooks: a jq failure must not count as success.
     if jq \
@@ -676,7 +684,8 @@ configure_codex_hooks() {
         --argjson review "$e_review" --argjson compact "$e_compact" \
         --argjson end "$e_end" \
         --argjson substart "$e_substart" --argjson substop "$e_substop" \
-        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" '
+        --argjson sessionstart "$e_sessionstart" --argjson interrupt "$e_interrupt" \
+        --argjson ptr "$e_ptr" --argjson ptrend "$e_ptr_end" '
         # A tws hook entry is identified by the config/tws/ path in its command.
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
@@ -693,9 +702,9 @@ configure_codex_hooks() {
         .hooks.SubagentStart      = ((.hooks.SubagentStart // []) + $substart) |
         .hooks.SubagentStop       = ((.hooks.SubagentStop // []) + $substop) |
         # Codex fires SessionStart for subagents too, so `rest` never overwrites a live state.
-        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $sessionstart) |
+        .hooks.SessionStart       = ((.hooks.SessionStart // []) + $ptr + $sessionstart) |
         .hooks.PostCompact        = ((.hooks.PostCompact // []) + $compact) |
-        .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end) |
+        .hooks.SessionEnd         = ((.hooks.SessionEnd // []) + $end + $ptrend) |
         # An ESC interrupt fires Interrupt and no Stop; Claude Code has no such hook.
         .hooks.Interrupt          = ((.hooks.Interrupt // []) + $interrupt) |
         # Drop any event arrays left empty (e.g. a legacy event we no longer populate).
@@ -801,6 +810,9 @@ configure_devin_hooks() {
         $a | .[0].hooks[0].command = "s=$(jq -r \".source // empty\" 2>/dev/null); case \"$s\" in \($m)) "
             + .[0].hooks[0].command + " ;; *) " + $b[0].hooks[0].command + " ;; esac"')
     e_end=$(session_end_hook_entry)
+    local e_ptr e_ptr_end
+    e_ptr=$(pointer_entry devin)
+    e_ptr_end=$(pointer_end_entry devin)
     # No PostCompaction entry: a manual compaction writes no state, so it needs
     # no exit, and a `review` from an auto compaction would show in a live turn.
 
@@ -810,7 +822,8 @@ configure_devin_hooks() {
         --argjson question "$e_question" --argjson answer "$e_answer" \
         --argjson permit "$e_permit" --argjson granted "$e_granted" \
         --argjson stop "$e_stop" --argjson sessionstart "$e_sessionstart" \
-        --argjson sessionend "$e_end" '
+        --argjson sessionend "$e_end" \
+        --argjson ptr "$e_ptr" --argjson ptrend "$e_ptr_end" '
         def is_tws: (.hooks // []) | any((.command // "") | test("config/tws/"));
         .hooks //= {} |
         .hooks |= with_entries(.value |= (if type == "array" then map(select(is_tws | not)) else . end)) |
@@ -819,8 +832,8 @@ configure_devin_hooks() {
         .hooks.PostToolUse       = ((.hooks.PostToolUse // []) + $answer + $granted) |
         .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + $permit) |
         .hooks.Stop              = ((.hooks.Stop // []) + $stop) |
-        .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart) |
-        .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend) |
+        .hooks.SessionStart      = ((.hooks.SessionStart // []) + $sessionstart + $ptr) |
+        .hooks.SessionEnd        = ((.hooks.SessionEnd // []) + $sessionend + $ptrend) |
         .hooks |= with_entries(select((.value | length) > 0))
     ' "$src" > "$tmp" && jq -se 'length == 1' "$tmp" >/dev/null 2>&1; then
         # Write through the path, so a symlinked config stays a link. A read-only

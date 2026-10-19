@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # An explicit path lets you point the harness at another revision's install.sh,
 # which is how you confirm a check still catches the bug it was written for.
 INSTALL_SH="${1:-install.sh}"
-eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^fork_pointer_entry()/,/^}/p;/^fork_pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^RESUME_LINE_RE=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
+eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hook_entry()/,/^}/p;/^session_end_hook_entry()/,/^}/p;/^subagent_hook_entry()/,/^}/p;/^pointer_entry()/,/^}/p;/^pointer_end_entry()/,/^}/p;/^claude_only()/,/^}/p;/^configure_claude_hooks()/,/^}/p;/^devin_config()/p;/^strip_jsonc()/,/^}/p;/^jsonc_object_or_empty()/,/^}/p;/^jsonc_has_extras()/,/^}/p;/^configure_devin_hooks()/,/^}/p;/^configure_codex_feature_flag()/,/^}/p;/^configure_codex_hooks()/,/^}/p;/^codex_daemon_on()/,/^}/p;/^confirm_codex_daemon()/,/^}/p;/^codex_feature()/,/^}/p;/^BAR_MARKER=/p;/^RESUME_MARKER=/p;/^RESUME_LINE_RE=/p;/^tilde()/,/^}/p;/^rewrite_conf_block()/,/^}/p;/^tmux_conf_candidates()/,/^}/p;/^tmux_conf_path()/,/^}/p;/^tmux_conf_for_write()/,/^}/p;/^load_into_tmux()/,/^}/p;/^user_conf_lines()/,/^}/p;/^tmux_conf_has()/,/^}/p;/^resume_hook_block()/,/^}/p;/^resume_hook_taken()/,/^}/p;/^configure_resume_hooks()/,/^}/p;/^scan_resume()/,/^}/p' "$INSTALL_SH" | sed 's# < /dev/tty##;s#(exec </dev/tty)#[ -z "${NO_TTY:-}" ]#')"
 
 # A harness that runs under Devin must not look like a Devin hook to the Claude
 # commands.
@@ -926,12 +926,27 @@ if declare -F configure_claude_hooks >/dev/null; then
         fi
     }
     is_tws='(.hooks[0].command | test("config/tws/"))'
-    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the fork pointer plus the reset entry"
-    check_count "$settings" "$is_tws and .matcher == \"\"" 1 "and the fork pointer entry keeps the empty matcher"
+    is_ptr='(.hooks[0].command | test("config/tws/sessions"))'
+    check_count "$settings" "$is_tws" 2 "Claude SessionStart holds the session pointer plus the reset entry"
+    check_count "$settings" "$is_ptr and .matcher == \"\" and (.hooks[0].command | test(\"TMUX_PANE[.]claude\\\"\"))" 1 \
+        "and the pointer entry writes .claude with the empty matcher"
+    check_count "$settings" "$is_ptr and (.hooks[0].command | test(\"DEVIN_PROJECT_DIR\"))" 1 \
+        "and the pointer entry carries the claude_only guard"
     check_count "$settings" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and the reset entry matches exactly startup|resume|clear"
     check_count "$settings" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
-    check_count "$hooks" "$is_tws" 1 "Codex SessionStart holds one tws entry"
+    check_count "$hooks" "$is_tws" 2 "Codex SessionStart holds the session pointer plus the rest entry"
+    check_count "$hooks" "$is_ptr and .matcher == \"\" and (.hooks[0].command | test(\"TMUX_PANE[.]codex\\\"\"))" 1 \
+        "and the pointer entry writes .codex with the empty matcher"
+    for f in "$settings" "$hooks"; do
+        n="$(jq '[.hooks.SessionEnd[] | select(.hooks[0].command | test("rm -f \"[$]HOME/.config/tws/sessions/"))] | length' "$f")"
+        if [ "$n" = 1 ]; then
+            printf '  ok   %s SessionEnd holds one pointer end entry\n' "$(basename "$f")"
+        else
+            printf '  FAIL %s SessionEnd holds %s pointer end entries\n' "$(basename "$f")" "$n"
+            failures=$((failures + 1))
+        fi
+    done
     check_count "$hooks" "$is_tws and .matcher == \"startup|resume|clear\"" 1 \
         "and it matches exactly startup|resume|clear"
     check_count "$hooks" "(.hooks[0].command == \"echo mine\")" 1 "and the user's own hook survives two runs"
@@ -1263,14 +1278,15 @@ for mode in set prompt live alert tool stop idle_alert reset rest permit granted
     fi
 done
 
-# expect_rename NAME WORD: the last mv moved a dot file holding WORD onto the status file.
+# expect_rename NAME WORD [FILE]: the last mv moved a dot file holding WORD onto
+# FILE (the status file by default).
 expect_rename() {
-    local name="$1" word="$2" line src="" dst="" content="" dot=0
+    local name="$1" word="$2" want="${3:-$STATUS_FILE}" line src="" dst="" content="" dot=0
     line="$(tail -n 1 "$MV_CALLS" 2>/dev/null || true)"
     IFS=$'\t' read -r src dst content <<< "$line" || true
     case "$(basename "$src")" in .*) dot=1 ;; esac
-    if [ "$dst" = "$STATUS_FILE" ] && [ "$content" = "$word" ] \
-        && [ "$(dirname "$src")" = "$(dirname "$STATUS_FILE")" ] && [ "$dot" = 1 ]; then
+    if [ "$dst" = "$want" ] && [ "$content" = "$word" ] \
+        && [ "$(dirname "$src")" = "$(dirname "$want")" ] && [ "$dot" = 1 ]; then
         printf '  ok   %s\n' "$name"
     else
         printf '  FAIL %s — last mv was [%s]\n' "$name" "$line"
@@ -1278,9 +1294,10 @@ expect_rename() {
     fi
 }
 
+# expect_no_temp NAME [DIR]: DIR (the status directory by default) holds no dot file.
 expect_no_temp() {
     local name="$1" left
-    left="$(find "$HOME/.config/tws/agents" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
+    left="$(find "${2:-$HOME/.config/tws/agents}" -name '.*' 2>/dev/null | tr '\n' ' ' || true)"
     if [ -z "$left" ]; then
         printf '  ok   %s\n' "$name"
     else
@@ -1338,6 +1355,83 @@ if [ ! -s "$MV_CALLS" ] && [ -e "$HEARTBEAT" ]; then
     printf '  ok   the heartbeat touches its own file and does not rename\n'
 else
     printf '  FAIL the heartbeat touches its own file and does not rename\n'
+    failures=$((failures + 1))
+fi
+
+printf '\nthe session pointers\n'
+# SessionStart writes <session_id>\t<cwd>\t<agent pid> to sessions/<pane>.<agent>,
+# so tws can fork the session and resume it after a reboot.
+SESS_DIR="$HOME/.config/tws/sessions"
+pointer() { run_command "$1" "$(entry_command "$(pointer_entry "$2")")"; }
+pointer_end() { run_command '{}' "$(entry_command "$(pointer_end_entry "$1")")"; }
+# expect_pointer NAME AGENT ID CWD: the pointer holds ID, CWD and a numeric pid.
+expect_pointer() {
+    local name="$1" file="$SESS_DIR/%7.$2" got
+    got="$(cat "$file" 2>/dev/null || true)"
+    if [[ "$got" =~ ^"$3"$'\t'"$4"$'\t'[0-9]+$ ]] && [ "$(tail -c 1 "$file" | od -An -c | tr -d ' ')" = '\n' ]; then
+        printf '  ok   %s\n' "$name"
+    else
+        printf '  FAIL %s — got [%s]\n' "$name" "$got"
+        failures=$((failures + 1))
+    fi
+}
+expect_no_pointer() {
+    local left
+    left="$(ls -A "$SESS_DIR" 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -z "$left" ]; then
+        printf '  ok   %s\n' "$1"
+    else
+        printf '  FAIL %s — left [%s]\n' "$1" "$left"
+        failures=$((failures + 1))
+    fi
+}
+if declare -F pointer_entry >/dev/null && declare -F pointer_end_entry >/dev/null; then
+    reset; : > "$MV_CALLS"
+    pointer '{"session_id":"s1","cwd":"/a b"}' claude
+    expect_pointer "a Claude SessionStart writes the pointer to %7.claude" claude s1 "/a b"
+    expect_rename "and writes it through a rename" "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)" "$SESS_DIR/%7.claude"
+    expect_no_temp "and leaves no temp file" "$SESS_DIR"
+    reset
+    pointer '{"session_id":"s2","cwd":"/c","agent_id":"a1"}' codex
+    expect_no_pointer "a Codex payload with an agent_id writes nothing"
+    # No cwd puts two tabs side by side; agent_id must not slide into cwd.
+    pointer '{"session_id":"s2","agent_id":"a1"}' codex
+    expect_no_pointer "and so does one with an agent_id and no cwd"
+    rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+    pointer '{"session_id":"s2","cwd":"/c","source":"startup"}' codex
+    expect_pointer "a Codex SessionStart writes %7.codex" codex s2 /c
+    if [ "$(count_lines "$JQ_CALLS")" -le 1 ] && [ "$(count_lines "$FAKE_TMUX_CALLS")" = 0 ]; then
+        printf '  ok   and runs jq at most once and never tmux\n'
+    else
+        printf '  FAIL and runs jq %s time(s) and tmux %s time(s)\n' "$(count_lines "$JQ_CALLS")" "$(count_lines "$FAKE_TMUX_CALLS")"
+        failures=$((failures + 1))
+    fi
+    reset
+    pointer '{"hook_event_name":"SessionStart","source":"startup","session_id":"respected-swordfish","cwd":"/d"}' devin
+    expect_pointer "a Devin SessionStart writes %7.devin" devin respected-swordfish /d
+    # The Devin payload has no cwd, so the hook directory stands in.
+    reset
+    proj="$HOME/proj dir"; mkdir -p "$proj"
+    ( cd "$proj" && pointer '{"hook_event_name":"SessionStart","source":"startup","session_id":"respected-swordfish"}' devin )
+    expect_pointer "a payload with no cwd records \$PWD" devin respected-swordfish "$proj"
+    reset
+    PANE_LESS=1 pointer '{"session_id":"s1","cwd":"/a"}' claude
+    expect_no_pointer "a pane-less run writes nothing"
+    pointer '{"session_id":"","cwd":"/a"}' claude
+    pointer '{"cwd":"/a"}' codex
+    expect_no_pointer "an empty or missing session_id writes nothing"
+    pointer '{"session_id":"s1","cwd":"/a"}' claude
+    pointer '{"session_id":"s2","cwd":"/c"}' codex
+    pointer_end claude
+    if [ ! -e "$SESS_DIR/%7.claude" ] && [ -e "$SESS_DIR/%7.codex" ]; then
+        printf '  ok   the Claude SessionEnd removes %%7.claude and leaves %%7.codex\n'
+    else
+        printf '  FAIL the Claude SessionEnd removes %%7.claude and leaves %%7.codex\n'
+        failures=$((failures + 1))
+    fi
+    reset
+else
+    printf '  FAIL %s has no pointer_entry or pointer_end_entry\n' "$INSTALL_SH"
     failures=$((failures + 1))
 fi
 
@@ -2143,13 +2237,15 @@ DEVIN_CFG_EOF
     check_jq "tws wires only events that Devin has" \
         "[.hooks | to_entries[] | select([.value[] | $dtws] | length > 0) | .key] | sort == [\"PermissionRequest\",\"PostToolUse\",\"PreToolUse\",\"SessionEnd\",\"SessionStart\",\"Stop\",\"UserPromptSubmit\"]"
     check_jq "and one tws entry per event, two for PreToolUse and PostToolUse" \
-        "[.hooks | to_entries[] | {(.key): ([.value[] | $dtws] | length)}] | add | del(.Stop) == {\"PermissionRequest\":1,\"PostToolUse\":2,\"PreToolUse\":2,\"SessionEnd\":1,\"SessionStart\":1,\"UserPromptSubmit\":1}"
+        "[.hooks | to_entries[] | {(.key): ([.value[] | $dtws] | length)}] | add | del(.Stop) == {\"PermissionRequest\":1,\"PostToolUse\":2,\"PreToolUse\":2,\"SessionEnd\":2,\"SessionStart\":2,\"UserPromptSubmit\":1}"
+    check_jq "the session pointer entries come last in SessionStart and SessionEnd" \
+        "[.hooks.SessionStart, .hooks.SessionEnd | [.[] | $dtws][-1].hooks[0].command | test(\"TMUX_PANE[.]devin\\\"\")] | all"
     check_jq "and one tws Stop entry" "[.hooks.Stop[] | $dtws] | length == 1"
     check_jq "no tws matcher uses lookahead" "[.hooks[][] | $dtws | .matcher | select(test(\"\\\\(\\\\?\"))] | length == 0"
     check_jq "non-tool events use the empty matcher" \
         "[.hooks | (.UserPromptSubmit, .Stop, .SessionStart, .SessionEnd)[] | $dtws | .matcher] | all(. == \"\")"
     check_jq "no tws Devin command reads agent_id or carries the Devin guard" \
-        "[.hooks[][] | $dtws | .hooks[0].command | select(test(\"agent_id|DEVIN_PROJECT_DIR\"))] | length == 0"
+        "[.hooks[][] | $dtws | .hooks[0].command | select(test(\"config/tws/sessions\") | not) | select(test(\"agent_id|DEVIN_PROJECT_DIR\"))] | length == 0"
     if cmp -s "$devin_home/original" "$dcfg.tws-bak"; then
         printf '  ok   the first run keeps the commented file as config.json.tws-bak\n'
     else
