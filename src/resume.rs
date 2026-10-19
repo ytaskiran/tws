@@ -45,7 +45,7 @@ pub fn snapshot_path() -> PathBuf {
     config_dir().join("agents.snapshot")
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapshotLine {
     pub key: String,
     pub agent: AgentType,
@@ -87,21 +87,32 @@ pub fn parse_snapshot(contents: &str) -> Vec<SnapshotLine> {
         .collect()
 }
 
-/// Keeps a pane only if its pointer's pid is in the scanned agent pids.
+/// Keeps a pane only if its pointer's pid is in the scanned agent pids. A live
+/// agent with no valid pointer keeps its `previous` line of the same key and agent.
 pub fn build_snapshot(
     panes: &[LivePane],
+    previous: &[SnapshotLine],
     read_pointer: impl Fn(&str, AgentType) -> Option<String>,
 ) -> Vec<SnapshotLine> {
     panes
         .iter()
         .filter_map(|p| {
             let (agent, pids) = p.agent.as_ref()?;
-            let ptr = parse_pointer(&read_pointer(&p.pane_id, *agent)?)?;
-            pids.contains(&ptr.pid).then(|| SnapshotLine {
-                key: p.key.clone(),
-                agent: *agent,
-                session_ref: ptr.session_ref,
-                cwd: ptr.cwd,
+            let fresh = read_pointer(&p.pane_id, *agent)
+                .and_then(|c| parse_pointer(&c))
+                .filter(|ptr| pids.contains(&ptr.pid))
+                .map(|ptr| SnapshotLine {
+                    key: p.key.clone(),
+                    agent: *agent,
+                    session_ref: ptr.session_ref,
+                    cwd: ptr.cwd,
+                });
+            // A resumed opencode writes its pointer only at its first message.
+            fresh.or_else(|| {
+                previous
+                    .iter()
+                    .find(|l| l.key == p.key && l.agent == *agent)
+                    .cloned()
             })
         })
         .collect()
@@ -161,7 +172,8 @@ pub fn save_with(
     scan_started_at: SystemTime,
 ) {
     let Some(panes) = panes else { return };
-    let lines = build_snapshot(&panes, |pane, agent| {
+    let previous = parse_snapshot(&std::fs::read_to_string(snapshot).unwrap_or_default());
+    let lines = build_snapshot(&panes, &previous, |pane, agent| {
         std::fs::read_to_string(sessions_dir.join(format!("{pane}.{}", agent.pointer_name()))).ok()
     });
     if let Some(dir) = snapshot.parent() {
@@ -308,6 +320,62 @@ mod tests {
             "s:1.0\tclaude\tid1\t/w\n"
         );
     }
+    fn line(key: &str, agent: AgentType, r: &str) -> SnapshotLine {
+        SnapshotLine {
+            key: key.into(),
+            agent,
+            session_ref: r.into(),
+            cwd: "/w".into(),
+        }
+    }
+    #[test]
+    fn build_snapshot_carries_forward_a_line_without_a_pointer() {
+        let panes = vec![lp("%1", "s:1.0", Some((AgentType::OpenCode, vec![500])))];
+        let prev = vec![line("s:1.0", AgentType::OpenCode, "ses_a")];
+        assert_eq!(build_snapshot(&panes, &prev, |_, _| None), prev);
+    }
+    #[test]
+    fn build_snapshot_does_not_carry_forward_a_different_agent() {
+        let panes = vec![
+            lp("%1", "s:1.0", Some((AgentType::OpenCode, vec![500]))),
+            lp("%2", "s:1.1", None),
+        ];
+        let prev = vec![
+            line("s:1.0", AgentType::ClaudeCode, "id"),
+            line("s:1.1", AgentType::OpenCode, "ses_b"),
+        ];
+        assert_eq!(build_snapshot(&panes, &prev, |_, _| None), vec![]);
+    }
+    #[test]
+    fn build_snapshot_prefers_a_valid_pointer_over_previous() {
+        let panes = vec![lp("%1", "s:1.0", Some((AgentType::OpenCode, vec![500])))];
+        let prev = vec![line("s:1.0", AgentType::OpenCode, "ses_old")];
+        assert_eq!(
+            build_snapshot(&panes, &prev, |_, _| Some("ses_new\t/w\t500\n".into())),
+            vec![line("s:1.0", AgentType::OpenCode, "ses_new")]
+        );
+    }
+    #[test]
+    fn save_keeps_a_saved_line_when_the_pointer_is_gone() {
+        let d = tempdir("save-carry");
+        let s = d.join("sessions");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(s.join("%1.opencode"), "ses_a\t/w\t500\n").unwrap();
+        let panes = || {
+            Some(vec![lp(
+                "%1",
+                "s:1.0",
+                Some((AgentType::OpenCode, vec![500])),
+            )])
+        };
+        save_with(panes(), &s, &d.join("agents.snapshot"), SystemTime::now());
+        std::fs::remove_file(s.join("%1.opencode")).unwrap();
+        save_with(panes(), &s, &d.join("agents.snapshot"), SystemTime::now());
+        assert_eq!(
+            std::fs::read_to_string(d.join("agents.snapshot")).unwrap(),
+            "s:1.0\topencode\tses_a\t/w\n"
+        );
+    }
     #[test]
     fn parse_pointer_reads_three_fields() {
         let p = parse_pointer("abc\t/Users/me/my proj\t51234\n").unwrap();
@@ -362,7 +430,7 @@ mod tests {
             lp("%3", "s:1.2", Some((AgentType::Codex, vec![400]))),
             lp("%4", "s:1.3", None),
         ];
-        let snap = build_snapshot(&panes, |pane, _| match pane {
+        let snap = build_snapshot(&panes, &[], |pane, _| match pane {
             "%1" => Some("id1\t/w\t201\n".into()),
             "%2" => Some("old\t/w\t999\n".into()),
             _ => None,
