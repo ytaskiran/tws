@@ -12,7 +12,7 @@ struct PaneInfo {
     pane_title: String,
 }
 
-/// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin).
+/// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin, OpenCode).
 /// Only scans panes belonging to the given tws-managed session names.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
     if tws_sessions.is_empty() {
@@ -156,6 +156,8 @@ fn identify_agent(command: &str) -> Option<AgentType> {
         // Devin Desktop runs as `Devin` and `Devin Helper`, so the
         // case-sensitive match leaves it out.
         "devin" => devin_session(tokens),
+        // The npm package of opencode ships a native binary named `opencode.exe` on every platform.
+        "opencode" | "opencode.exe" => opencode_session(tokens),
         // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
         // Nix-installed Pi runs as: deno run ... /nix/store/.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
         "node" | "deno" => identify_agent_script(tokens),
@@ -173,6 +175,39 @@ fn devin_session<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Option<AgentT
         Some("-h" | "--help" | "-V" | "--version") => None,
         Some(arg) if arg.starts_with('-') => Some(AgentType::Devin),
         Some(_) => None,
+    }
+}
+
+/// `opencode [project]` is the TUI, and `run`, `attach` and `pr` also run a
+/// session in the pane. The other subcommands are servers or one-shot tools.
+/// `--help` and `--version` only print.
+fn opencode_session<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
+    const TOOLS: [&str; 20] = [
+        "completion",
+        "acp",
+        "mcp",
+        "debug",
+        "providers",
+        "auth",
+        "agent",
+        "upgrade",
+        "uninstall",
+        "serve",
+        "web",
+        "models",
+        "stats",
+        "export",
+        "import",
+        "github",
+        "session",
+        "plugin",
+        "plug",
+        "db",
+    ];
+    match tokens.next() {
+        Some("-h" | "--help" | "-v" | "--version") => None,
+        Some(arg) if TOOLS.contains(&arg) => None,
+        _ => Some(AgentType::OpenCode),
     }
 }
 
@@ -208,6 +243,7 @@ fn package_agent(parts: &[&str]) -> Option<AgentType> {
         (None | Some("@anthropic-ai"), "claude-code") => Some(AgentType::ClaudeCode),
         (None | Some("@openai"), "codex") => Some(AgentType::Codex),
         (_, "pi-coding-agent") => Some(AgentType::Pi),
+        (None, "opencode-ai") => Some(AgentType::OpenCode),
         _ => None,
     }
 }
@@ -236,6 +272,17 @@ fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
             s.to_string()
         }
         AgentType::Codex | AgentType::Pi | AgentType::Devin => trimmed.to_string(),
+        AgentType::OpenCode => {
+            // opencode titles the pane `OC | <session title>`, and `OC` or `OpenCode` alone on the home screen.
+            let s = trimmed
+                .strip_prefix("OC |")
+                .map_or(trimmed, str::trim_start);
+            if matches!(s, "OC" | "OpenCode") {
+                String::new()
+            } else {
+                s.to_string()
+            }
+        }
     }
 }
 
@@ -386,6 +433,12 @@ mod tests {
         ]);
         assert_eq!(find_agent(&t, 100), Some(AgentType::Codex));
         assert_eq!(find_agent(&t, 300), Some(AgentType::Pi));
+    }
+
+    #[test]
+    fn find_agent_opencode_at_depth_1() {
+        let t = table(&[(100, 1, "/bin/zsh"), (200, 100, "opencode")]);
+        assert_eq!(find_agent(&t, 100), Some(AgentType::OpenCode));
     }
 
     #[test]
@@ -586,6 +639,46 @@ mod tests {
     }
 
     #[test]
+    fn identify_agent_opencode() {
+        for command in [
+            "opencode",
+            "opencode /tmp/proj",
+            "opencode .",
+            "opencode --continue",
+            "opencode run hi",
+            "opencode attach http://x",
+            "opencode pr 12",
+            "/opt/homebrew/bin/opencode",
+            "/Users/me/.opencode/bin/opencode",
+            "/tmp/oc/node_modules/opencode-ai/bin/opencode.exe",
+            "node /usr/lib/node_modules/opencode-ai/bin/opencode",
+            "deno run npm:opencode-ai@1.19.0",
+        ] {
+            assert_eq!(
+                identify_agent(command),
+                Some(AgentType::OpenCode),
+                "{command}"
+            );
+        }
+        for command in [
+            "opencode serve",
+            "opencode web",
+            "opencode acp",
+            "opencode models",
+            "opencode auth login",
+            "opencode --version",
+            "/x/opencode.exe serve",
+        ] {
+            assert_eq!(identify_agent(command), None, "{command}");
+        }
+        assert_eq!(identify_agent("node /Users/me/opencode/app.js"), None);
+        assert_eq!(
+            identify_agent("node /x/node_modules/@other/opencode-ai/cli.js"),
+            None
+        );
+    }
+
+    #[test]
     fn identify_agent_deno_npm_specifier() {
         assert_eq!(
             identify_agent("deno run npm:@anthropic-ai/claude-code"),
@@ -719,6 +812,16 @@ mod tests {
             clean_pane_title("devin-task", AgentType::Devin),
             "devin-task"
         );
+    }
+
+    #[test]
+    fn clean_pane_title_opencode() {
+        let clean = |t| clean_pane_title(t, AgentType::OpenCode);
+        assert_eq!(clean("OC | Fix bug"), "Fix bug");
+        assert_eq!(clean("OC"), "");
+        assert_eq!(clean("OC | "), "");
+        assert_eq!(clean("OpenCode"), "");
+        assert_eq!(clean("my title"), "my title");
     }
 
     #[test]

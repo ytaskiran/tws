@@ -43,7 +43,7 @@ is running inside tmux).
 
 ### Agents view
 
-Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi, Devin CLI) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
+Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi, Devin CLI, OpenCode) running across all your sessions, regardless of which thread owns them. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
 <img width="2940" height="1912" alt="tws-agents" src="https://github.com/user-attachments/assets/79a2cd9e-7437-4539-a18e-cded8d3084bd" />
 
@@ -62,7 +62,7 @@ that you already use:
 
     bind-key F run-shell "tmux split-window -h -l 45% -t #{pane_id} \"tws fork-pane #{pane_id}\""
 
-This feature works with Claude Code only. Codex, Pi, and Devin panes do not support
+This feature works with Claude Code only. Codex, Pi, Devin and OpenCode panes do not support
 forking. `codex resume` appends to the parent session instead of forking it.
 
 ### Read a pane by moving into it
@@ -228,7 +228,7 @@ setup and shows all the changes it can make in one list. It asks one main
 question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
 your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
-- agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`; it also asks to turn off `daemon_auto_start`, because hooks in the shared Codex daemon cannot tell which pane they belong to. After a yes, restart your open Codex TUIs and run `codex app-server daemon stop`), Pi (`~/.pi/agent/extensions/`), and Devin CLI (the `hooks` key of `~/.config/devin/config.json`; it keeps your other keys and hooks. It makes the file if it is missing. jq cannot keep comments, so a file with comments loses them, and the installer first copies it to `config.json.tws-bak`). Devin CLI also runs the hooks in `~/.claude/settings.json`, so the tws Claude hooks do nothing under Devin and the Devin hooks report the pane,
+- agent status hooks for each agent it finds: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json` and `config.toml`; it also asks to turn off `daemon_auto_start`, because hooks in the shared Codex daemon cannot tell which pane they belong to. After a yes, restart your open Codex TUIs and run `codex app-server daemon stop`), Pi (`~/.pi/agent/extensions/`), Devin CLI (the `hooks` key of `~/.config/devin/config.json`; it keeps your other keys and hooks. It makes the file if it is missing. jq cannot keep comments, so a file with comments loses them, and the installer first copies it to `config.json.tws-bak`). Devin CLI also runs the hooks in `~/.claude/settings.json`, so the tws Claude hooks do nothing under Devin and the Devin hooks report the pane, and OpenCode (`~/.config/opencode/plugins/`). Only the OpenCode TUI reports status. `opencode run`, `opencode serve` and `opencode attach` panes show no status. `opencode serve`, `opencode web`, `opencode acp` and the other tool subcommands do not show as agents,
 - the tmux ack hooks and the `prefix+F` fork binding in your tmux config (`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`). It creates `~/.tmux.conf` if you have no tmux config, and loads the new lines into a running tmux server. It does not overwrite a `prefix+F` that you already use. Your config can load other files or plugins. If no tmux server runs, the installer cannot see their keys. It then skips the fork binding and asks you to start tmux and run install again,
 - a `PATH` line for `~/.local/bin` in your shell rc and profile, if your shell does not find it,
 - `glow`, with `brew` or `go`, if it is missing.

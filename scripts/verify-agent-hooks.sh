@@ -18,6 +18,10 @@ eval "$(sed -n '/^SUBAGENT_FRESH_MINS=/p;/^SESSION_START_MATCHER=/p;/^status_hoo
 # A harness that runs under Devin must not look like a Devin hook to the Claude
 # commands.
 unset DEVIN_PROJECT_DIR
+# The plugin heredoc holds lines that start with a brace, so this range ends at
+# the brace after the heredoc and not at the first one.
+eval "$(awk '/^configure_opencode_hooks\(\)/{f=1} f{print} f&&/^OPENCODE_PLUGIN_EOF$/{h=1} f&&h&&/^}$/{exit}' "$INSTALL_SH")"
+
 export HOME
 HOME="$(mktemp -d)"
 export TMUX_PANE="%7"
@@ -2338,6 +2342,427 @@ DEVIN_CFG_EOF
     done
 else
     printf '  FAIL %s has no configure_devin_hooks to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+fi
+
+# The OpenCode plugin is plain JS with node: APIs only, so node runs the text
+# that install.sh writes. The driver feeds it the events that opencode sends and
+# asserts the status file, as the hook checks above do for the shell commands.
+printf '\nOpenCode status plugin\n'
+oc_plugin="$(sed -n '/<<.OPENCODE_PLUGIN_EOF.$/,/^OPENCODE_PLUGIN_EOF$/p' "$INSTALL_SH" | sed '1d;$d')"
+printf '%s\n' "$oc_plugin" > "$HOME/tws-status.mjs"
+if [ -z "$oc_plugin" ]; then
+    printf '  FAIL %s has no OpenCode plugin to check\n' "$INSTALL_SH"
+    failures=$((failures + 1))
+elif ! command -v node > /dev/null 2>&1; then
+    if [ -n "${CI:-}" ]; then
+        printf '  FAIL node is missing, so the OpenCode plugin is not checked\n'
+        failures=$((failures + 1))
+    else
+        printf '  skip node is missing, so the OpenCode plugin is not checked\n'
+    fi
+else
+    cat > "$HOME/oc-driver.mjs" <<'OC_DRIVER_EOF'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mock } from "node:test";
+
+process.env.TMUX_PANE = "%7";
+process.env.PATH = `${process.env.FAKE_BIN}:${process.env.PATH}`;
+const HOME = process.env.HOME;
+const TWS = `${HOME}/.config/tws`;
+const STATUS = `${TWS}/agents/%7`;
+const TRIGGER = `${TWS}/agent.trigger`;
+const HEARTBEAT = `${TWS}/heartbeat/%7`;
+const MARKERS = `${TWS}/subagents/%7`;
+const TUI_ARGV = "/$bunfs/root/src/cli/tui/worker.js";
+const RUN_ARGV = "/$bunfs/root/src/index.js";
+const OLD = new Date("2000-01-01T00:00:00Z");
+
+const { TwsStatus } = await import(`${HOME}/tws-status.mjs`);
+
+let failures = 0;
+function check(cond, msg) {
+  if (cond) {
+    console.log(`  ok   ${msg}`);
+  } else {
+    console.log(`  FAIL ${msg}`);
+    failures++;
+  }
+}
+const word = () => (existsSync(STATUS) ? readFileSync(STATUS, "utf8") : "<none>");
+const mtime = (p) => statSync(p).mtimeMs;
+const tmux = (state) => {
+  process.env.FAKE_TMUX_STATE = state;
+};
+
+async function start() {
+  process.argv[1] = TUI_ARGV;
+  return TwsStatus();
+}
+
+// A new opencode process starts with no state of the last one. The plugin state
+// lives on globalThis, so the driver clears the one value that a reload keeps.
+async function fresh() {
+  globalThis[Symbol.for("tws.opencode.status")].reloadWord = undefined;
+  return start();
+}
+
+async function scenario(fn) {
+  rmSync(TWS, { recursive: true, force: true });
+  tmux("fail");
+  const hooks = await fresh();
+  const ev = (type, properties) => hooks.event({ event: { type, properties } });
+  const busy = (sessionID) => ev("session.status", { sessionID, status: { type: "busy" } });
+  const idle = async (sessionID) => {
+    await ev("session.status", { sessionID, status: { type: "idle" } });
+    await ev("session.idle", { sessionID });
+  };
+  const child = (id, parentID) => ev("session.created", { info: { id, parentID } });
+  try {
+    await fn({ hooks, ev, busy, idle, child });
+  } finally {
+    await hooks.dispose?.();
+  }
+}
+
+console.log("  init");
+rmSync(TWS, { recursive: true, force: true });
+for (const dir of [`${MARKERS}`, `${TWS}/inflight/%7`, `${TWS}/permissions/%7`]) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/x`, "");
+}
+mkdirSync(`${TWS}/heartbeat`, { recursive: true });
+writeFileSync(HEARTBEAT, "");
+await (async () => {
+  const hooks = await fresh();
+  check(word() === "idle", "init writes idle");
+  check(existsSync(TRIGGER), "init rings the trigger");
+  check(
+    !existsSync(MARKERS) && !existsSync(HEARTBEAT) && !existsSync(`${TWS}/inflight/%7`) && !existsSync(`${TWS}/permissions/%7`),
+    "init removes the old subagent, heartbeat, in-flight and permission files",
+  );
+  await hooks.dispose();
+})();
+
+console.log("  busy, requests");
+await scenario(async ({ ev, busy }) => {
+  await busy("ses_root");
+  check(word() === "working", "a busy root session is working");
+  await ev("permission.asked", { id: "per_1", sessionID: "ses_root" });
+  check(word() === "waiting", "a permission request is waiting");
+  await ev("permission.replied", { requestID: "per_1", reply: "once" });
+  check(word() === "working", "a permission reply resumes working");
+  await ev("question.asked", { id: "que_1", sessionID: "ses_root" });
+  check(word() === "waiting", "a question is waiting");
+  await ev("question.rejected", { requestID: "que_1" });
+  check(word() === "working", "a dismissed question resumes working");
+});
+
+console.log("  subagent session");
+await scenario(async ({ ev, busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  check(existsSync(`${MARKERS}/ses_child`) && word() === "working", "a busy child session has a marker and the pane is working");
+  await ev("permission.asked", { id: "per_2", sessionID: "ses_child" });
+  check(word() === "waiting", "a permission request of the child is waiting");
+  await ev("permission.replied", { requestID: "per_2", reply: "once" });
+  check(word() === "working", "its reply resumes working");
+  await idle("ses_child");
+  check(!existsSync(`${MARKERS}/ses_child`) && word() === "working", "the child end removes the marker and the parent keeps working");
+});
+
+console.log("  turn end");
+await scenario(async ({ busy, idle }) => {
+  await busy("ses_root");
+  await idle("ses_root");
+  check(word() === "review", "a turn end with no pane state is review");
+  await busy("ses_root");
+  tmux("111");
+  await idle("ses_root");
+  check(word() === "idle", "a turn end in view is idle");
+  await busy("ses_root");
+  tmux("101");
+  await idle("ses_root");
+  check(word() === "review", "a turn end in an inactive window is review");
+});
+
+console.log("  acknowledgment");
+await scenario(async ({ busy, idle }) => {
+  await busy("ses_root");
+  await idle("ses_root");
+  check(word() === "review", "the first idle writes review");
+  writeFileSync(STATUS, "idle");
+  await idle("ses_root");
+  check(word() === "idle", "a later idle of the same turn keeps the acknowledgment");
+});
+
+console.log("  abort");
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("session.error", { sessionID: "ses_root", error: { name: "MessageAbortedError" } });
+  await idle("ses_root");
+  check(word() === "idle", "an abort ends idle and not review");
+  await idle("ses_root");
+  check(word() === "idle", "the second idle of an abort changes nothing");
+});
+await scenario(async ({ ev, busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await ev("session.error", { sessionID: "ses_root", error: { name: "MessageAbortedError" } });
+  await idle("ses_root");
+  check(word() === "idle" && !existsSync(MARKERS), "an abort with a busy child drops the child and ends idle");
+});
+
+console.log("  background subagent");
+await scenario(async ({ busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await idle("ses_root");
+  check(word() === "working", "the parent idle with a busy child keeps working");
+  await idle("ses_child");
+  check(word() === "review", "the end of the last child is review");
+});
+
+console.log("  stale request");
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("permission.asked", { id: "per_3", sessionID: "ses_root" });
+  await idle("ses_root");
+  check(word() === "review", "a request with no reply cannot outlive the turn");
+  await busy("ses_root");
+  check(word() === "working", "the next busy is working and not waiting");
+});
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("permission.asked", { id: "per_4", sessionID: "ses_other" });
+  check(word() === "waiting", "a request of a session with no busy event is waiting");
+  await idle("ses_root");
+  check(word() === "review", "a request of a session with no busy event ends with the last busy session");
+});
+
+console.log("  heartbeat");
+await scenario(async ({ hooks, busy }) => {
+  await busy("ses_root");
+  utimesSync(STATUS, OLD, OLD);
+  rmSync(HEARTBEAT, { force: true });
+  await hooks["tool.execute.before"]();
+  check(existsSync(HEARTBEAT) && mtime(STATUS) === OLD.getTime(), "a tool call while busy touches the heartbeat and not the status file");
+});
+
+console.log("  retry, deleted session");
+await scenario(async ({ ev, idle, child }) => {
+  await ev("session.status", { sessionID: "ses_root", status: { type: "retry" } });
+  check(word() === "working", "a retry status is working");
+  await child("ses_child", "ses_root");
+  await ev("session.status", { sessionID: "ses_child", status: { type: "busy" } });
+  await ev("session.deleted", { info: { id: "ses_child" } });
+  check(!existsSync(`${MARKERS}/ses_child`) && word() === "working", "a deleted busy child loses its marker and the parent keeps working");
+  await idle("ses_root");
+  check(word() === "review", "the parent idle after the deleted child is review");
+});
+
+console.log("  several roots");
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_a");
+  await busy("ses_b");
+  await idle("ses_a");
+  check(word() === "working", "a root idle with another root busy keeps working");
+  await ev("session.error", { sessionID: "ses_b", error: { name: "MessageAbortedError" } });
+  await idle("ses_b");
+  check(word() === "review", "an abort of the last root keeps the unread result of an earlier root");
+});
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_a");
+  await ev("session.error", { sessionID: "ses_a", error: { name: "MessageAbortedError" } });
+  await idle("ses_a");
+  check(word() === "idle", "an abort of the only root ends idle");
+  await busy("ses_a");
+  await ev("session.error", { sessionID: "ses_a", error: { name: "MessageAbortedError" } });
+  await idle("ses_a");
+  await idle("ses_a");
+  check(word() === "idle", "a second abort still ends idle after the repeated idle events");
+});
+await scenario(async ({ ev, busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await ev("session.error", { sessionID: "ses_child", error: { name: "MessageAbortedError" } });
+  await idle("ses_child");
+  await idle("ses_root");
+  check(word() === "review", "an abort error of a child is no abort of the turn");
+});
+
+console.log("  turn start");
+await scenario(async ({ busy, idle, child }) => {
+  await busy("ses_root");
+  await child("ses_child", "ses_root");
+  await busy("ses_child");
+  await idle("ses_root");
+  check(word() === "working", "a background child keeps the pane working after the root idle");
+  utimesSync(STATUS, OLD, OLD);
+  rmSync(TRIGGER, { force: true });
+  await busy("ses_root");
+  check(word() === "working" && Date.now() - mtime(STATUS) < 3000, "a new root turn over working stamps a fresh mtime");
+  check(!existsSync(TRIGGER), "and the stamp does not ring the trigger");
+  utimesSync(STATUS, OLD, OLD);
+  await busy("ses_root");
+  check(mtime(STATUS) === OLD.getTime(), "a repeated busy of the same root keeps the turn start");
+});
+
+console.log("  reload");
+for (const [label, setup, want] of [
+  ["review", async ({ busy, idle }) => { await busy("ses_root"); await idle("ses_root"); }, "review"],
+  ["idle", async () => {}, "idle"],
+  ["working", async ({ busy }) => { await busy("ses_root"); }, "idle"],
+]) {
+  rmSync(TWS, { recursive: true, force: true });
+  tmux("fail");
+  const hooks = await fresh();
+  const ev = (type, properties) => hooks.event({ event: { type, properties } });
+  const busy = (sessionID) => ev("session.status", { sessionID, status: { type: "busy" } });
+  const idle = async (sessionID) => {
+    await ev("session.status", { sessionID, status: { type: "idle" } });
+    await ev("session.idle", { sessionID });
+  };
+  await setup({ busy, idle });
+  await hooks.dispose();
+  rmSync(TRIGGER, { force: true });
+  const again = await start();
+  check(word() === want, `a reload from ${label} starts ${want}`);
+  if (want === "review") check(existsSync(TRIGGER), "and the restored review rings the trigger");
+  await again.dispose();
+}
+
+console.log("  timer");
+{
+  const HOUR = 60 * 60 * 1000;
+  let mocked = true;
+  try {
+    mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.now() });
+    mock.timers.reset();
+  } catch {
+    mocked = false;
+  }
+  if (!mocked) {
+    if (process.env.CI) {
+      console.log("  FAIL this node has no mock timers for Date, so the heartbeat timer is not checked");
+      failures++;
+    } else {
+      console.log("  skip this node has no mock timers for Date, so the heartbeat timer is not checked");
+    }
+  } else {
+    try {
+      await scenario(async ({ ev, busy, child }) => {
+        mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.now() });
+        await busy("ses_root");
+        await child("ses_kid", "ses_root");
+        await busy("ses_kid");
+        utimesSync(STATUS, OLD, OLD);
+        utimesSync(`${MARKERS}/ses_kid`, OLD, OLD);
+        rmSync(HEARTBEAT, { force: true });
+        mock.timers.tick(60_000);
+        check(existsSync(HEARTBEAT), "the timer touches the heartbeat each minute");
+        check(mtime(STATUS) === OLD.getTime(), "and leaves the status file alone");
+        check(mtime(`${MARKERS}/ses_kid`) > OLD.getTime(), "and touches the marker of a busy child");
+        await child("ses/../x", "ses_root");
+        await ev("session.status", { sessionID: "ses/../x", status: { type: "busy" } });
+        mock.timers.tick(60_000);
+        check(readdirSync(MARKERS).join() === "ses_kid" && !existsSync(`${TWS}/subagents/x`), "a child with an unsafe id gets no marker and writes no file");
+        mock.timers.tick(4 * HOUR + 60_000);
+        utimesSync(HEARTBEAT, OLD, OLD);
+        mock.timers.tick(60_000);
+        check(mtime(HEARTBEAT) === OLD.getTime(), "the beat stops after 4 h with no event");
+        await ev("session.status", { sessionID: "ses_kid", status: { type: "busy" } });
+        mock.timers.tick(60_000);
+        check(mtime(HEARTBEAT) > OLD.getTime(), "and the next event starts it again");
+      });
+    } finally {
+      mock.timers.reset();
+    }
+  }
+}
+
+console.log("  gate");
+await (async () => {
+  rmSync(TWS, { recursive: true, force: true });
+  const pane = process.env.TMUX_PANE;
+  delete process.env.TMUX_PANE;
+  process.argv[1] = TUI_ARGV;
+  let hooks = await TwsStatus();
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "no TMUX_PANE gives no hooks and writes nothing");
+  process.env.TMUX_PANE = pane;
+  process.argv[1] = RUN_ARGV;
+  process.argv[2] = "run";
+  hooks = await TwsStatus();
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "opencode run gives no hooks and writes nothing");
+  process.argv[1] = RUN_ARGV;
+  process.argv[2] = "run";
+  process.argv[3] = "review src/cli/tui/worker.ts";
+  hooks = await TwsStatus();
+  check(Object.keys(hooks).length === 0 && !existsSync(TWS), "a prompt that names the worker script does not open the gate");
+  process.argv.length = 2;
+})();
+
+console.log("  two instances");
+await (async () => {
+  rmSync(TWS, { recursive: true, force: true });
+  const a = await fresh();
+  const b = await start();
+  await a.event({ event: { type: "session.status", properties: { sessionID: "ses_root", status: { type: "busy" } } } });
+  await a.dispose();
+  check(word() === "working", "the first dispose leaves the status file");
+  utimesSync(TRIGGER, OLD, OLD);
+  await b.dispose();
+  check(word() === "<none>" && mtime(TRIGGER) > OLD.getTime(), "the last dispose removes the status file and rings the trigger");
+  check(!existsSync(HEARTBEAT), "the last dispose removes the heartbeat");
+})();
+
+process.exit(failures);
+OC_DRIVER_EOF
+    set +e
+    FAKE_BIN="$FAKE_BIN" node "$HOME/oc-driver.mjs"
+    oc_failures=$?
+    set -e
+    failures=$((failures + oc_failures))
+fi
+
+if printf '%s' "$oc_plugin" | grep -Fq 'writeFileSync(path' \
+    || ! printf '%s' "$oc_plugin" | grep -Fq 'renameSync(tmp, path)' \
+    || [ "$(printf '%s' "$oc_plugin" | grep -Fc 'writeFileSync(tmp')" != 1 ]; then
+    printf '  FAIL OpenCode writes a status word through a rename only\n'
+    failures=$((failures + 1))
+else
+    printf '  ok   OpenCode writes a status word through a rename only\n'
+fi
+
+# A config directory that tws cannot write gets a warning, not a stop.
+if declare -F configure_opencode_hooks > /dev/null; then
+    oc_home="$HOME/oc-wire"; rm -rf "$oc_home"; mkdir -p "$oc_home/.config/opencode"
+    oc_out="$( unset XDG_CONFIG_HOME; HOME="$oc_home"; info() { :; }; ok() { :; }; warn() { printf 'WARN\n'; }; hooks_configured=0; configure_opencode_hooks; printf 'rc=0 hooks=%s file=%s\n' "$hooks_configured" "$([ -e "$HOME/.config/opencode/plugins/tws-status.js" ] && echo yes || echo no)" )"
+    if [ "$oc_out" = "$(printf 'rc=0 hooks=1 file=yes')" ] && cmp -s "$oc_home/.config/opencode/plugins/tws-status.js" "$HOME/tws-status.mjs"; then
+        printf '  ok   the installer writes the OpenCode plugin and marks the hooks as configured\n'
+    else
+        printf '  FAIL the installer writes the OpenCode plugin [%s]\n' "$oc_out"
+        failures=$((failures + 1))
+    fi
+    if [ "$(id -u)" = 0 ]; then
+        printf '  skip root can write a read-only directory, so the unwritable OpenCode case is not checked\n'
+    else
+        oc_ro="$HOME/oc-ro"; rm -rf "$oc_ro"; mkdir -p "$oc_ro/.config/opencode"; chmod 555 "$oc_ro/.config/opencode"
+        oc_out="$( unset XDG_CONFIG_HOME; HOME="$oc_ro"; info() { :; }; ok() { printf 'OK\n'; }; warn() { printf 'WARN\n'; }; hooks_configured=0; set -e; configure_opencode_hooks; printf 'rc=0 hooks=%s file=%s\n' "$hooks_configured" "$([ -e "$HOME/.config/opencode/plugins/tws-status.js" ] && echo yes || echo no)" )"
+        chmod 755 "$oc_ro/.config/opencode"
+        if [ "$oc_out" = "$(printf 'WARN\nrc=0 hooks=0 file=no')" ]; then
+            printf '  ok   an unwritable OpenCode directory gives a warning, no file and no hooks_configured\n'
+        else
+            printf '  FAIL an unwritable OpenCode directory [%s]\n' "$oc_out"
+            failures=$((failures + 1))
+        fi
+    fi
+else
+    printf '  FAIL %s has no configure_opencode_hooks to check\n' "$INSTALL_SH"
     failures=$((failures + 1))
 fi
 

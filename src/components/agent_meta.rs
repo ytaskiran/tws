@@ -20,6 +20,7 @@ pub fn kind_label(kind: AgentType) -> &'static str {
         AgentType::Codex => "codex",
         AgentType::Pi => "pi",
         AgentType::Devin => "devin",
+        AgentType::OpenCode => "opencode",
     }
 }
 

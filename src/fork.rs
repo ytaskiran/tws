@@ -313,6 +313,11 @@ mod tests {
             classify(&f),
             Err(ForkError::UnsupportedAgent(AgentType::Pi))
         );
+        let f = facts(None, Some(AgentType::OpenCode));
+        assert_eq!(
+            classify(&f),
+            Err(ForkError::UnsupportedAgent(AgentType::OpenCode))
+        );
     }
 
     #[test]
