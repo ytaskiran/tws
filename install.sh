@@ -395,7 +395,10 @@ session_end_hook_entry() {
 # Devin sends no cwd; the hook's $PWD, Devin's launch dir, stands in (not
 # verified to be the project dir). @tsv escapes a tab in a value, so the cuts at
 # a tab are safe; `read` would merge two tabs and move agent_id into an empty
-# cwd. The write is a rename.
+# cwd. The write is a rename. A nested run of the same agent (`claude -p` from a
+# Bash tool) inherits TMUX_PANE: when the pointer pid is alive and an ancestor of
+# $PPID (4 levels at most), the hook keeps the main pointer. Only a pointer with
+# another pid starts ps; a dead or unrelated pid (a stale pointer) is replaced.
 pointer_entry() {
     local agent="$1" cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
@@ -403,17 +406,22 @@ pointer_entry() {
     cmd+='tab=$(printf "\t"); id=${v%%"$tab"*}; v=${v#*"$tab"}; cwd=${v%%"$tab"*}; aid=${v#*"$tab"}; '
     cmd+='[ -n "$id" ] && [ -z "$aid" ] || exit 0; '
     cmd+='[ -n "$cwd" ] || cwd=$PWD; '
-    cmd+='d="$HOME/.config/tws/sessions"; t="$d/.$TMUX_PANE.'"$agent"'.$$"; '
-    cmd+='mkdir -p "$d" && printf "%s\t%s\t%s\n" "$id" "$cwd" "$PPID" > "$t" && mv -f "$t" "$d/$TMUX_PANE.'"$agent"'"; :'
+    cmd+='d="$HOME/.config/tws/sessions"; f="$d/$TMUX_PANE.'"$agent"'"; t="$d/.$TMUX_PANE.'"$agent"'.$$"; '
+    cmd+='if [ -f "$f" ] && IFS= read -r l < "$f"; then o=${l##*"$tab"}; '
+    cmd+='case $o in ""|*[!0-9]*|"$PPID") ;; *) if kill -0 "$o" 2>/dev/null; then p=$PPID; i=0; '
+    cmd+='while [ "$i" -lt 4 ]; do p=$(ps -o ppid= -p "$p" 2>/dev/null) || break; p=${p##* }; [ "$p" = "$o" ] && exit 0; i=$((i + 1)); done; fi ;; esac; fi; '
+    cmd+='mkdir -p "$d" && printf "%s\t%s\t%s\n" "$id" "$cwd" "$PPID" > "$t" && mv -f "$t" "$f"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
 
-# The end-of-session counterpart: drops this pane's pointer for the agent.
+# The end-of-session counterpart: drops this pane's pointer for the agent, only
+# when the agent wrote it ($PPID is its pid), so a nested run keeps the main one.
 pointer_end_entry() {
     local cmd
     cmd='[ -n "${TMUX_PANE:-}" ] || exit 0; '
-    cmd+='rm -f "$HOME/.config/tws/sessions/$TMUX_PANE.'"$1"'"; :'
+    cmd+='f="$HOME/.config/tws/sessions/$TMUX_PANE.'"$1"'"; '
+    cmd+='IFS= read -r l 2>/dev/null < "$f" || exit 0; [ "${l##*$(printf "\t")}" = "$PPID" ] && rm -f "$f"; :'
     printf '[{"matcher": "", "hooks": [{"type": "command", "command": %s}]}]' \
         "$(printf '%s' "$cmd" | jq -Rs .)"
 }
@@ -972,7 +980,7 @@ function savePointer(ctx: any) {
       writeFileSync(tmp, text);
       renameSync(tmp, path);
     } else {
-      rmSync(path, { force: true });
+      dropOwnPointer(path);
     }
     pointer = text;
   } catch {
@@ -984,12 +992,17 @@ function savePointer(ctx: any) {
   }
 }
 
+// A nested Pi in the pane writes its own pid, so only this process's pointer goes.
+function dropOwnPointer(path: string) {
+  if (readFileSync(path, "utf8").split("\t")[2]?.trim() === String(process.pid)) rmSync(path, { force: true });
+}
+
 function dropPointer() {
   pointer = undefined;
   try {
-    rmSync(`${SESSIONS_DIR}/${process.env.TMUX_PANE}.pi`, { force: true });
+    dropOwnPointer(`${SESSIONS_DIR}/${process.env.TMUX_PANE}.pi`);
   } catch {
-    // A pointer of a dead process is pruned by tws.
+    // No pointer, or a pointer of a dead process that tws prunes.
   }
 }
 
@@ -1361,7 +1374,9 @@ export const TwsStatus = async () => {
       S.reloadWord = readWord(`${AGENTS_DIR}/${pane}`);
       resetState();
       clearPaneFiles(pane);
-      rm(`${SESSIONS_DIR}/${pane}.opencode`);
+      // A nested opencode in the pane writes its own pid; keep that pointer.
+      const ptr = `${SESSIONS_DIR}/${pane}.opencode`;
+      if (readWord(ptr)?.split("\t")[2]?.trim() === String(process.pid)) rm(ptr);
       try {
         rmSync(`${AGENTS_DIR}/${pane}`);
         writeFileSync(TRIGGER, "");

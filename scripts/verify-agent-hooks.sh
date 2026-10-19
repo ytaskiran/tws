@@ -939,7 +939,7 @@ if declare -F configure_claude_hooks >/dev/null; then
     check_count "$hooks" "$is_ptr and .matcher == \"\" and (.hooks[0].command | test(\"TMUX_PANE[.]codex\\\"\"))" 1 \
         "and the pointer entry writes .codex with the empty matcher"
     for f in "$settings" "$hooks"; do
-        n="$(jq '[.hooks.SessionEnd[] | select(.hooks[0].command | test("rm -f \"[$]HOME/.config/tws/sessions/"))] | length' "$f")"
+        n="$(jq '[.hooks.SessionEnd[] | select(.hooks[0].command | test("f=\"[$]HOME/.config/tws/sessions/"))] | length' "$f")"
         if [ "$n" = 1 ]; then
             printf '  ok   %s SessionEnd holds one pointer end entry\n' "$(basename "$f")"
         else
@@ -1429,6 +1429,41 @@ if declare -F pointer_entry >/dev/null && declare -F pointer_end_entry >/dev/nul
         printf '  FAIL the Claude SessionEnd removes %%7.claude and leaves %%7.codex\n'
         failures=$((failures + 1))
     fi
+    # A nested `claude -p` from a Bash tool inherits TMUX_PANE. A real tree:
+    # this script ($$, the main agent) -> a subshell (the nested agent, the
+    # hook's $PPID) -> the hook.
+    expect_main() {
+        if [ "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)" = "main	/m	$$" ]; then
+            printf '  ok   %s\n' "$1"
+        else
+            printf '  FAIL %s — got [%s]\n' "$1" "$(cat "$SESS_DIR/%7.claude" 2>/dev/null)"
+            failures=$((failures + 1))
+        fi
+    }
+    reset; mkdir -p "$SESS_DIR"; printf 'main\t/m\t%s\n' "$$" > "$SESS_DIR/%7.claude"
+    rm -f "$JQ_CALLS" "$FAKE_TMUX_CALLS"
+    ( pointer '{"session_id":"nested","cwd":"/n"}' claude; : )
+    expect_main "a nested SessionStart below the live pointer pid keeps the main pointer"
+    if [ "$(count_lines "$JQ_CALLS")" -le 1 ] && [ "$(count_lines "$FAKE_TMUX_CALLS")" = 0 ]; then
+        printf '  ok   and runs jq at most once and never tmux\n'
+    else
+        printf '  FAIL and runs jq %s time(s) and tmux %s time(s)\n' "$(count_lines "$JQ_CALLS")" "$(count_lines "$FAKE_TMUX_CALLS")"
+        failures=$((failures + 1))
+    fi
+    ( pointer_end claude; : )
+    expect_main "a nested SessionEnd keeps the main pointer"
+    sh -c : & dead=$!; wait "$dead" || true
+    printf 'old\t/o\t%s\n' "$dead" > "$SESS_DIR/%7.claude"
+    ( pointer '{"session_id":"s3","cwd":"/s"}' claude; : )
+    expect_pointer "a stale pointer with a dead pid is replaced" claude s3 /s
+    sleep 30 & other=$!
+    printf 'old\t/o\t%s\n' "$other" > "$SESS_DIR/%7.claude"
+    ( pointer '{"session_id":"s4","cwd":"/s"}' claude; : )
+    expect_pointer "a pointer with a live pid that is not an ancestor is replaced" claude s4 /s
+    kill "$other" 2>/dev/null || true; wait "$other" 2>/dev/null || true
+    printf 'main\t/m\t%s\n' "$$" > "$SESS_DIR/%7.claude"
+    pointer_end claude
+    expect_no_pointer "the SessionEnd of the pointer's own agent removes it"
     reset
 else
     printf '  FAIL %s has no pointer_entry or pointer_end_entry\n' "$INSTALL_SH"
@@ -2810,7 +2845,9 @@ await (async () => {
   const again = await fresh();
   await again.event({ event: { type: "session.status", properties: { sessionID: "ses_other", status: { type: "busy" } } } });
   check(pointer() === want("ses_other"), "after a reload the same root writes the pointer again");
+  writeFileSync(POINTER, "ses_x\t/x\t1\n");
   await again.dispose();
+  check(pointer() === "ses_x\t/x\t1\n", "dispose keeps a pointer that another process wrote");
 })();
 
 console.log("  gate");
@@ -2903,7 +2940,7 @@ if ! node --experimental-strip-types --no-warnings "$HOME/pi-probe.mts" > /dev/n
     printf '  skip this node cannot strip types, so the Pi extension is not run\n'
 else
     cat > "$HOME/pi-driver.mjs" <<'PI_DRIVER_EOF'
-import { existsSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 
 process.env.TMUX_PANE = "%7";
 process.env.PATH = `${process.env.FAKE_BIN}:${process.env.PATH}`;
@@ -2937,6 +2974,10 @@ await fire("turn_start");
 check(statSync(POINTER).mtimeMs === OLD.getTime(), "turn_start with no change does not write");
 await fire("session_shutdown", "reload");
 check(pointer() === want("/s/b.jsonl"), "a reload session_shutdown keeps the pointer");
+writeFileSync(POINTER, "/s/z.jsonl\t/x\t1\n");
+await fire("session_shutdown", "quit");
+check(pointer() === "/s/z.jsonl\t/x\t1\n", "session_shutdown keeps a pointer that another process wrote");
+await fire("session_start", "startup");
 await fire("session_shutdown", "quit");
 check(pointer() === "<none>", "session_shutdown removes the pointer");
 file = undefined;
