@@ -45,7 +45,7 @@ is running inside tmux).
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi, Devin CLI, OpenCode) running across all your sessions, regardless of which thread owns them. Each agent is a card with its status and harness, in three lanes: needs you, working, and quiet. A card that starts to need you gets a short sweep of light. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="2940" height="1912" alt="tws-agents" src="https://github.com/user-attachments/assets/79a2cd9e-7437-4539-a18e-cded8d3084bd" />
+<img width="2864" height="1804" alt="tws-agents" src="assets/agents-view.png" />
 
 ### Session fork (experimental)
 
