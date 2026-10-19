@@ -13,7 +13,8 @@ use crate::tmux::agent_scan::{LivePane, scan_live_panes};
 /// A server younger than this counts as freshly booted.
 pub const NEW_SERVER_SECS: i64 = 300;
 
-const PLAIN_SHELLS: [&str; 8] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "nu"];
+/// Only POSIX-like shells: the typed line uses `&&` and `'\''`, which nushell rejects.
+const PLAIN_SHELLS: [&str; 7] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh"];
 
 /// What a hook writes for a pane: `<ref>\t<cwd>\t<pid>\n`.
 pub struct Pointer {
@@ -131,12 +132,24 @@ fn is_plain_shell(current_command: &str, user_shell: Option<&str>) -> bool {
             .is_some_and(|b| !b.is_empty() && b == c)
 }
 
+/// True when `@resurrect-processes` makes tmux-resurrect start `bin` itself. Each
+/// word may be `"~name->cmd`; only `name` counts, by its basename.
+fn resurrect_restarts(resurrect_processes: &str, bin: &str) -> bool {
+    resurrect_processes.split_whitespace().any(|w| {
+        let w = w.trim_matches(['"', '\'']);
+        let w = w.strip_prefix('~').unwrap_or(w);
+        let w = w.split("->").next().unwrap_or(w);
+        w == ":all:" || w.rsplit('/').next() == Some(bin)
+    })
+}
+
 /// (pane_id, shell line) for each line to resume. Empty when server_age_secs > NEW_SERVER_SECS.
 pub fn plan_restore(
     snapshot: &[SnapshotLine],
     panes: &[LivePane],
     server_age_secs: i64,
     user_shell: Option<&str>,
+    resurrect_processes: &str,
 ) -> Vec<(String, String)> {
     if server_age_secs > NEW_SERVER_SECS {
         return Vec::new();
@@ -148,12 +161,12 @@ pub fn plan_restore(
             if p.agent.is_some() || !is_plain_shell(&p.current_command, user_shell) {
                 return None;
             }
-            let argv: Vec<String> = l
-                .agent
-                .resume_argv(&l.session_ref)
-                .iter()
-                .map(|a| shell_quote(a))
-                .collect();
+            let argv = l.agent.resume_argv(&l.session_ref);
+            // resurrect typed the agent into the pane already; the shell is still in front.
+            if resurrect_restarts(resurrect_processes, &argv[0]) {
+                return None;
+            }
+            let argv: Vec<String> = argv.iter().map(|a| shell_quote(a)).collect();
             let line = format!(
                 "cd -- {} && {}",
                 shell_quote(&l.cwd.to_string_lossy()),
@@ -227,11 +240,20 @@ pub fn run_restore() {
         return;
     };
     let shell = std::env::var("SHELL").ok();
+    // resurrect types these programs into their panes just before this hook runs.
+    let resurrect_processes = Command::new("tmux")
+        .args(["show-options", "-gv", "@resurrect-processes"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
     for (pane, line) in plan_restore(
         &parse_snapshot(&contents),
         &panes,
         now - start,
         shell.as_deref(),
+        &resurrect_processes,
     ) {
         // -l types the line literally, so tmux reads no key name in it.
         if tmux_ok(&["send-keys", "-t", &pane, "-l", &line]) {
@@ -456,7 +478,7 @@ mod tests {
             lp_cmd("%7", "s:1.2", "zsh", Some((AgentType::Pi, vec![1]))),
         ];
         assert_eq!(
-            plan_restore(&snap, &panes, 10, Some("/bin/zsh")),
+            plan_restore(&snap, &panes, 10, Some("/bin/zsh"), ""),
             vec![(
                 "%5".into(),
                 r#"cd -- '/it'\''s here' && 'claude' '--resume' 'id1'"#.into()
@@ -471,10 +493,36 @@ mod tests {
                 &snap,
                 &[lp_cmd("%5", "s:1.0", "zsh", None)],
                 NEW_SERVER_SECS + 1,
-                None
+                None,
+                ""
             )
             .is_empty()
         );
+    }
+    #[test]
+    fn nu_is_not_a_plain_shell() {
+        // The typed line is POSIX; nushell rejects `&&` and `'\''`.
+        assert!(!is_plain_shell("nu", None));
+    }
+    fn planned(resurrect_processes: &str) -> Vec<String> {
+        let snap = parse_snapshot("s:1.0\tclaude\tid1\t/w\ns:1.1\tcodex\tid2\t/w\n");
+        let panes = vec![
+            lp_cmd("%5", "s:1.0", "zsh", None),
+            lp_cmd("%6", "s:1.1", "zsh", None),
+        ];
+        plan_restore(&snap, &panes, 10, None, resurrect_processes)
+            .into_iter()
+            .map(|(pane, _)| pane)
+            .collect()
+    }
+    #[test]
+    fn plan_restore_skips_agents_that_resurrect_restarts() {
+        assert_eq!(planned(""), ["%5", "%6"]);
+        assert!(planned(":all:").is_empty());
+        assert_eq!(planned("vim claude"), ["%6"]);
+        assert_eq!(planned(r#"vim "~claude->claude --continue""#), ["%6"]);
+        assert_eq!(planned("'/usr/local/bin/codex'"), ["%5"]);
+        assert_eq!(planned("claudette"), ["%5", "%6"]);
     }
     #[test]
     fn resume_argv_per_agent() {
