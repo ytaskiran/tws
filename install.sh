@@ -2042,6 +2042,14 @@ main() {
     echo "  Run:      tws"
     echo "  Detach:   prefix + d"
     echo ""
+    if ! command -v tmux &>/dev/null; then
+        if [ "$(uname -s)" = "Darwin" ]; then
+            warn "tws needs tmux, and tmux is not installed. Install it with: brew install tmux"
+        else
+            warn "tws needs tmux, and tmux is not installed. Install it with your package manager, for example: sudo apt install tmux"
+        fi
+        echo ""
+    fi
 }
 
 main

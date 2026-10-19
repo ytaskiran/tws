@@ -94,6 +94,17 @@ fn ack_pane(pane_id: Option<String>) {
 }
 
 fn run_tui() -> std::io::Result<()> {
+    // Without this check, tws opens and then stops with a raw OS error at the
+    // first session that it tries to start.
+    if !tmux::commands::installed() {
+        let hint = if cfg!(target_os = "macos") {
+            "Install it with: brew install tmux"
+        } else {
+            "Install it with your package manager, for example: sudo apt install tmux"
+        };
+        eprintln!("tws needs tmux, and tmux is not installed. {hint}");
+        std::process::exit(1);
+    }
     let threads = persistence::load()?;
     let ui_state = persistence::load_ui();
     let state = AppState {
