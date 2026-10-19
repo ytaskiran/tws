@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::core::model::AgentType;
-use crate::core::persistence::config_dir;
+use crate::resume;
 use crate::tmux::agent_scan::agent_in_pane;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -14,19 +14,11 @@ pub struct ForkTarget {
 }
 
 pub fn parse_pointer(contents: &str) -> Option<ForkTarget> {
-    let line = contents.lines().next()?;
-    let (session_id, cwd) = line.split_once('\t')?;
-    if session_id.is_empty() || cwd.is_empty() {
-        return None;
-    }
+    let p = resume::parse_pointer(contents)?;
     Some(ForkTarget {
-        session_id: session_id.to_string(),
-        cwd: PathBuf::from(cwd),
+        session_id: p.session_ref,
+        cwd: p.cwd,
     })
-}
-
-pub fn pointer_path(pane_id: &str) -> PathBuf {
-    config_dir().join("sessions").join(pane_id)
 }
 
 /// Claude Code names its per-project transcript directory after the session cwd
@@ -196,7 +188,7 @@ pub fn run(pane_id: Option<&str>) -> ! {
     };
     let pane_id = resolved.as_str();
 
-    let raw = std::fs::read_to_string(pointer_path(pane_id)).ok();
+    let raw = std::fs::read_to_string(resume::pointer_path(pane_id, AgentType::ClaudeCode)).ok();
     let home = dirs::home_dir().unwrap_or_default();
     let live_cwd = pane_cwd(pane_id);
 
@@ -238,14 +230,14 @@ mod tests {
 
     #[test]
     fn parse_pointer_well_formed() {
-        let t = parse_pointer("abc-123\t/Users/me/proj\n").unwrap();
+        let t = parse_pointer("abc-123\t/Users/me/proj\t42\n").unwrap();
         assert_eq!(t.session_id, "abc-123");
         assert_eq!(t.cwd, PathBuf::from("/Users/me/proj"));
     }
 
     #[test]
     fn parse_pointer_without_trailing_newline() {
-        let t = parse_pointer("abc-123\t/Users/me/proj").unwrap();
+        let t = parse_pointer("abc-123\t/Users/me/proj\t42").unwrap();
         assert_eq!(t.cwd, PathBuf::from("/Users/me/proj"));
     }
 
@@ -255,6 +247,7 @@ mod tests {
         assert!(parse_pointer("no-tab-here\n").is_none());
         assert!(parse_pointer("\t/Users/me\n").is_none());
         assert!(parse_pointer("abc-123\t\n").is_none());
+        assert!(parse_pointer("abc-123\t/Users/me/proj\n").is_none());
     }
 
     #[test]
@@ -290,7 +283,7 @@ mod tests {
 
     #[test]
     fn classify_happy_path() {
-        let f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         let t = classify(&f).unwrap();
         assert_eq!(t.session_id, "sid-1");
     }
@@ -334,14 +327,14 @@ mod tests {
 
     #[test]
     fn classify_missing_transcript_is_stale() {
-        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let mut f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         f.transcript_exists = false;
         assert_eq!(classify(&f), Err(ForkError::StalePointer));
     }
 
     #[test]
     fn classify_missing_project_dir_fails_open() {
-        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let mut f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         f.project_dir_exists = false;
         f.transcript_exists = false;
         assert!(classify(&f).is_ok());
@@ -349,14 +342,14 @@ mod tests {
 
     #[test]
     fn classify_recycled_pane_id_detected_by_cwd_mismatch() {
-        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let mut f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         f.pane_cwd = Some(Path::new("/other-proj"));
         assert_eq!(classify(&f), Err(ForkError::WrongDirectory));
     }
 
     #[test]
     fn classify_checks_cwd_before_transcript() {
-        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let mut f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         f.pane_cwd = Some(Path::new("/other-proj"));
         f.transcript_exists = false;
         // project_dir_exists remains true from facts() default.
@@ -367,7 +360,7 @@ mod tests {
 
     #[test]
     fn classify_matching_cwd_is_ok() {
-        let mut f = facts(Some("sid-1\t/proj\n"), Some(AgentType::ClaudeCode));
+        let mut f = facts(Some("sid-1\t/proj\t7\n"), Some(AgentType::ClaudeCode));
         f.pane_cwd = Some(Path::new("/proj"));
         assert!(classify(&f).is_ok());
     }

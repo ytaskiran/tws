@@ -381,7 +381,6 @@ fn live_pane(pane: &PaneInfo, table: &ProcessTable) -> LivePane {
 }
 
 /// Scans every pane, tws-managed or not. `None` when tmux or ps fails.
-#[allow(dead_code)]
 pub fn scan_live_panes() -> Option<Vec<LivePane>> {
     let panes = parse_panes(&list_all_panes()?);
     let table = parse_processes(&list_all_processes()?);

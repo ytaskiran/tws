@@ -59,7 +59,6 @@ impl AgentType {
     }
 
     /// Short name used in pointer file names and the snapshot file.
-    #[allow(dead_code)]
     pub fn pointer_name(&self) -> &'static str {
         match self {
             AgentType::ClaudeCode => "claude",
@@ -70,7 +69,6 @@ impl AgentType {
         }
     }
 
-    #[allow(dead_code)]
     pub fn from_pointer_name(s: &str) -> Option<AgentType> {
         [
             AgentType::ClaudeCode,
@@ -84,7 +82,6 @@ impl AgentType {
     }
 
     /// The command that resumes a saved session.
-    #[allow(dead_code)]
     pub fn resume_argv(&self, session_ref: &str) -> Vec<String> {
         let (bin, flag) = match self {
             AgentType::ClaudeCode => ("claude", Some("--resume")),

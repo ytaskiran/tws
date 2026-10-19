@@ -1,31 +1,31 @@
 //! Pure core of agent resume: pointer files, the snapshot file, and the restore plan.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::model::AgentType;
 use crate::core::persistence::config_dir;
-use crate::tmux::agent_scan::LivePane;
+use crate::core::status::{prune_stale_files, write_atomic};
+use crate::tmux::agent_scan::{LivePane, scan_live_panes};
 
 /// A server younger than this counts as freshly booted.
-#[allow(dead_code)]
 pub const NEW_SERVER_SECS: i64 = 300;
 
-#[allow(dead_code)]
 const PLAIN_SHELLS: [&str; 8] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "nu"];
 
 /// What a hook writes for a pane: `<ref>\t<cwd>\t<pid>\n`.
-#[allow(dead_code)]
 pub struct Pointer {
     pub session_ref: String,
     pub cwd: PathBuf,
     pub pid: u32,
 }
 
-#[allow(dead_code)]
 pub fn parse_pointer(contents: &str) -> Option<Pointer> {
     let mut f = contents.trim_end_matches('\n').splitn(3, '\t');
     let (r, cwd, pid) = (f.next()?, f.next()?, f.next()?);
-    if r.is_empty() || cwd.is_empty() {
+    if r.is_empty() || cwd.is_empty() || [r, cwd].iter().any(|f| f.contains(['\n', '\r'])) {
         return None;
     }
     Some(Pointer {
@@ -35,20 +35,17 @@ pub fn parse_pointer(contents: &str) -> Option<Pointer> {
     })
 }
 
-#[allow(dead_code)]
 pub fn pointer_path(pane_id: &str, agent: AgentType) -> PathBuf {
     config_dir()
         .join("sessions")
         .join(format!("{pane_id}.{}", agent.pointer_name()))
 }
 
-#[allow(dead_code)]
 pub fn snapshot_path() -> PathBuf {
     config_dir().join("agents.snapshot")
 }
 
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 pub struct SnapshotLine {
     pub key: String,
     pub agent: AgentType,
@@ -56,7 +53,6 @@ pub struct SnapshotLine {
     pub cwd: PathBuf,
 }
 
-#[allow(dead_code)]
 pub fn format_snapshot(lines: &[SnapshotLine]) -> String {
     lines
         .iter()
@@ -72,7 +68,6 @@ pub fn format_snapshot(lines: &[SnapshotLine]) -> String {
         .collect()
 }
 
-#[allow(dead_code)]
 pub fn parse_snapshot(contents: &str) -> Vec<SnapshotLine> {
     contents
         .lines()
@@ -93,7 +88,6 @@ pub fn parse_snapshot(contents: &str) -> Vec<SnapshotLine> {
 }
 
 /// Keeps a pane only if its pointer's pid is in the scanned agent pids.
-#[allow(dead_code)]
 pub fn build_snapshot(
     panes: &[LivePane],
     read_pointer: impl Fn(&str, AgentType) -> Option<String>,
@@ -114,12 +108,10 @@ pub fn build_snapshot(
 }
 
 /// POSIX single quotes.
-#[allow(dead_code)]
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-#[allow(dead_code)]
 fn is_plain_shell(current_command: &str, user_shell: Option<&str>) -> bool {
     let c = current_command.trim_start_matches('-');
     PLAIN_SHELLS.contains(&c)
@@ -129,7 +121,6 @@ fn is_plain_shell(current_command: &str, user_shell: Option<&str>) -> bool {
 }
 
 /// (pane_id, shell line) for each line to resume. Empty when server_age_secs > NEW_SERVER_SECS.
-#[allow(dead_code)]
 pub fn plan_restore(
     snapshot: &[SnapshotLine],
     panes: &[LivePane],
@@ -162,9 +153,85 @@ pub fn plan_restore(
         .collect()
 }
 
+/// Never fails or prints: a tmux hook runs it. A failed scan keeps the old snapshot.
+pub fn save_with(
+    panes: Option<Vec<LivePane>>,
+    sessions_dir: &Path,
+    snapshot: &Path,
+    scan_started_at: SystemTime,
+) {
+    let Some(panes) = panes else { return };
+    let lines = build_snapshot(&panes, |pane, agent| {
+        std::fs::read_to_string(sessions_dir.join(format!("{pane}.{}", agent.pointer_name()))).ok()
+    });
+    if let Some(dir) = snapshot.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    if write_atomic(snapshot, &format_snapshot(&lines)).is_err() {
+        return;
+    }
+    let live: HashSet<String> = panes.into_iter().map(|p| p.pane_id).collect();
+    prune_stale_files(sessions_dir, &live, scan_started_at);
+}
+
+pub fn run_save() {
+    let started = SystemTime::now();
+    save_with(
+        scan_live_panes(),
+        &config_dir().join("sessions"),
+        &snapshot_path(),
+        started,
+    );
+}
+
+fn tmux_ok(args: &[&str]) -> bool {
+    Command::new("tmux")
+        .args(args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+pub fn run_restore() {
+    let Some(start) = Command::new("tmux")
+        .args(["display-message", "-p", "#{start_time}"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok()
+        })
+    else {
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let Ok(contents) = std::fs::read_to_string(snapshot_path()) else {
+        return;
+    };
+    let Some(panes) = scan_live_panes() else {
+        return;
+    };
+    let shell = std::env::var("SHELL").ok();
+    for (pane, line) in plan_restore(
+        &parse_snapshot(&contents),
+        &panes,
+        now - start,
+        shell.as_deref(),
+    ) {
+        // -l types the line literally, so tmux reads no key name in it.
+        if tmux_ok(&["send-keys", "-t", &pane, "-l", &line]) {
+            tmux_ok(&["send-keys", "-t", &pane, "Enter"]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     type Agent = Option<(AgentType, Vec<u32>)>;
 
@@ -180,6 +247,67 @@ mod tests {
         lp_cmd(pane_id, key, "zsh", agent)
     }
 
+    fn tempdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tws-resume-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    #[test]
+    fn save_keeps_old_snapshot_when_scan_fails() {
+        let d = tempdir("save-fail");
+        std::fs::write(d.join("agents.snapshot"), "s:1.0\tclaude\tid\t/w\n").unwrap();
+        save_with(
+            None,
+            &d.join("sessions"),
+            &d.join("agents.snapshot"),
+            SystemTime::now(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("agents.snapshot")).unwrap(),
+            "s:1.0\tclaude\tid\t/w\n"
+        );
+    }
+    #[test]
+    fn save_writes_empty_snapshot_when_no_agents_run() {
+        let d = tempdir("save-empty");
+        std::fs::write(d.join("agents.snapshot"), "old\n").unwrap();
+        save_with(
+            Some(vec![]),
+            &d.join("sessions"),
+            &d.join("agents.snapshot"),
+            SystemTime::now(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("agents.snapshot")).unwrap(),
+            ""
+        );
+    }
+    #[test]
+    fn save_prunes_pointers_of_dead_panes_after_writing() {
+        let d = tempdir("save-prune");
+        let s = d.join("sessions");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(s.join("%1.claude"), "id1\t/w\t200\n").unwrap();
+        std::fs::write(s.join("%9.codex"), "gone\t/w\t1\n").unwrap();
+        let started = SystemTime::now() + Duration::from_secs(1);
+        save_with(
+            Some(vec![lp(
+                "%1",
+                "s:1.0",
+                Some((AgentType::ClaudeCode, vec![200])),
+            )]),
+            &s,
+            &d.join("agents.snapshot"),
+            started,
+        );
+        assert!(s.join("%1.claude").exists());
+        assert!(!s.join("%9.codex").exists());
+        assert_eq!(
+            std::fs::read_to_string(d.join("agents.snapshot")).unwrap(),
+            "s:1.0\tclaude\tid1\t/w\n"
+        );
+    }
     #[test]
     fn parse_pointer_reads_three_fields() {
         let p = parse_pointer("abc\t/Users/me/my proj\t51234\n").unwrap();
@@ -190,7 +318,17 @@ mod tests {
     }
     #[test]
     fn parse_pointer_rejects_old_and_bad() {
-        for bad in ["abc\t/x\n", "\t/x\t1", "abc\t\t1", "abc\t/x\tnope", ""] {
+        for bad in [
+            "abc\t/x\n",
+            "\t/x\t1",
+            "abc\t\t1",
+            "abc\t/x\tnope",
+            "",
+            "abc\r\t/x\t1",
+            "abc\t/x\r\t1",
+            "ab\nc\t/x\t1",
+            "abc\t/x\ny\t1",
+        ] {
             assert!(parse_pointer(bad).is_none(), "{bad:?}");
         }
     }

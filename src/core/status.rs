@@ -188,7 +188,8 @@ pub fn prune_stale_files(dir: &Path, live_pane_ids: &HashSet<String>, scan_start
             }
             continue;
         }
-        if live_pane_ids.contains(name) {
+        // Pointer files are named `<pane>.<agent>`; the other folders have no dot.
+        if live_pane_ids.contains(name.split('.').next().unwrap_or(name)) {
             continue;
         }
         let written_during_scan = entry
@@ -704,6 +705,21 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn prune_matches_the_pane_part_before_the_dot() {
+        let dir = stale_dir("prune-dot");
+        std::fs::write(dir.join("%1.claude"), "").unwrap();
+        std::fs::write(dir.join("%2.pi"), "").unwrap();
+        let live: HashSet<String> = ["%1".to_string()].into();
+        prune_stale_files(
+            &dir,
+            &live,
+            SystemTime::now() + std::time::Duration::from_secs(1),
+        );
+        assert!(dir.join("%1.claude").exists());
+        assert!(!dir.join("%2.pi").exists());
     }
 
     /// An in-flight directory that does not exist, for tests of the plain expiry.
