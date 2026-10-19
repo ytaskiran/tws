@@ -2272,6 +2272,13 @@ await scenario(async ({ ev, busy, idle }) => {
   await busy("ses_root");
   check(word() === "working", "the next busy is working and not waiting");
 });
+await scenario(async ({ ev, busy, idle }) => {
+  await busy("ses_root");
+  await ev("permission.asked", { id: "per_4", sessionID: "ses_other" });
+  check(word() === "waiting", "a request of a session with no busy event is waiting");
+  await idle("ses_root");
+  check(word() === "review", "a request of a session with no busy event ends with the last busy session");
+});
 
 console.log("  heartbeat");
 await scenario(async ({ hooks, busy }) => {
