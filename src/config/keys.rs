@@ -608,6 +608,10 @@ mod tests {
             km.resolve(KeyMode::Agents, KeyCode::Char('q'), KeyModifiers::NONE),
             Some(Action::Quit)
         );
+        assert_eq!(
+            km.resolve(KeyMode::Agents, KeyCode::Char('r'), KeyModifiers::NONE),
+            Some(Action::Rename)
+        );
     }
 
     #[test]
