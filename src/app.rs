@@ -1099,6 +1099,16 @@ impl App {
                     self.reanchor_agent_cursor(Some(pane_id));
                 }
             }
+            Some(Action::Rename) => {
+                if let Some(a) = agents.get(self.agent_list_cursor) {
+                    self.mode = Mode::Input {
+                        purpose: InputPurpose::RenameAgent {
+                            pane_id: a.pane_id.clone(),
+                        },
+                        buffer: a.agent_display_name.clone(),
+                    };
+                }
+            }
             Some(Action::PinAgentSlot) => {
                 if current_pane_id.is_some() {
                     self.pin_assign_pending = current_pane_id;

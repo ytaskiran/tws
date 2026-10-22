@@ -303,6 +303,7 @@ impl Keymap {
         bind!(M::Agents, KeyCode::Enter, KeyModifiers::NONE, A::Enter);
         bind!(M::Agents, KeyCode::Esc, KeyModifiers::NONE, A::Cancel);
         bind!(M::Agents, KeyCode::Char('q'), KeyModifiers::NONE, A::Quit);
+        bind!(M::Agents, KeyCode::Char('r'), KeyModifiers::NONE, A::Rename);
         bind!(
             M::Agents,
             KeyCode::Char('p'),
