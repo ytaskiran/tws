@@ -200,6 +200,7 @@ pub fn render(
                 "navigate",
             ),
             (keymap.key_hint(KeyMode::Agents, Action::Enter), "attach"),
+            (keymap.key_hint(KeyMode::Agents, Action::Rename), "rename"),
             (keymap.key_hint(KeyMode::Agents, Action::PinAgent), "pin"),
             (
                 keymap.key_hint(KeyMode::Agents, Action::PinAgentSlot),

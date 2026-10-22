@@ -1099,6 +1099,7 @@ impl App {
                     self.reanchor_agent_cursor(Some(pane_id));
                 }
             }
+            Some(Action::Rename) => self.start_rename(),
             Some(Action::PinAgentSlot) => {
                 if current_pane_id.is_some() {
                     self.pin_assign_pending = current_pane_id;
@@ -1210,7 +1211,7 @@ impl App {
     }
 
     fn start_rename(&mut self) {
-        let selected = self.state.resolve_selection(self.tree_state.selected());
+        let selected = self.resolve_current_selected();
         let current_name = match self.state.selected_name(&selected) {
             Some(name) => name,
             None => return,
