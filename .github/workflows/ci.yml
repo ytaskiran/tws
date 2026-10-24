@@ -47,6 +47,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The OpenCode plugin and Pi pointer drivers run under node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # The hook state machine lives in install.sh, so cargo test cannot reach
       # it. This job drives the generated commands and asserts the status words.
       - name: Verify agent status hooks
