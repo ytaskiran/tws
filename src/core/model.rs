@@ -144,7 +144,12 @@ fn slugify(s: &str) -> String {
 /// Generates the base prefix for a thread's tmux sessions.
 /// Format: `twsr_{thread_slug}`
 pub fn tmux_session_prefix(thread_name: &str) -> String {
-    format!("twsr_{}", slugify(thread_name))
+    format!("twsr_{}", thread_slug(thread_name))
+}
+
+/// The thread part of a session name, and the label of its Rex session.
+pub fn thread_slug(thread_name: &str) -> String {
+    slugify(thread_name)
 }
 
 /// Generates a labeled tmux session name for a thread.

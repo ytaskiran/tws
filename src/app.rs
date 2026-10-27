@@ -18,6 +18,7 @@ use crate::config;
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::config::palette::PaletteOverride;
 use crate::core::markdown::MarkdownRenderer;
+use crate::core::model::thread_slug;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
@@ -1812,17 +1813,18 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let old_slug = self.state.threads.get(thread_idx).map(|t| {
-                        crate::core::model::tmux_session_prefix(&t.name)["twsr_".len()..]
-                            .to_string()
-                    });
-                    self.state.rename_thread(thread_idx, trimmed);
+                    // Before the state changes, so a failure leaves both sides as they were.
                     if crate::rex::enabled()
-                        && let (Some(old), Some(t)) = (old_slug, self.state.threads.get(thread_idx))
+                        && let Some(thread) = self.state.threads.get(thread_idx)
+                        && !crate::rex::rename_thread(
+                            &thread_slug(&thread.name),
+                            &thread_slug(&trimmed),
+                        )
                     {
-                        let new = crate::core::model::tmux_session_prefix(&t.name);
-                        crate::rex::rename_thread(&old, &new["twsr_".len()..]);
+                        self.set_flash("Could not rename the Rex session — is the name taken?");
+                        return Ok(());
                     }
+                    self.state.rename_thread(thread_idx, trimmed);
                     for (old_name, label) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
@@ -1962,7 +1964,9 @@ impl App {
         // returns false. Attaching after that would switch-client to a session
         // that does not exist and exit with nothing shown.
         if !tmux::new_session(session_name, Some(&dir))? {
-            self.set_flash("Could not create the session — tmux refused it");
+            self.set_flash(
+                "Could not create the session — the name exists, or the backend refused it",
+            );
             return Ok(());
         }
         if missing {
@@ -2004,8 +2008,8 @@ impl App {
     ) -> std::io::Result<()> {
         // Rex tracks program status itself, so there is no ack to write.
         if crate::rex::enabled() {
-            if !matches!(crate::rex::show(session_name), Ok(true)) {
-                self.set_flash("Could not open it — turn on Remote Control in Rex settings");
+            if let Err(msg) = crate::rex::show(session_name) {
+                self.set_flash(msg);
             }
             self.do_refresh_sessions();
             return Ok(());
@@ -2050,6 +2054,12 @@ impl App {
             .all_agents_flat()
             .get(self.agent_list_cursor)
             .map(|a| a.pane_id.clone());
+        // A missed Rex poll keeps the last state: an empty list would drop
+        // every session, and with them the pins and agent names.
+        if crate::rex::enabled() && !crate::rex::refresh() {
+            self.last_refresh = Instant::now();
+            return;
+        }
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();

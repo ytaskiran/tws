@@ -2352,8 +2352,8 @@ main() {
     echo "  Run:      tws"
     echo "  Detach:   prefix + d"
     echo ""
-    if ! command -v rex &>/dev/null && ! command -v tmux &>/dev/null; then
-        warn "tws needs Rex (the default) or tmux, and neither is installed. Install Rex from https://www.superlogical.com/rex/docs/installation, or install tmux and set backend = \"tmux\" in ~/.config/tws/config.toml"
+    if ! command -v rex &>/dev/null; then
+        warn "tws uses Rex by default, and rex is not on PATH. Install Rex from https://www.superlogical.com/rex/docs/installation. To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml"
         echo ""
     fi
 }

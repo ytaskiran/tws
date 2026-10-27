@@ -65,6 +65,13 @@ fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Command::Import) if rex::enabled() => {
+            eprintln!(
+                "tws import works with tmux only. To copy tmux sessions into Rex, \
+                 run extras/rex/tmux2rex.py."
+            );
+            std::process::exit(1);
+        }
         Some(Command::Import) => import::run(),
         Some(Command::ForkPane { .. }) if rex::enabled() => {
             eprintln!("tws fork-pane does not work with the Rex backend.");
@@ -99,22 +106,25 @@ fn ack_pane(pane_id: Option<String>) {
 }
 
 fn run_tui() -> std::io::Result<()> {
+    // First, so a config that does not parse stops here with its own error.
+    // Otherwise rex::enabled() reads it as the default backend.
+    let cfg = config::load_config();
     // Without this check, tws opens and then stops with a raw OS error at the
     // first session that it tries to start.
-    if rex::enabled() && !tmux::commands::installed() {
-        eprintln!(
-            "tws uses Rex, and the rex command is not on PATH. \
-             To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml."
-        );
-        std::process::exit(1);
-    }
     if !tmux::commands::installed() {
-        let hint = if cfg!(target_os = "macos") {
-            "Install it with: brew install tmux"
+        if rex::enabled() {
+            eprintln!(
+                "tws uses Rex, and the rex command is not on PATH. \
+                 To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml."
+            );
         } else {
-            "Install it with your package manager, for example: sudo apt install tmux"
-        };
-        eprintln!("tws needs tmux, and tmux is not installed. {hint}");
+            let hint = if cfg!(target_os = "macos") {
+                "Install it with: brew install tmux"
+            } else {
+                "Install it with your package manager, for example: sudo apt install tmux"
+            };
+            eprintln!("tws needs tmux, and tmux is not installed. {hint}");
+        }
         std::process::exit(1);
     }
     let threads = persistence::load()?;
@@ -125,7 +135,6 @@ fn run_tui() -> std::io::Result<()> {
         agent_sessions: Vec::new(),
     };
 
-    let cfg = config::load_config();
     let keymap = config::build_keymap(&cfg);
     let theme_name = cfg.theme.unwrap_or_else(|| "default".to_string());
 

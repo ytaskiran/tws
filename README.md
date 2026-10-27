@@ -342,13 +342,15 @@ The `TWS_BACKEND` environment variable (`rex` or `tmux`) overrides the config fo
 - A tws session is a window (tab) in that Rex session. The window label is the session label.
 - Extra shells are splits in that tab.
 
+tws shows every Rex session whose label is the same as a thread slug, also a session that you made in Rex. tws ignores a session or a window that has `_` in its label. Two windows in one thread cannot have the same label.
+
 To open a session, tws tells the Rex app to show the window. tws does not exit. Turn on **Remote Control** in the Rex settings (under Rex Server), or the app does not accept this request.
 
 Agent status comes from the program status that the agent sends to Rex (OSC 7501). Claude Code sends it. tws shows `working` as working, `blocked` as waiting, `done` and `error` as review, and other states as idle. An agent that sends no program status shows no status.
 
 These features work only with tmux:
 
-- `tws fork-pane`, the tmux status bar, and `tws ack-pane`.
+- `tws import`, `tws fork-pane`, the tmux status bar, and `tws ack-pane`.
 - The recent sessions bar. Rex does not record when you last opened a window.
 - A move of a session to a different thread. Rex cannot move a window to a different session.
 

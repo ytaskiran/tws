@@ -49,6 +49,17 @@ def rex(*args):
     return json.loads(subprocess.run(argv, check=True, capture_output=True, text=True).stdout)
 
 
+def launch(pane, agents):
+    """(cwd, rex args) for one tmux pane: a Claude pane resumes its conversation.
+    --keep-open keeps the tab when claude fails, so the Rex session stays and a
+    later window new -s still finds it."""
+    pane_id, cwd = pane
+    if pane_id not in agents:
+        return cwd, []
+    session_id, cwd = agents[pane_id]
+    return cwd, ["--keep-open", "--", "claude", "--resume", session_id, "--fork-session"]
+
+
 def main():
     fmt = "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}"
     rows = subprocess.run(["tmux", "list-panes", "-a", "-F", fmt], check=True, capture_output=True, text=True).stdout
@@ -73,18 +84,16 @@ def main():
             continue
         sid = None
         for label, panes in tabs.items():
-            (pane, cwd), rest = panes[0], panes[1:]
-            cmd = []
-            if pane in agents:
-                session_id, cwd = agents[pane]
-                cmd = ["--", "claude", "--resume", session_id, "--fork-session"]
+            (cwd, cmd), rest = launch(panes[0], agents), panes[1:]
             if sid is None:
                 r = rex("new", thread, "--window", label, "-c", cwd, *cmd)
                 sid, anchor = r["session_id"], r["initial_windows"][0]["block_ids"][0]
             else:
                 anchor = rex("window", "new", "-s", sid, label, "-c", cwd, *cmd)["block_ids"][0]
-            for _, shell_cwd in rest:
-                rex("split", "-s", sid, "-b", anchor, "--split=right", "--ratio", "35", "--focus=false", "-c", shell_cwd)
+            for pane in rest:
+                split_cwd, split_cmd = launch(pane, agents)
+                rex("split", "-s", sid, "-b", anchor, "--split=right", "--ratio", "35", "--focus=false",
+                    "-c", split_cwd, *split_cmd)
 
     if not APPLY:
         print("\nDry run. Run again with --apply to create the sessions.")
