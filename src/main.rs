@@ -114,8 +114,8 @@ fn run_tui() -> std::io::Result<()> {
     if !tmux::commands::installed() {
         if rex::enabled() {
             eprintln!(
-                "tws uses Rex, and the rex command is not on PATH. \
-                 To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml."
+                "The tws backend is Rex, and the rex command is not on PATH. \
+                 To use tmux, remove backend = \"rex\" from ~/.config/tws/config.toml."
             );
         } else {
             let hint = if cfg!(target_os = "macos") {

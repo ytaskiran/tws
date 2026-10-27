@@ -88,7 +88,7 @@ Both list views keep their scroll offset between frames (`components::sticky_scr
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
-| `rex.rs` | Rex backend (the default). `backend` in `config.toml` or `TWS_BACKEND` picks it. One `rex do` Lua script reads every session, window, process, title and program status. tws keeps `twsr_<thread>_<label>` names and maps them to Rex session and window IDs |
+| `rex.rs` | Rex backend (experimental; tmux is the default). `backend = "rex"` in `config.toml` or `TWS_BACKEND` picks it. One `rex do` Lua script reads every session, window, process, title and program status. tws keeps `twsr_<thread>_<label>` names and maps them to Rex session and window IDs |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command`. Each wrapper calls `rex.rs` first when the Rex backend is on |
 | `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |

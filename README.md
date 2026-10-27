@@ -212,7 +212,7 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 
 ## Requirements
 
-- **[Rex](https://www.superlogical.com/rex/)** or **[tmux](https://github.com/tmux/tmux)** — one is required. Rex is the default. To use tmux, see [Backends](#backends).
+- **[tmux](https://github.com/tmux/tmux)** — required. tws manages tmux sessions; it does nothing without it. Rex can replace it as an experimental backend; see [Backends](#backends).
 - **[glow](https://github.com/charmbracelet/glow)** — optional, for rich markdown rendering in the notes panel. Falls back to basic rendering if absent.
 
 ## Install
@@ -328,15 +328,15 @@ Inside a session, detach with `prefix + d` to return to tws.
 
 ## Backends
 
-tws can use [Rex](https://www.superlogical.com/rex/) or tmux. Rex is the default. To use tmux, add this line to `~/.config/tws/config.toml`:
+tws uses tmux by default. It can also use [Rex](https://www.superlogical.com/rex/) as an experimental backend. To use Rex, add this line to `~/.config/tws/config.toml`:
 
 ```toml
-backend = "tmux"
+backend = "rex"
 ```
 
 The `TWS_BACKEND` environment variable (`rex` or `tmux`) overrides the config for one run.
 
-### Rex
+### Rex (experimental)
 
 - A thread is a Rex session. The session label is the thread slug.
 - A tws session is a window (tab) in that Rex session. The window label is the session label.

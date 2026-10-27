@@ -1,4 +1,4 @@
-//! The Rex backend, the default. A thread is a Rex session labeled with the thread
+//! The Rex backend, experimental and opt-in. A thread is a Rex session labeled with the thread
 //! slug, and a tws session is a window (tab) in it. tws keeps its
 //! `twsr_<thread>_<label>` names as keys and maps them to Rex IDs on each call.
 

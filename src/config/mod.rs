@@ -23,8 +23,8 @@ pub struct Config {
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
-    #[default]
     Rex,
+    #[default]
     Tmux,
 }
 
@@ -213,11 +213,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_defaults_to_rex() {
+    fn backend_defaults_to_tmux() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.backend, Backend::Rex);
-        let config: Config = toml::from_str(r#"backend = "tmux""#).unwrap();
         assert_eq!(config.backend, Backend::Tmux);
+        let config: Config = toml::from_str(r#"backend = "rex""#).unwrap();
+        assert_eq!(config.backend, Backend::Rex);
         assert!(toml::from_str::<Config>(r#"backend = "screen""#).is_err());
     }
 
