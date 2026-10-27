@@ -212,7 +212,7 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 
 ## Requirements
 
-- **[tmux](https://github.com/tmux/tmux)** — required. tws manages tmux sessions; it does nothing without it.
+- **[Rex](https://www.superlogical.com/rex/)** or **[tmux](https://github.com/tmux/tmux)** — one is required. Rex is the default. To use tmux, see [Backends](#backends).
 - **[glow](https://github.com/charmbracelet/glow)** — optional, for rich markdown rendering in the notes panel. Falls back to basic rendering if absent.
 
 ## Install
@@ -326,32 +326,41 @@ The mouse works in both views: point at a row to select it, and click a session 
 
 Inside a session, detach with `prefix + d` to return to tws.
 
-## Rex backend (experimental)
+## Backends
 
-tws can use [Rex](https://www.superlogical.com/rex/) in place of tmux. tmux stays the default.
+tws can use [Rex](https://www.superlogical.com/rex/) or tmux. Rex is the default. To use tmux, add this line to `~/.config/tws/config.toml`:
+
+```toml
+backend = "tmux"
+```
+
+The `TWS_BACKEND` environment variable (`rex` or `tmux`) overrides the config for one run.
+
+### Rex
 
 - A thread is a Rex session. The session label is the thread slug.
 - A tws session is a window (tab) in that Rex session. The window label is the session label.
 - Extra shells are splits in that tab.
 
-tws uses Rex when you set `TWS_BACKEND=rex`. It also uses Rex when you start it in a Rex terminal and tmux does not run there. Set `TWS_BACKEND=tmux` to keep tmux.
-
 To open a session, tws tells the Rex app to show the window. tws does not exit. Turn on **Remote Control** in the Rex settings (under Rex Server), or the app does not accept this request.
 
 Agent status comes from the program status that the agent sends to Rex (OSC 7501). Claude Code sends it. tws shows `working` as working, `blocked` as waiting, `done` and `error` as review, and other states as idle. An agent that sends no program status shows no status.
 
-These features do not work with Rex:
+These features work only with tmux:
 
 - `tws fork-pane`, the tmux status bar, and `tws ack-pane`.
 - The recent sessions bar. Rex does not record when you last opened a window.
 - A move of a session to a different thread. Rex cannot move a window to a different session.
-- Rex does not clear `done` when you look at the agent. The agent stays in review until its next status.
 
-To copy your tmux sessions into Rex, run `extras/rex/tmux2rex.py`. It does a dry run and shows the `rex` commands. Add `--apply` to create the Rex sessions. The script restarts each Claude Code pane with `claude --resume ID --fork-session`, so your tmux sessions do not change.
+Rex does not clear `done` when you look at the agent. The agent stays in review until its next status.
+
+### Copy tmux sessions into Rex
+
+Run `extras/rex/tmux2rex.py` on the machine that runs tmux. It does a dry run and shows the `rex` commands. Add `--apply` to create the Rex sessions on the Rex server of that machine. The script restarts each Claude Code pane with `claude --resume ID --fork-session`, so your tmux sessions do not change.
 
 ## Configuration
 
-Optional. Drop a TOML file at `~/.config/tws/config.toml` to customize the theme, palette, and keybindings. A missing or empty file keeps tws's defaults — everything below is opt-in.
+Optional. Drop a TOML file at `~/.config/tws/config.toml` to customize the backend, theme, palette, and keybindings. A missing or empty file keeps tws's defaults — everything below is opt-in.
 
 ### Theme
 

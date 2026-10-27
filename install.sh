@@ -2352,12 +2352,8 @@ main() {
     echo "  Run:      tws"
     echo "  Detach:   prefix + d"
     echo ""
-    if ! command -v tmux &>/dev/null; then
-        if [ "$(uname -s)" = "Darwin" ]; then
-            warn "tws needs tmux, and tmux is not installed. Install it with: brew install tmux"
-        else
-            warn "tws needs tmux, and tmux is not installed. Install it with your package manager, for example: sudo apt install tmux"
-        fi
+    if ! command -v rex &>/dev/null && ! command -v tmux &>/dev/null; then
+        warn "tws needs Rex (the default) or tmux, and neither is installed. Install Rex from https://www.superlogical.com/rex/docs/installation, or install tmux and set backend = \"tmux\" in ~/.config/tws/config.toml"
         echo ""
     fi
 }

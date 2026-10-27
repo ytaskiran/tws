@@ -102,7 +102,10 @@ fn run_tui() -> std::io::Result<()> {
     // Without this check, tws opens and then stops with a raw OS error at the
     // first session that it tries to start.
     if rex::enabled() && !tmux::commands::installed() {
-        eprintln!("TWS_BACKEND is rex, but the rex command is not on PATH.");
+        eprintln!(
+            "tws uses Rex, and the rex command is not on PATH. \
+             To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml."
+        );
         std::process::exit(1);
     }
     if !tmux::commands::installed() {

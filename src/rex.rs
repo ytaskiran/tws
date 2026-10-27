@@ -1,4 +1,4 @@
-//! Experimental Rex backend. A thread is a Rex session labeled with the thread
+//! The Rex backend, the default. A thread is a Rex session labeled with the thread
 //! slug, and a tws session is a window (tab) in it. tws keeps its
 //! `twsr_<thread>_<label>` names as keys and maps them to Rex IDs on each call.
 
@@ -9,16 +9,23 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::config::Backend;
 use crate::core::model::{AgentSession, AgentStatus};
 use crate::tmux::agent_scan::{self, PaneInfo};
 
-/// `TWS_BACKEND=rex` or `tmux` decides. Without it, a Rex terminal picks Rex,
-/// unless tmux runs inside that terminal.
+/// `backend` in config.toml picks the backend, and `TWS_BACKEND` overrides it.
+/// A config that does not parse counts as Rex; the TUI reports its error.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("TWS_BACKEND") {
-        Ok(v) => v == "rex",
-        Err(_) => std::env::var_os("REX_SESSION").is_some() && std::env::var_os("TMUX").is_none(),
+    *ON.get_or_init(|| {
+        let backend = match std::env::var("TWS_BACKEND").as_deref() {
+            Ok("tmux") => Backend::Tmux,
+            Ok("rex") => Backend::Rex,
+            _ => crate::config::try_load_config()
+                .map(|c| c.backend)
+                .unwrap_or_default(),
+        };
+        backend == Backend::Rex
     })
 }
 

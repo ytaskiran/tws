@@ -17,6 +17,15 @@ pub struct Config {
     pub theme: Option<String>,
     pub palette: Option<PaletteOverride>,
     pub keys: Option<KeysConfig>,
+    pub backend: Backend,
+}
+
+#[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    #[default]
+    Rex,
+    Tmux,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -202,6 +211,15 @@ pub fn build_keymap(config: &Config) -> Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_defaults_to_rex() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.backend, Backend::Rex);
+        let config: Config = toml::from_str(r#"backend = "tmux""#).unwrap();
+        assert_eq!(config.backend, Backend::Tmux);
+        assert!(toml::from_str::<Config>(r#"backend = "screen""#).is_err());
+    }
 
     #[test]
     fn parse_empty_config() {
