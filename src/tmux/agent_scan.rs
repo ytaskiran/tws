@@ -3,18 +3,21 @@ use std::process::Command;
 
 use crate::core::model::{AgentSession, AgentStatus, AgentType};
 
-/// Pane info parsed from tmux list-panes output.
-struct PaneInfo {
-    session_name: String,
-    window_index: u32,
-    pane_id: String,
-    pane_pid: u32,
-    pane_title: String,
+/// Pane info parsed from tmux list-panes output, or built from a Rex snapshot.
+pub(crate) struct PaneInfo {
+    pub session_name: String,
+    pub window_index: u32,
+    pub pane_id: String,
+    pub pane_pid: u32,
+    pub pane_title: String,
 }
 
 /// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin, OpenCode).
 /// Only scans panes belonging to the given tws-managed session names.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
+    if crate::rex::enabled() {
+        return crate::rex::scan_agents(tws_sessions);
+    }
     if tws_sessions.is_empty() {
         return Vec::new();
     }
@@ -35,12 +38,18 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
         return Vec::new();
     }
 
-    let table = match list_all_processes() {
-        Some(raw) => parse_processes(&raw),
-        None => return Vec::new(),
-    };
+    match_panes(&panes)
+}
 
-    match_agents(&panes, &table)
+/// The process search for panes from either backend.
+pub(crate) fn match_panes(panes: &[PaneInfo]) -> Vec<AgentSession> {
+    if panes.is_empty() {
+        return Vec::new();
+    }
+    match list_all_processes() {
+        Some(raw) => match_agents(panes, &parse_processes(&raw)),
+        None => Vec::new(),
+    }
 }
 
 fn list_all_panes() -> Option<String> {
