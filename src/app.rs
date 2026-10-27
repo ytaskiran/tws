@@ -2005,7 +2005,7 @@ impl App {
         // Rex tracks program status itself, so there is no ack to write.
         if crate::rex::enabled() {
             if !matches!(crate::rex::show(session_name), Ok(true)) {
-                self.set_flash("Could not show the session in the Rex app");
+                self.set_flash("Could not open it — turn on Remote Control in Rex settings");
             }
             self.do_refresh_sessions();
             return Ok(());
