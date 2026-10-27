@@ -6,6 +6,7 @@ mod core;
 mod event;
 mod fork;
 mod import;
+mod rex;
 mod theme;
 mod tmux;
 mod tui;
@@ -65,6 +66,10 @@ fn main() -> std::io::Result<()> {
 
     match cli.command {
         Some(Command::Import) => import::run(),
+        Some(Command::ForkPane { .. }) if rex::enabled() => {
+            eprintln!("tws fork-pane does not work with the Rex backend.");
+            std::process::exit(1);
+        }
         Some(Command::ForkPane { pane_id }) => fork::run(pane_id.as_deref()),
         Some(Command::AckPane { pane_id }) => {
             ack_pane(pane_id);
@@ -96,6 +101,10 @@ fn ack_pane(pane_id: Option<String>) {
 fn run_tui() -> std::io::Result<()> {
     // Without this check, tws opens and then stops with a raw OS error at the
     // first session that it tries to start.
+    if rex::enabled() && !tmux::commands::installed() {
+        eprintln!("TWS_BACKEND is rex, but the rex command is not on PATH.");
+        std::process::exit(1);
+    }
     if !tmux::commands::installed() {
         let hint = if cfg!(target_os = "macos") {
             "Install it with: brew install tmux"

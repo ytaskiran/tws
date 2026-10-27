@@ -184,6 +184,7 @@ struct Hits {
 }
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const REX_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -262,7 +263,13 @@ impl App {
         self.sync_note_editor();
 
         while self.running {
-            if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
+            // Rex has no hook trigger, so poll the snapshot (one `rex do` call).
+            let interval = if crate::rex::enabled() {
+                REX_REFRESH_INTERVAL
+            } else {
+                REFRESH_INTERVAL
+            };
+            if self.last_refresh.elapsed() >= interval {
                 self.do_refresh_sessions();
             }
 
@@ -1647,7 +1654,13 @@ impl App {
             };
 
             if let Some(new_tmux_name) = self.state.make_session_name(dest_thread, &session_label) {
-                let _ = tmux::rename_session(&session_name, &new_tmux_name);
+                if !matches!(
+                    tmux::rename_session(&session_name, &new_tmux_name),
+                    Ok(true)
+                ) {
+                    self.set_flash("Could not move the session");
+                    return;
+                }
                 self.notes.rename(&session_name, &new_tmux_name);
                 self.do_refresh_sessions();
 
@@ -1799,7 +1812,17 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let old_slug = self.state.threads.get(thread_idx).map(|t| {
+                        crate::core::model::tmux_session_prefix(&t.name)["twsr_".len()..]
+                            .to_string()
+                    });
                     self.state.rename_thread(thread_idx, trimmed);
+                    if crate::rex::enabled()
+                        && let (Some(old), Some(t)) = (old_slug, self.state.threads.get(thread_idx))
+                    {
+                        let new = crate::core::model::tmux_session_prefix(&t.name);
+                        crate::rex::rename_thread(&old, &new["twsr_".len()..]);
+                    }
                     for (old_name, label) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
@@ -1979,6 +2002,14 @@ impl App {
         pane_id: Option<&str>,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
+        // Rex tracks program status itself, so there is no ack to write.
+        if crate::rex::enabled() {
+            if !matches!(crate::rex::show(session_name), Ok(true)) {
+                self.set_flash("Could not show the session in the Rex app");
+            }
+            self.do_refresh_sessions();
+            return Ok(());
+        }
         // Attaching is acknowledgment of the pane you land on, and only that pane:
         // a session can hold several agents, and seeing one says nothing about its
         // siblings. When the caller picked a pane we use it; otherwise we ask tmux
@@ -2086,52 +2117,60 @@ impl App {
             }
         }
 
-        let live_panes: std::collections::HashSet<String> = self
-            .state
-            .agent_sessions
-            .iter()
-            .map(|a| a.pane_id.clone())
-            .collect();
-        crate::core::status::prune_stale_files(
-            &crate::core::status::agents_dir(),
-            &live_panes,
-            scan_started_at,
-        );
-        crate::core::status::prune_stale_files(
-            &crate::core::status::subagents_dir(),
-            &live_panes,
-            scan_started_at,
-        );
-        crate::core::status::prune_stale_files(
-            &crate::core::status::permissions_dir(),
-            &live_panes,
-            scan_started_at,
-        );
-        crate::core::status::prune_stale_files(
-            &crate::core::status::inflight_dir(),
-            &live_panes,
-            scan_started_at,
-        );
-        crate::core::status::prune_stale_files(
-            &crate::core::status::heartbeat_dir(),
-            &live_panes,
-            scan_started_at,
-        );
+        // Under Rex the pane IDs are block IDs, so a prune here would delete
+        // the status files of every tmux pane.
+        if !crate::rex::enabled() {
+            let live_panes: std::collections::HashSet<String> = self
+                .state
+                .agent_sessions
+                .iter()
+                .map(|a| a.pane_id.clone())
+                .collect();
+            crate::core::status::prune_stale_files(
+                &crate::core::status::agents_dir(),
+                &live_panes,
+                scan_started_at,
+            );
+            crate::core::status::prune_stale_files(
+                &crate::core::status::subagents_dir(),
+                &live_panes,
+                scan_started_at,
+            );
+            crate::core::status::prune_stale_files(
+                &crate::core::status::permissions_dir(),
+                &live_panes,
+                scan_started_at,
+            );
+            crate::core::status::prune_stale_files(
+                &crate::core::status::inflight_dir(),
+                &live_panes,
+                scan_started_at,
+            );
+            crate::core::status::prune_stale_files(
+                &crate::core::status::heartbeat_dir(),
+                &live_panes,
+                scan_started_at,
+            );
 
-        // After prune so no write lands on a doomed file, before the load so a
-        // flip shows this frame.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        crate::core::status::expire_stale_working(
-            &crate::core::status::agents_dir(),
-            &crate::core::status::inflight_dir(),
-            &crate::core::status::heartbeat_dir(),
-            now,
-        );
+            // After prune so no write lands on a doomed file, before the load so a
+            // flip shows this frame.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            crate::core::status::expire_stale_working(
+                &crate::core::status::agents_dir(),
+                &crate::core::status::inflight_dir(),
+                &crate::core::status::heartbeat_dir(),
+                now,
+            );
+        }
 
-        let status_map = crate::core::status::load_statuses();
+        let status_map = if crate::rex::enabled() {
+            crate::rex::load_statuses()
+        } else {
+            crate::core::status::load_statuses()
+        };
         crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
         // An agent that starts to need you gets a sweep in the agents view.
         // Several at once go one after another, top to bottom. An agent with
