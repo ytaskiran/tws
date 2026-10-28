@@ -16,7 +16,7 @@ use crate::components::{
 };
 use crate::config;
 use crate::config::keys::{Action, KeyMode, Keymap};
-use crate::config::palette::{Palette, PaletteOverride};
+use crate::config::palette::PaletteOverride;
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::model::thread_slug;
 use crate::core::notes::{NoteEditor, NoteStore};
@@ -188,11 +188,6 @@ struct Hits {
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REX_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
-fn build_theme(palette: &Palette, glass: bool) -> Theme {
-    let theme = Theme::build(palette);
-    if glass { theme.glass() } else { theme }
-}
-
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
@@ -223,7 +218,7 @@ impl App {
             sweeps: HashMap::new(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
-            theme: build_theme(&palette, glass),
+            theme: Theme::build(&palette).glass(glass),
             theme_name,
             palette_overrides,
             glass,
@@ -244,7 +239,7 @@ impl App {
     /// overrides on top. The next frame draws with them.
     fn apply_theme(&mut self, name: &str) {
         let palette = config::palette_for(name, self.palette_overrides.as_ref());
-        self.theme = build_theme(&palette, self.glass);
+        self.theme = Theme::build(&palette).glass(self.glass);
         self.md_renderer
             .set_stylesheet(NoteStyleSheet::new(&palette));
         self.theme_name = name.to_string();

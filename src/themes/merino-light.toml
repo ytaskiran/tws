@@ -8,3 +8,5 @@ dim = "#696d71"
 muted = "#878a8e"
 border = "#e7e9eb"
 bg = "#ffffff"
+# Keep the tws orange for agents that wait or need review.
+waiting = "#cc7832"

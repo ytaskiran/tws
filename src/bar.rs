@@ -144,6 +144,7 @@ fn dark(p: &Palette) -> Palette {
         green: d(p.green),
         accent: d(p.accent),
         muted: d(p.muted),
+        waiting: p.waiting.map(d),
         ..p.clone()
     }
 }
@@ -152,7 +153,7 @@ fn dark(p: &Palette) -> Palette {
 fn status_color(p: &Palette, st: AgentStatus) -> Color {
     match st {
         AgentStatus::Working => p.green,
-        AgentStatus::Waiting | AgentStatus::Review => p.accent,
+        AgentStatus::Waiting | AgentStatus::Review => p.waiting(),
         AgentStatus::Idle | AgentStatus::Unknown => p.muted,
     }
 }
