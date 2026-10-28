@@ -8,9 +8,6 @@ pub fn is_managed(name: &str) -> bool {
 
 /// False when tmux cannot start at all, for example when it is not installed.
 pub fn installed() -> bool {
-    if crate::rex::enabled() {
-        return crate::rex::installed();
-    }
     Command::new("tmux").arg("-V").output().is_ok()
 }
 
@@ -33,9 +30,6 @@ pub fn list_sessions() -> Vec<String> {
 }
 
 pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
-    if crate::rex::enabled() {
-        return crate::rex::list_tws_sessions_with_timestamps();
-    }
     let output = Command::new("tmux")
         .args([
             "list-sessions",
@@ -64,9 +58,6 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
 }
 
 pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
-    if crate::rex::enabled() {
-        return crate::rex::new_session(name, cwd);
-    }
     let mut cmd = Command::new("tmux");
     cmd.args(["new-session", "-d", "-s", name]);
     if let Some(dir) = cwd {
@@ -77,9 +68,6 @@ pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
 }
 
 pub fn kill_session(name: &str) -> std::io::Result<bool> {
-    if crate::rex::enabled() {
-        return crate::rex::kill_session(name);
-    }
     let status = Command::new("tmux")
         .args(["kill-session", "-t", name])
         .status()?;
@@ -87,9 +75,6 @@ pub fn kill_session(name: &str) -> std::io::Result<bool> {
 }
 
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
-    if crate::rex::enabled() {
-        return crate::rex::rename_session(old_name, new_name);
-    }
     let status = Command::new("tmux")
         .args(["rename-session", "-t", old_name, new_name])
         .status()?;
@@ -114,9 +99,6 @@ pub fn attach_session(name: &str) -> std::io::Result<bool> {
 
 /// Selects a window across sessions without requiring an attached client.
 pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
-    if crate::rex::enabled() {
-        return Ok(true);
-    }
     let target = format!("{}:{}", session_name, window_index);
     let output = Command::new("tmux")
         .args(["select-window", "-t", &target])
@@ -126,9 +108,6 @@ pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<b
 
 /// Selects a pane by global ID without requiring an attached client.
 pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
-    if crate::rex::enabled() {
-        return crate::rex::select_pane(pane_id);
-    }
     let output = Command::new("tmux")
         .args(["select-pane", "-t", pane_id])
         .output()?;
@@ -140,9 +119,6 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
 /// An empty result is treated as missing because `display-message` can exit
 /// successfully for an unknown target.
 pub fn active_pane(session_name: &str) -> Option<String> {
-    if crate::rex::enabled() {
-        return crate::rex::active_pane(session_name);
-    }
     let output = Command::new("tmux")
         .args(["display-message", "-p", "-t", session_name, "#{pane_id}"])
         .output()
@@ -166,9 +142,6 @@ pub fn display_message(msg: &str) -> std::io::Result<bool> {
 
 /// Captures visible pane content, preserving ANSI escape sequences.
 pub fn capture_pane(pane_id: &str) -> Option<String> {
-    if crate::rex::enabled() {
-        return crate::rex::capture_pane(pane_id);
-    }
     let output = Command::new("tmux")
         .args(["capture-pane", "-t", pane_id, "-e", "-p"])
         .output()
@@ -181,7 +154,7 @@ pub fn capture_pane(pane_id: &str) -> Option<String> {
 }
 
 pub fn is_inside_tmux() -> bool {
-    !crate::rex::enabled() && std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
+    std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
 }
 
 #[cfg(test)]
