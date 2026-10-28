@@ -27,7 +27,6 @@ use crate::core::status::AgentTrigger;
 use crate::core::workdir::{self, DirPicker};
 use crate::event::{self, Input};
 use crate::theme::{NoteStyleSheet, Theme};
-use crate::tmux::agent_scan;
 use crate::tui::{self, Tui};
 
 enum InputPurpose {
@@ -148,7 +147,7 @@ pub struct App {
     md_renderer: MarkdownRenderer,
     last_refresh: Instant,
     last_recount: Instant,
-    agent_trigger: AgentTrigger,
+    agent_trigger: Option<AgentTrigger>,
     flash: Option<(String, Instant)>,
     preview_content: Option<Text<'static>>,
     preview_pane_id: Option<String>,
@@ -207,7 +206,7 @@ impl App {
             md_renderer: MarkdownRenderer::new(NoteStyleSheet::new(&palette)),
             last_refresh: Instant::now(),
             last_recount: Instant::now(),
-            agent_trigger: AgentTrigger::new(crate::core::status::trigger_path()),
+            agent_trigger: backend::agent_trigger(),
             flash: None,
             preview_content: None,
             preview_pane_id: None,
@@ -271,7 +270,7 @@ impl App {
             // Refreshes sessions, not just agents: scans filter by the known
             // session list, so a session created since the last periodic
             // refresh would hide its agents until the 30s timer came round.
-            if self.agent_trigger.is_pending() {
+            if self.agent_trigger.as_ref().is_some_and(|t| t.is_pending()) {
                 self.do_refresh_sessions();
             }
 
@@ -1806,22 +1805,18 @@ impl App {
                         })
                         .unwrap_or_default();
                     // Before the state changes, so a failure leaves both sides as they were.
-                    if backend::is_rex()
-                        && let Some(thread) = self.state.threads.get(thread_idx)
-                        && !crate::rex::rename_thread(
+                    let renames = backend::thread_renames(&old_sessions, &trimmed);
+                    if let Some(thread) = self.state.threads.get(thread_idx)
+                        && !backend::rename_thread(
                             &thread_slug(&thread.name),
                             &thread_slug(&trimmed),
+                            &renames,
                         )
                     {
                         self.set_flash("Could not rename the Rex session — is the name taken?");
                         return Ok(());
                     }
                     self.state.rename_thread(thread_idx, trimmed);
-                    for (old_name, label) in &old_sessions {
-                        if let Some(new_name) = self.state.make_session_name(thread_idx, label) {
-                            let _ = backend::rename_session(old_name, &new_name);
-                        }
-                    }
                     self.do_refresh_sessions();
                     self.save_state();
                     self.set_flash("Thread renamed");
@@ -2032,12 +2027,11 @@ impl App {
             .collect();
         // Snapshot before reading any status file, so a hook firing mid-scan
         // stays pending for the next poll.
-        let observed_trigger = self.agent_trigger.mtime();
-        let scan_started_at = SystemTime::now();
+        let observed_trigger = self.agent_trigger.as_ref().and_then(|t| t.mtime());
 
         if self.state.active_sessions.is_empty() {
             self.state.agent_sessions.clear();
-            self.agent_trigger.acknowledge(observed_trigger);
+            self.acknowledge_trigger(observed_trigger);
             return;
         }
 
@@ -2070,11 +2064,7 @@ impl App {
             .iter()
             .map(|s| s.tmux_session_name.clone())
             .collect();
-        self.state.agent_sessions = if backend::is_rex() {
-            crate::rex::scan_agents(&session_names)
-        } else {
-            agent_scan::scan_agents(&session_names)
-        };
+        self.state.agent_sessions = backend::agents(&session_names);
 
         for agent in &mut self.state.agent_sessions {
             if let Some(prev) = snapshot.get(&agent.pane_id) {
@@ -2086,61 +2076,6 @@ impl App {
             }
         }
 
-        // Under Rex the pane IDs are block IDs, so a prune here would delete
-        // the status files of every tmux pane.
-        if !backend::is_rex() {
-            let live_panes: std::collections::HashSet<String> = self
-                .state
-                .agent_sessions
-                .iter()
-                .map(|a| a.pane_id.clone())
-                .collect();
-            crate::core::status::prune_stale_files(
-                &crate::core::status::agents_dir(),
-                &live_panes,
-                scan_started_at,
-            );
-            crate::core::status::prune_stale_files(
-                &crate::core::status::subagents_dir(),
-                &live_panes,
-                scan_started_at,
-            );
-            crate::core::status::prune_stale_files(
-                &crate::core::status::permissions_dir(),
-                &live_panes,
-                scan_started_at,
-            );
-            crate::core::status::prune_stale_files(
-                &crate::core::status::inflight_dir(),
-                &live_panes,
-                scan_started_at,
-            );
-            crate::core::status::prune_stale_files(
-                &crate::core::status::heartbeat_dir(),
-                &live_panes,
-                scan_started_at,
-            );
-
-            // After prune so no write lands on a doomed file, before the load so a
-            // flip shows this frame.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            crate::core::status::expire_stale_working(
-                &crate::core::status::agents_dir(),
-                &crate::core::status::inflight_dir(),
-                &crate::core::status::heartbeat_dir(),
-                now,
-            );
-        }
-
-        let status_map = if backend::is_rex() {
-            crate::rex::load_statuses()
-        } else {
-            crate::core::status::load_statuses()
-        };
-        crate::core::status::apply_statuses(&mut self.state.agent_sessions, &status_map);
         // An agent that starts to need you gets a sweep in the agents view.
         // Several at once go one after another, top to bottom. An agent with
         // no earlier status (the first scan after a start) gets none.
@@ -2178,17 +2113,19 @@ impl App {
         self.recount_subagents();
         self.last_recount = Instant::now();
 
-        self.agent_trigger.acknowledge(observed_trigger);
+        self.acknowledge_trigger(observed_trigger);
+    }
+
+    fn acknowledge_trigger(&mut self, observed: Option<SystemTime>) {
+        if let Some(trigger) = &mut self.agent_trigger {
+            trigger.acknowledge(observed);
+        }
     }
 
     /// Recount the running subagents of the known agents. It reads only the
     /// marker directories, so it costs no tmux or ps scan.
     fn recount_subagents(&mut self) {
-        crate::core::status::apply_subagent_counts(
-            &mut self.state.agent_sessions,
-            &crate::core::status::subagents_dir(),
-            crate::components::agent_meta::now(),
-        );
+        backend::recount_subagents(&mut self.state.agent_sessions);
     }
 
     fn toggle_expand_all(&mut self) {
