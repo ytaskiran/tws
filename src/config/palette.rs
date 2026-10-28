@@ -117,6 +117,8 @@ struct ThemeFile {
 /// Built-in theme names, in picker order.
 pub const PRESETS: &[&str] = &[
     "default",
+    "merino-dark",
+    "merino-light",
     "catppuccin-mocha",
     "catppuccin-macchiato",
     "catppuccin-frappe",
@@ -130,6 +132,8 @@ pub const PRESETS: &[&str] = &[
 pub fn load_preset(name: &str) -> Option<Palette> {
     let toml_str = match name {
         "default" => include_str!("../themes/default.toml"),
+        "merino-dark" => include_str!("../themes/merino-dark.toml"),
+        "merino-light" => include_str!("../themes/merino-light.toml"),
         "catppuccin-mocha" => include_str!("../themes/catppuccin-mocha.toml"),
         "catppuccin-latte" => include_str!("../themes/catppuccin-latte.toml"),
         "catppuccin-macchiato" => include_str!("../themes/catppuccin-macchiato.toml"),

@@ -156,6 +156,16 @@ impl Theme {
     }
 }
 
+impl Theme {
+    /// Leave the background to the terminal, so a translucent window (the
+    /// Rex Glass interface style) shows through. Tints such as the selection
+    /// stay opaque: a terminal cell has no alpha.
+    pub fn glass(mut self) -> Self {
+        self.background = Style::new();
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct NoteStyleSheet {
     accent: Color,
@@ -240,6 +250,14 @@ mod tests {
 
         assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
         assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
+    }
+
+    #[test]
+    fn glass_leaves_background_to_terminal() {
+        let p = Palette::default();
+        let t = Theme::build(&p).glass();
+        assert_eq!(t.background, Style::new());
+        assert_eq!(t.highlight, Theme::build(&p).highlight);
     }
 
     #[test]

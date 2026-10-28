@@ -374,9 +374,20 @@ Or set a preset by hand:
 theme = "catppuccin-mocha"
 ```
 
-Available presets: `default`, `catppuccin-mocha`, `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, `gruvbox-dark`, `gruvbox-light`, `nord`, `tokyo-night`.
+Available presets: `default`, `merino-dark`, `merino-light`, `catppuccin-mocha`, `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, `gruvbox-dark`, `gruvbox-light`, `nord`, `tokyo-night`.
+
+`merino-dark` and `merino-light` use the colors of Rex's default themes, so tws matches the Rex window around it.
 
 You can also drop a custom theme file at `~/.config/tws/themes/<name>.toml` and reference it by name. Custom themes use the same `[palette]` schema as below.
+
+### Glass
+
+Set `glass = true` to let tws draw no background of its own. The terminal background then shows through, so tws keeps the translucent look of the Rex Glass interface style. Selection and card tints stay opaque, because a terminal cell has no transparency.
+
+```toml
+theme = "merino-dark"
+glass = true
+```
 
 ### Palette overrides
 

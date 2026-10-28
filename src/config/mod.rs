@@ -18,6 +18,7 @@ pub struct Config {
     pub palette: Option<PaletteOverride>,
     pub keys: Option<KeysConfig>,
     pub backend: Backend,
+    pub glass: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]

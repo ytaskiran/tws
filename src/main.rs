@@ -139,7 +139,7 @@ fn run_tui() -> std::io::Result<()> {
     let theme_name = cfg.theme.unwrap_or_else(|| "default".to_string());
 
     // Before tui::init, so an unknown theme warning shows on a normal screen.
-    let mut app = App::new(state, theme_name, cfg.palette, keymap);
+    let mut app = App::new(state, theme_name, cfg.palette, cfg.glass, keymap);
     // Without this, a panic leaves the shell in raw mode, and each mouse move
     // prints an escape code into it.
     let hook = std::panic::take_hook();
