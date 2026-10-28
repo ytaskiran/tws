@@ -6,6 +6,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::core::model::{AgentSession, AgentStatus};
+use crate::core::status;
 use crate::rex;
 use crate::tmux::commands as tmux;
 
@@ -113,5 +115,67 @@ pub fn notify_before_exit(msg: &str) -> bool {
     match current() {
         Backend::Tmux if tmux::is_inside_tmux() => tmux::display_message(msg).is_ok(),
         _ => false,
+    }
+}
+
+/// What `open` did, so the app knows what to do with its own screen.
+pub enum Open {
+    /// tmux switched this client to the session: tws exits.
+    Exit,
+    /// tws must give the terminal to `attach_blocking` and take it back after.
+    Attach,
+    /// The Rex app shows the session next to tws: tws keeps running.
+    Shown,
+    /// The flash message for the user.
+    Failed(String),
+}
+
+/// Goes to a session, and to `target` (window index, pane ID) in it when the
+/// caller picked an agent.
+pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) -> Open {
+    match current() {
+        Backend::Tmux => {
+            if let Some((window_index, pane_id)) = target {
+                let _ = tmux::select_window(name, window_index);
+                let _ = tmux::select_pane(pane_id);
+            }
+            // Attaching is acknowledgment of the pane you land on, and only that
+            // pane: a session can hold several agents, and seeing one says nothing
+            // about its siblings. When the caller picked a pane we use it;
+            // otherwise we ask tmux which pane the client will land on. The
+            // refresh after the open reloads the file into memory.
+            let landing = match target {
+                Some((_, pane_id)) => Some(pane_id.to_string()),
+                None => tmux::active_pane(name),
+            };
+            if let Some(landing) = landing
+                && let Some(ack) = status::agent_to_ack(agents, &landing)
+            {
+                status::write_status(&ack, AgentStatus::Idle);
+            }
+            if tmux::is_inside_tmux() {
+                let _ = tmux::switch_client(name);
+                Open::Exit
+            } else {
+                Open::Attach
+            }
+        }
+        // Rex tracks program status itself, so there is no ack to write.
+        Backend::Rex => {
+            if let Some((_, block_id)) = target {
+                let _ = rex::select_pane(block_id);
+            }
+            match rex::show(name) {
+                Ok(()) => Open::Shown,
+                Err(msg) => Open::Failed(msg),
+            }
+        }
+    }
+}
+
+/// Blocks until the user detaches. Only tmux attaches; Rex never asks for it.
+pub fn attach_blocking(name: &str) {
+    if current() == Backend::Tmux {
+        let _ = tmux::attach_session(name);
     }
 }

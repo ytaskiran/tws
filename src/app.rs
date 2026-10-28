@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Padding, Paragraph};
 use tui_tree_widget::TreeState;
 
-use crate::backend;
+use crate::backend::{self, Open};
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{
     agent_preview, agents_view, confirm_modal, dir_picker_modal, finder_modal, input_modal,
@@ -28,7 +28,6 @@ use crate::core::workdir::{self, DirPicker};
 use crate::event::{self, Input};
 use crate::theme::{NoteStyleSheet, Theme};
 use crate::tmux::agent_scan;
-use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
 
 enum InputPurpose {
@@ -932,13 +931,7 @@ impl App {
         pane_id: &str,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
-        if backend::is_rex() {
-            let _ = crate::rex::select_pane(pane_id);
-        } else {
-            let _ = tmux::select_window(session_name, window_index);
-            let _ = tmux::select_pane(pane_id);
-        }
-        self.attach_to_pane(session_name, pane_id, terminal)
+        self.attach(session_name, Some((window_index, pane_id)), terminal)
     }
 
     fn handle_normal_key(
@@ -1985,60 +1978,26 @@ impl App {
         self.attach(session_name, None, terminal)
     }
 
-    /// Attach or switch to `session_name`, landing the user on `pane_id`.
-    /// The caller is responsible for having selected that window and pane first.
-    fn attach_to_pane(
-        &mut self,
-        session_name: &str,
-        pane_id: &str,
-        terminal: &mut Tui,
-    ) -> std::io::Result<()> {
-        self.attach(session_name, Some(pane_id), terminal)
-    }
-
-    /// Attach or switch to a tmux session, acknowledging the pane it lands on.
+    /// Go to a session, and to `target` (window index, pane ID) in it.
     fn attach(
         &mut self,
         session_name: &str,
-        pane_id: Option<&str>,
+        target: Option<(u32, &str)>,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
-        // Rex tracks program status itself, so there is no ack to write.
-        if backend::is_rex() {
-            if let Err(msg) = crate::rex::show(session_name) {
-                self.set_flash(msg);
+        match backend::open(session_name, target, &self.state.agent_sessions) {
+            Open::Exit => self.running = false,
+            Open::Attach => {
+                tui::restore()?;
+                backend::attach_blocking(session_name);
+                *terminal = tui::init()?;
+                // The rows can change while you are away. Ignore the mouse until
+                // the next draw stores a new frame.
+                self.hits = None;
             }
-            self.do_refresh_sessions();
-            return Ok(());
+            Open::Shown => {}
+            Open::Failed(msg) => self.set_flash(&msg),
         }
-        // Attaching is acknowledgment of the pane you land on, and only that pane:
-        // a session can hold several agents, and seeing one says nothing about its
-        // siblings. When the caller picked a pane we use it; otherwise we ask tmux
-        // which pane the client will land on. Write the file here; the
-        // do_refresh_sessions() below reloads it into memory.
-        let landing = match pane_id {
-            Some(p) => Some(p.to_string()),
-            None => tmux::active_pane(session_name),
-        };
-        if let Some(landing) = landing
-            && let Some(ack) =
-                crate::core::status::agent_to_ack(&self.state.agent_sessions, &landing)
-        {
-            crate::core::status::write_status(&ack, crate::core::model::AgentStatus::Idle);
-        }
-
-        if tmux::is_inside_tmux() {
-            let _ = tmux::switch_client(session_name);
-            self.running = false;
-        } else {
-            tui::restore()?;
-            let _ = tmux::attach_session(session_name);
-            *terminal = tui::init()?;
-            // The rows can change while you are away. Ignore the mouse until
-            // the next draw stores a new frame.
-            self.hits = None;
-        }
-
         self.do_refresh_sessions();
         Ok(())
     }

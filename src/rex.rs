@@ -273,18 +273,31 @@ pub fn select_pane(block_id: &str) -> std::io::Result<bool> {
 
 /// Shows the window in the Rex app. tws keeps running: unlike tmux, the app
 /// shows it next to tws, so there is nothing to exit or attach.
-/// The error is a flash message for the user.
-pub fn show(name: &str) -> Result<(), &'static str> {
+/// The error is a flash message for the user. Rex's own text names the cause,
+/// for example Remote Control that is off, so it wins over a fixed one.
+pub fn show(name: &str) -> Result<(), String> {
     let sessions = take().ok_or("Could not read the Rex sessions")?;
     let (s, w) = find(&sessions, name).ok_or("The session is gone")?;
     // ponytail: first app client wins; pick by label when several Macs connect.
     let client = app_client().ok_or("No Rex app is connected")?;
     let sid = format!("session_id={}", s.session_id);
     let wid = format!("window_id={}", w.window_id);
-    match rex_ok(&["-C", &client, "do", "session.select", &sid, &wid]) {
-        Ok(true) => Ok(()),
-        _ => Err("Could not open it — turn on Remote Control in Rex settings"),
+    let out = command(&["-C", &client, "do", "session.select", &sid, &wid])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(error_line(&stderr)
+        .unwrap_or("Could not open it — turn on Remote Control in Rex settings")
+        .to_string())
+}
+
+/// The first line of a rex error, without the `Error: ` prefix of the CLI.
+fn error_line(stderr: &str) -> Option<&str> {
+    let line = stderr.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.strip_prefix("Error: ").unwrap_or(line))
 }
 
 fn app_client() -> Option<String> {
@@ -399,6 +412,19 @@ mod tests {
             Some(("tws", "rex-backend"))
         );
         assert_eq!(split_name("twsr__main"), None);
+    }
+
+    #[test]
+    fn error_line_takes_rex_message() {
+        let stderr = "Error: Rex.app is not accepting actions. Turn on Remote Control in its Settings under Rex Server.\n";
+        assert_eq!(
+            error_line(stderr),
+            Some(
+                "Rex.app is not accepting actions. Turn on Remote Control in its Settings under Rex Server."
+            )
+        );
+        assert_eq!(error_line("\n  \n"), None);
+        assert_eq!(error_line("plain\nsecond"), Some("plain"));
     }
 
     #[test]
