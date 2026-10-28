@@ -53,7 +53,7 @@ get_binary() {
     # If a tws binary sits next to this script (local install), use it
     if [ -x "$script_dir/$BINARY_NAME" ]; then
         info "Found local binary at $script_dir/$BINARY_NAME"
-        cp "$script_dir/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+        replace_binary "$script_dir/$BINARY_NAME"
         return
     fi
 
@@ -79,10 +79,17 @@ get_binary() {
         || err "Download failed. Is there a release for $target?"
 
     tar xzf "$tmpdir/$archive" -C "$tmpdir"
-    cp "$tmpdir/tws-${latest_tag}-${target}/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+    replace_binary "$tmpdir/tws-${latest_tag}-${target}/$BINARY_NAME"
 }
 
 # --- 3. Install binary ---
+
+# Remove the old binary first, so the copy is a new file. macOS keeps the code
+# signature of a file it ran, and kills a binary copied over it (SIGKILL).
+replace_binary() {
+    rm -f "$INSTALL_DIR/$BINARY_NAME"
+    cp "$1" "$INSTALL_DIR/$BINARY_NAME"
+}
 
 install_binary() {
     local target="$1"
