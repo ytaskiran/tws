@@ -1,0 +1,12 @@
+# Rex's default dark theme. Colors are the semantic tokens of Rex's
+# merino-dark theme, so tws matches the Rex window chrome.
+[palette]
+accent = "#3485fa"
+green = "#3fb950"
+fg = "#e6edf3"
+dim = "#82878c"
+muted = "#666a6f"
+border = "#2e3135"
+bg = "#0d1117"
+# Keep the tws orange for agents that wait or need review.
+waiting = "#cc7832"

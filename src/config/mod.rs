@@ -18,6 +18,7 @@ pub struct Config {
     pub palette: Option<PaletteOverride>,
     pub keys: Option<KeysConfig>,
     pub backend: Backend,
+    pub glass: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +228,16 @@ mod tests {
         assert!(config.theme.is_none());
         assert!(config.palette.is_none());
         assert!(config.keys.is_none());
+        assert!(!config.glass);
+    }
+
+    #[test]
+    fn glass_is_a_top_level_key() {
+        let config: Config = toml::from_str("glass = true").unwrap();
+        assert!(config.glass);
+        // Below a table header, the key belongs to that table, not to tws.
+        let config: Config = toml::from_str("[palette]\nglass = true").unwrap();
+        assert!(!config.glass);
     }
 
     #[test]

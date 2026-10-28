@@ -57,6 +57,9 @@ pub struct Palette {
     pub border: Color,
     #[serde(deserialize_with = "deserialize_color")]
     pub bg: Color,
+    /// The color of the waiting and review states. Unset means `accent`.
+    #[serde(deserialize_with = "deserialize_option_color")]
+    pub waiting: Option<Color>,
 }
 
 impl Default for Palette {
@@ -69,6 +72,7 @@ impl Default for Palette {
             muted: Color::Rgb(100, 100, 100),
             border: Color::Rgb(60, 60, 60),
             bg: Color::Rgb(30, 30, 30),
+            waiting: None,
         }
     }
 }
@@ -91,6 +95,8 @@ pub struct PaletteOverride {
     pub border: Option<Color>,
     #[serde(default, deserialize_with = "deserialize_option_color")]
     pub bg: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub waiting: Option<Color>,
 }
 
 impl Palette {
@@ -105,7 +111,12 @@ impl Palette {
             muted: overrides.muted.unwrap_or(self.muted),
             border: overrides.border.unwrap_or(self.border),
             bg: overrides.bg.unwrap_or(self.bg),
+            waiting: overrides.waiting.or(self.waiting),
         }
+    }
+
+    pub fn waiting(&self) -> Color {
+        self.waiting.unwrap_or(self.accent)
     }
 }
 
@@ -117,6 +128,8 @@ struct ThemeFile {
 /// Built-in theme names, in picker order.
 pub const PRESETS: &[&str] = &[
     "default",
+    "merino-dark",
+    "merino-light",
     "catppuccin-mocha",
     "catppuccin-macchiato",
     "catppuccin-frappe",
@@ -130,6 +143,8 @@ pub const PRESETS: &[&str] = &[
 pub fn load_preset(name: &str) -> Option<Palette> {
     let toml_str = match name {
         "default" => include_str!("../themes/default.toml"),
+        "merino-dark" => include_str!("../themes/merino-dark.toml"),
+        "merino-light" => include_str!("../themes/merino-light.toml"),
         "catppuccin-mocha" => include_str!("../themes/catppuccin-mocha.toml"),
         "catppuccin-latte" => include_str!("../themes/catppuccin-latte.toml"),
         "catppuccin-macchiato" => include_str!("../themes/catppuccin-macchiato.toml"),
@@ -216,6 +231,14 @@ mod tests {
         for name in PRESETS {
             assert!(load_preset(name).is_some(), "{name} should load");
         }
+    }
+
+    #[test]
+    fn waiting_falls_back_to_accent() {
+        let p = Palette::default();
+        assert_eq!(p.waiting(), p.accent);
+        let merino = load_preset("merino-dark").expect("merino-dark should exist");
+        assert_eq!(merino.waiting(), Color::Rgb(204, 120, 50));
     }
 
     #[test]

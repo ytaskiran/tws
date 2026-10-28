@@ -92,7 +92,7 @@ Both list views keep their scroll offset between frames (`components::sticky_scr
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command`. Each wrapper calls `rex.rs` first when the Rex backend is on |
 | `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
-| `theme.rs` | All `Style` constants — warm palette with an orange accent |
+| `theme.rs` | All `Style` constants, derived from the palette; `glass` leaves the background to the terminal |
 
 ### Rendering
 

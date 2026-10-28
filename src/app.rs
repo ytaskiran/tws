@@ -160,6 +160,7 @@ pub struct App {
     theme: Theme,
     theme_name: String,
     palette_overrides: Option<PaletteOverride>,
+    glass: bool,
     keymap: Keymap,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
     /// Drained on first successful agent rebuild; entries whose pane_id
@@ -194,6 +195,7 @@ impl App {
         state: AppState,
         theme_name: String,
         palette_overrides: Option<PaletteOverride>,
+        glass: bool,
         keymap: Keymap,
     ) -> Self {
         let palette = config::palette_for(&theme_name, palette_overrides.as_ref());
@@ -216,9 +218,10 @@ impl App {
             sweeps: HashMap::new(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
-            theme: Theme::build(&palette),
+            theme: Theme::build(&palette).glass(glass),
             theme_name,
             palette_overrides,
+            glass,
             keymap,
             sessions_scroll: 0,
             agents_scroll: 0,
@@ -236,7 +239,7 @@ impl App {
     /// overrides on top. The next frame draws with them.
     fn apply_theme(&mut self, name: &str) {
         let palette = config::palette_for(name, self.palette_overrides.as_ref());
-        self.theme = Theme::build(&palette);
+        self.theme = Theme::build(&palette).glass(self.glass);
         self.md_renderer
             .set_stylesheet(NoteStyleSheet::new(&palette));
         self.theme_name = name.to_string();

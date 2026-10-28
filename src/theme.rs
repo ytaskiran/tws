@@ -126,14 +126,14 @@ impl Theme {
             empty_hint: Style::new().fg(muted_text),
 
             status_working: Style::new().fg(p.green),
-            status_waiting: Style::new().fg(p.accent),
+            status_waiting: Style::new().fg(p.waiting()),
             status_idle: Style::new().fg(muted_text),
             chip_working: Style::new()
                 .fg(p.green)
                 .bg(darken_toward(p.green, p.bg, 0.7)),
             chip_waiting: Style::new()
-                .fg(p.accent)
-                .bg(darken_toward(p.accent, p.bg, 0.7)),
+                .fg(p.waiting())
+                .bg(darken_toward(p.waiting(), p.bg, 0.7)),
 
             flash: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 
@@ -153,6 +153,17 @@ impl Theme {
             preview_title: Style::new().fg(muted_text),
             preview_placeholder: Style::new().fg(muted_text),
         }
+    }
+
+    /// With `on`, leave the background to the terminal, so a translucent
+    /// window (the Rex Glass interface style) shows through. The tints still
+    /// blend toward `p.bg`, so the palette `bg` must match the terminal, and
+    /// they stay opaque: a terminal cell has no alpha.
+    pub fn glass(mut self, on: bool) -> Self {
+        if on {
+            self.background = Style::new();
+        }
+        self
     }
 }
 
@@ -240,6 +251,14 @@ mod tests {
 
         assert_eq!(t.selection_bar, Style::new().fg(Color::Rgb(255, 0, 0)));
         assert_eq!(t.highlight, Style::new().bg(Color::Rgb(62, 26, 26)));
+    }
+
+    #[test]
+    fn glass_leaves_background_to_terminal() {
+        let p = Palette::default();
+        let t = Theme::build(&p).glass(true);
+        assert_eq!(t.background, Style::new());
+        assert_eq!(t.highlight, Theme::build(&p).highlight);
     }
 
     #[test]
