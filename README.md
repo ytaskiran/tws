@@ -365,7 +365,7 @@ These features work only with tmux:
 - The recent sessions bar. Rex does not record when you last opened a window.
 - A move of a session to a different thread. Rex cannot move a window to a different session.
 
-Rex does not clear `done` when you look at the agent. The agent stays in review until its next status.
+Rex keeps `done` until the agent reports again, and it does not tell tws what you look at. So tws clears the review when you open the agent, or the session that lands on it, from tws, and it saves that in `~/.config/tws/rex-seen`. When you go to the agent in Rex directly, the review stays until you open it from tws or the agent reports again.
 
 ### Open tws with a key
 

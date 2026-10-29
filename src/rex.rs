@@ -35,17 +35,20 @@ for _, s in ipairs(rex.call("session.list").sessions) do
         local p = rex.block.call(T, "process", a)
         local t = rex.block.call(T, "title", a)
         local st = rex.block.call(T, "program_status", a)
-        local state
+        -- The top rank picks the state; in a tie the newest report gives `at`,
+        -- so a new subagent `error` after a seen `done` shows again.
+        local state, at
         for _, r in ipairs(st and st.records or {}) do
-          if state == nil or (RANK[r.state] or 1) > (RANK[state] or 1) then
-            state = r.state
+          local rank, top = RANK[r.state] or 1, RANK[state] or 1
+          if state == nil or rank > top or (rank == top and (r.updated_at or "") > (at or "")) then
+            state, at = r.state, r.updated_at
           end
         end
         blocks[#blocks + 1] = {block_id = b.block_id, pid = p and p.child and p.child.pid,
-          title = t and t.title, state = state}
+          title = t and t.title, state = state, at = at}
       end
     end
-    ws[#ws + 1] = {window_id = w.window_id, label = w.label,
+    ws[#ws + 1] = {window_id = w.window_id, label = w.label, focused = w.focused_block_id,
       blocks = #blocks > 0 and blocks or nil}
   end
   out[#out + 1] = {session_id = s.session_id, label = s.label, windows = #ws > 0 and ws or nil}
@@ -67,6 +70,8 @@ struct RexWindow {
     window_id: String,
     #[serde(default)]
     label: String,
+    /// The pane that the app lands on when it shows the window.
+    focused: Option<String>,
     #[serde(default)]
     blocks: Vec<RexBlock>,
 }
@@ -78,6 +83,8 @@ struct RexBlock {
     #[serde(default)]
     title: String,
     state: Option<String>,
+    /// When the program reported `state`. A new report gets a new time.
+    at: Option<String>,
 }
 
 /// tws runs in a Rex terminal, so it inherits `REX_SESSION` and `REX_BLOCK`.
@@ -413,16 +420,101 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
 /// Program status (OSC 7501) replaces the hook files under Rex. Only agents
 /// that report it get a status; the others stay Unknown.
 pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
-    cached(statuses_from)
+    let seen = load_seen();
+    cached(|sessions| statuses_from(sessions, &seen))
 }
 
-fn statuses_from(sessions: &[RexSession]) -> HashMap<String, (AgentStatus, i64)> {
+/// Rex keeps `done` until the program reports again, and it does not say
+/// what the user looked at. So tws remembers the reports that you opened.
+fn statuses_from(
+    sessions: &[RexSession],
+    seen: &HashMap<String, String>,
+) -> HashMap<String, (AgentStatus, i64)> {
     sessions
         .iter()
         .flat_map(|s| &s.windows)
         .flat_map(|w| &w.blocks)
-        .filter_map(|b| Some((b.block_id.clone(), (map_state(b.state.as_deref()?), 0))))
+        .filter_map(|b| {
+            let mut status = map_state(b.state.as_deref()?);
+            if status == AgentStatus::Review
+                && b.at.is_some()
+                && seen.get(&b.block_id) == b.at.as_ref()
+            {
+                status = AgentStatus::Idle;
+            }
+            Some((b.block_id.clone(), (status, 0)))
+        })
         .collect()
+}
+
+/// After an open: the review of the pane you land on counts as seen. A fresh
+/// snapshot, so a report that came after the last refresh counts too.
+pub fn mark_seen(name: &str, pane: Option<&str>) {
+    let Some(sessions) = take() else { return };
+    let mut seen = load_seen();
+    mark_seen_in(&sessions, name, pane, &mut seen);
+    let _ = save_seen(&seen_path(), &seen);
+}
+
+/// Atomic: the popup and another tws can read the file while this one writes.
+fn save_seen(path: &Path, seen: &HashMap<String, String>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    crate::core::status::write_atomic(path, &format_seen(seen))
+}
+
+/// `pane` is the agent that you picked; without it, the app lands on the
+/// focused pane of the window. Blocks that are gone drop out.
+fn mark_seen_in(
+    sessions: &[RexSession],
+    name: &str,
+    pane: Option<&str>,
+    seen: &mut HashMap<String, String>,
+) {
+    let live: HashSet<&str> = sessions
+        .iter()
+        .flat_map(|s| &s.windows)
+        .flat_map(|w| &w.blocks)
+        .map(|b| b.block_id.as_str())
+        .collect();
+    seen.retain(|id, _| live.contains(id.as_str()));
+    let Some((_, w)) = find(sessions, name) else {
+        return;
+    };
+    let Some(id) = pane.or(w.focused.as_deref()) else {
+        return;
+    };
+    if let Some(b) = w.blocks.iter().find(|b| b.block_id == id)
+        && b.state.as_deref().map(map_state) == Some(AgentStatus::Review)
+        && let Some(at) = &b.at
+    {
+        seen.insert(id.to_string(), at.clone());
+    }
+}
+
+/// One `block_id updated_at` line for each seen review.
+fn seen_path() -> std::path::PathBuf {
+    crate::core::persistence::config_dir().join("rex-seen")
+}
+
+fn load_seen() -> HashMap<String, String> {
+    std::fs::read_to_string(seen_path())
+        .map(|text| parse_seen(&text))
+        .unwrap_or_default()
+}
+
+fn parse_seen(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(id, at)| (id.to_string(), at.to_string()))
+        .collect()
+}
+
+fn format_seen(seen: &HashMap<String, String>) -> String {
+    let mut lines: Vec<String> = seen.iter().map(|(id, at)| format!("{id} {at}\n")).collect();
+    lines.sort();
+    lines.concat()
 }
 
 /// `done` and `error` wait for the user to look. Rex docs say an unknown
@@ -455,7 +547,7 @@ mod tests {
         // A label with `_` is not a tws session; an empty session stays known.
         assert!(tws_name(s, &s.windows[1]).is_none());
         assert!(sessions[1].windows.is_empty());
-        let statuses = statuses_from(&sessions);
+        let statuses = statuses_from(&sessions, &HashMap::new());
         assert_eq!(statuses["block:1"].0, AgentStatus::Waiting);
         assert!(!statuses.contains_key("block:2"));
         assert_eq!(parse_snapshot("{}").map(|s| s.len()), Some(0));
@@ -510,5 +602,65 @@ mod tests {
             expand_cursor_forward("\x1b[99999999999999999999C").len(),
             4 + 1024
         );
+    }
+
+    const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"tws","windows":[
+        {"window_id":"window:1","label":"w","focused":"block:2",
+         "blocks":[{"block_id":"block:1","pid":1,"state":"done","at":"t1"},
+                   {"block_id":"block:2","pid":2,"state":"error","at":"t2"},
+                   {"block_id":"block:3","pid":3,"state":"working","at":"t3"}]}]}]"#;
+
+    #[test]
+    fn a_seen_review_shows_idle_until_a_new_report() {
+        let sessions = parse_snapshot(SEEN_SNAPSHOT).unwrap();
+        let seen = HashMap::from([
+            ("block:1".to_string(), "t1".to_string()),
+            ("block:2".to_string(), "older".to_string()),
+        ]);
+        let statuses = statuses_from(&sessions, &seen);
+        assert_eq!(statuses["block:1"].0, AgentStatus::Idle);
+        assert_eq!(statuses["block:2"].0, AgentStatus::Review);
+        assert_eq!(statuses["block:3"].0, AgentStatus::Working);
+    }
+
+    #[test]
+    fn an_open_marks_the_landing_pane_seen() {
+        let sessions = parse_snapshot(SEEN_SNAPSHOT).unwrap();
+        let mut seen = HashMap::from([("block:gone".to_string(), "t0".to_string())]);
+        // Without a pane, the app lands on the focused one. A gone block drops out.
+        mark_seen_in(&sessions, "twsr_tws_w", None, &mut seen);
+        assert_eq!(
+            seen,
+            HashMap::from([("block:2".to_string(), "t2".to_string())])
+        );
+        mark_seen_in(&sessions, "twsr_tws_w", Some("block:1"), &mut seen);
+        assert_eq!(seen.get("block:1").map(String::as_str), Some("t1"));
+        // Only a review is remembered: a working agent has nothing to see.
+        mark_seen_in(&sessions, "twsr_tws_w", Some("block:3"), &mut seen);
+        assert!(!seen.contains_key("block:3"));
+    }
+
+    #[test]
+    fn the_seen_file_reads_back_what_it_wrote() {
+        let seen = HashMap::from([
+            (
+                "block:1".to_string(),
+                "2026-10-29T15:35:53.454314+03:00".to_string(),
+            ),
+            ("block:2".to_string(), "t2".to_string()),
+        ]);
+        assert_eq!(parse_seen(&format_seen(&seen)), seen);
+    }
+
+    #[test]
+    fn saving_seen_makes_the_folder_and_replaces_the_file() {
+        let dir = std::env::temp_dir().join(format!("tws-seen-{}", std::process::id()));
+        let path = dir.join("tws").join("rex-seen");
+        let first = HashMap::from([("block:1".to_string(), "t1".to_string())]);
+        save_seen(&path, &first).unwrap();
+        let second = HashMap::from([("block:2".to_string(), "t2".to_string())]);
+        save_seen(&path, &second).unwrap();
+        assert_eq!(parse_seen(&std::fs::read_to_string(&path).unwrap()), second);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
