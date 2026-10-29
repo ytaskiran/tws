@@ -2016,16 +2016,23 @@ install_glow() {
 # --- 6a. Backend ---
 
 TWS_CONFIG="$HOME/.config/tws/config.toml"
-# Set by choose_backend. "both" installs the pieces of each backend, and tws
-# runs Rex.
+# Set by choose_backend. "both" installs the pieces of each backend.
 want_rex=1 want_tmux=1 backend_value=rex
+# The backend in config.toml, if it names one. "both" keeps it.
+current_backend=""
+# A [table] or [[table]] line. A comma rules out a line inside a multi-line
+# array, such as `  [1, 2],`.
+TOML_TABLE='^[[:space:]]*\[\[?[^],]+\]\]?[[:space:]]*(#.*)?$'
+# TOML also allows a quoted key, and tws reads it the same way.
+TOML_BACKEND_KEY='^[[:space:]]*("backend"|'"'"'backend'"'"'|backend)[[:space:]]*='
 
 # The backend that config.toml sets, or nothing. Only a top-level key counts:
 # a key after the first [table] belongs to that table.
 config_backend() {
-    awk '/^[[:space:]]*\[/ { exit }
-        /^[[:space:]]*backend[[:space:]]*=/ {
-            sub(/^[^=]*=/, ""); sub(/#.*/, ""); gsub(/["'"'"'[:space:]]/, ""); print; exit
+    TABLE="$TOML_TABLE" KEY="$TOML_BACKEND_KEY" awk '
+        $0 ~ ENVIRON["TABLE"] { exit }
+        $0 ~ ENVIRON["KEY"] {
+            sub(ENVIRON["KEY"], ""); sub(/#.*/, ""); gsub(/["'"'"'[:space:]]/, ""); print; exit
         }' "$TWS_CONFIG" 2>/dev/null || true
 }
 
@@ -2034,7 +2041,7 @@ set_backend() {
     case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
         1|r|rex) want_rex=1 want_tmux=0 backend_value=rex ;;
         2|t|tmux) want_rex=0 want_tmux=1 backend_value=tmux ;;
-        3|b|both) want_rex=1 want_tmux=1 backend_value=rex ;;
+        3|b|both) want_rex=1 want_tmux=1 backend_value="${current_backend:-rex}" ;;
         *) return 1 ;;
     esac
 }
@@ -2044,39 +2051,52 @@ set_backend() {
 # backend in config.toml, else the one that is installed, else Rex.
 choose_backend() {
     local answer="${TWS_BACKEND:-}" def
-    def="$(config_backend)"
+    case "$(config_backend)" in
+        rex|tmux) current_backend="$(config_backend)" ;;
+    esac
+    def="$current_backend"
     if [ -z "$def" ]; then
         if command -v rex &>/dev/null; then def=rex
         elif command -v tmux &>/dev/null; then def=tmux
         else def=rex; fi
     fi
-    if [ -z "$answer" ] && (exec </dev/tty) 2>/dev/null; then
+    if [ -n "$answer" ]; then
+        info "Backend: $answer (from TWS_BACKEND)"
+    elif (exec </dev/tty) 2>/dev/null; then
         echo ""
         info "Which backend do you use? tws sets up only what it needs."
         echo "   1) rex    the Rex key that opens tws (cmd+s)"
         echo "   2) tmux   agent status hooks, the tmux status bar and keys"
-        echo "   3) both   all of it; tws runs Rex"
+        echo "   3) both   all of it; tws runs ${current_backend:-rex}"
         printf '%s' "Backend [$def]: "
         read -r answer 2>/dev/null < /dev/tty || answer=""
     fi
     if ! set_backend "${answer:-$def}"; then
         warn "\"$answer\" is not a backend — using $def"
-        set_backend "$def" || set_backend rex
+        set_backend "$def"
     fi
 }
 
 # The plan step. The key goes at the top: a line at the end could land in a
-# [table]. An old top-level backend line goes away.
+# [table]. An old top-level backend line goes away. The write goes through the
+# path, as in rewrite_conf_block: a config.toml that links into a dotfiles
+# repo stays a link, and the file keeps its mode.
 configure_backend() {
+    local tmp
+    tmp="$(mktemp)"
     if ! { mkdir -p "$(dirname "$TWS_CONFIG")" && {
             printf 'backend = "%s"\n' "$backend_value"
             if [ -f "$TWS_CONFIG" ]; then
-                awk '/^[[:space:]]*\[/ { t = 1 } t || !/^[[:space:]]*backend[[:space:]]*=/' "$TWS_CONFIG"
+                TABLE="$TOML_TABLE" KEY="$TOML_BACKEND_KEY" awk '
+                    $0 ~ ENVIRON["TABLE"] { t = 1 }
+                    t || $0 !~ ENVIRON["KEY"]' "$TWS_CONFIG"
             fi
-        } > "$TWS_CONFIG.tmp" && mv "$TWS_CONFIG.tmp" "$TWS_CONFIG"; } 2>/dev/null; then
+        } > "$tmp" && cat "$tmp" > "$TWS_CONFIG"; } 2>/dev/null; then
+        rm -f "$tmp"
         warn "Could not write $(tilde "$TWS_CONFIG") — add this line at its top: backend = \"$backend_value\""
         return 0
     fi
+    rm -f "$tmp"
     ok "tws backend: $backend_value"
 }
 
