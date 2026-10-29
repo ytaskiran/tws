@@ -384,11 +384,13 @@ When the Rex server stops, for example after a reboot, Rex loses its sessions. [
 
 `install.sh` adds this to the plan when your Rex config does not already run rexurrect. After you confirm, the installer:
 
-1. Installs rexurrect 0.2.1 in `~/.local/bin` from its GitHub release, if `rexurrect` is not on your `PATH`.
+1. Installs rexurrect 0.2.1 in `~/.local/bin` from its GitHub release, if `rexurrect` is not on your `PATH`. The installer script must match a SHA-256 checksum in `install.sh`, or it does not run.
 2. Runs `rexurrect autosave install`.
-3. Adds the line from `rexurrect auto-restore --print-hook` to `~/.config/tws/tws.lua`.
+3. Writes the line from `rexurrect auto-restore --print-hook` to `~/.config/tws/rexurrect.lua`. `tws.lua` loads this file.
 
-Each install writes this line again with the rexurrect that you have now, so a rexurrect upgrade gets the correct line. To stop the restore, remove the line from `tws.lua` and run `rexurrect autosave uninstall`.
+Each install writes the line again with the rexurrect that you have now, so a rexurrect upgrade gets the correct line. If this fails, the old file stays and the installer shows a warning.
+
+To turn off the restore, make `~/.config/tws/rexurrect.lua` empty and run `rexurrect autosave uninstall`. Do not delete the file: the next install then asks again.
 
 ### Copy tmux sessions into Rex
 

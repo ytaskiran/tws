@@ -2280,9 +2280,10 @@ scan_plan() {
         plan_rex_init=1
     fi
 
-    # The restore goes into tws.lua, so it needs the file. An init.lua without the
-    # dofile line gets it from plan_rex_init in the same plan.
-    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null && [ -f "$REX_LUA" ] && ! tws_lua_restores; then
+    # tws.lua loads the restore, so it needs that file. An init.lua without the
+    # dofile line gets it from plan_rex_init in the same plan. An existing
+    # REXURRECT_LUA means the user chose already: an empty one keeps it off.
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null && [ -f "$REX_LUA" ] && [ ! -e "$REXURRECT_LUA" ]; then
         if grep -qF "auto-restore" "$REX_INIT" 2>/dev/null; then
             plan_notes+=("rexurrect restore — $(tilde "$REX_INIT") already runs rexurrect auto-restore")
         else
@@ -2333,7 +2334,7 @@ print_plan() {
         fi
         if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (cmd+s)" "$(tilde "$REX_INIT")"; fi
         if [ "$plan_rexurrect" -eq 1 ]; then
-            plan_row "restore Rex sessions at start" "$(rexurrect_bin >/dev/null || printf 'install rexurrect %s, ' "$REXURRECT_VERSION")autosave, $(tilde "$REX_LUA")"
+            plan_row "restore Rex sessions at start" "$(rexurrect_bin >/dev/null || printf 'install rexurrect %s, ' "$REXURRECT_VERSION")autosave, $(tilde "$REXURRECT_LUA")"
         fi
     fi
 
@@ -2451,7 +2452,10 @@ print_manual_steps() {
         echo "    $REX_DOFILE_LINE"
     fi
     if [ "$plan_rexurrect" -eq 1 ]; then
-        echo "  To restore the Rex sessions after a reboot, see https://github.com/cemcatik/rexurrect"
+        echo "  To restore the Rex sessions after a reboot (https://github.com/cemcatik/rexurrect):"
+        echo "    Install rexurrect $REXURRECT_VERSION, then run:"
+        echo "    rexurrect autosave install"
+        echo "    rexurrect auto-restore --print-hook > $(tilde "$REXURRECT_LUA")"
     fi
 }
 
@@ -2469,7 +2473,7 @@ REX_DOFILE_LINE='pcall(dofile, os.getenv("HOME") .. "/.config/tws/tws.lua")'
 # The source rule is the same as default_conf_text. When init.lua loads it
 # already, Rex reloads the config to use the new copy.
 install_rex_lua() {
-    local src="${BASH_SOURCE[0]:-}" text hook
+    local src="${BASH_SOURCE[0]:-}" text
     if [ -n "$src" ] && [ -f "$(dirname "$src")/extras/rex/tws.lua" ]; then
         text="$(cat "$(dirname "$src")/extras/rex/tws.lua")"
     else
@@ -2479,9 +2483,6 @@ install_rex_lua() {
         warn "Could not get the Rex action for tws — skipping it"
         return
     fi
-    # Keep the restore that an earlier install added, with the hook of the
-    # rexurrect installed now: a rexurrect upgrade can change the line.
-    if tws_lua_restores && hook="$(rexurrect_hook)"; then text+=$'\n\n'"$hook"; fi
     # A temp file and mv, so a failed write never leaves half a file for Rex.
     # A failure only skips this step: set -e must not stop the install.
     if ! { mkdir -p "$(dirname "$REX_LUA")" && printf '%s\n' "$text" > "$REX_LUA.tmp" \
@@ -2512,48 +2513,80 @@ configure_rex_init() {
 
 # --- rexurrect: restore the Rex sessions after a reboot ---
 
-# The installer runs the code of this release, so change the version only
-# after a review of the new release.
+# The installer runs the code of this release, so change the version and the
+# checksum only after a review of the new release. The installer then checks
+# the checksum of each binary that it downloads.
 REXURRECT_VERSION="0.2.1"
 REXURRECT_INSTALLER="https://github.com/cemcatik/rexurrect/releases/download/v$REXURRECT_VERSION/rexurrect-installer.sh"
-REXURRECT_MARK="-- tws: restore the Rex sessions with rexurrect (https://github.com/cemcatik/rexurrect)"
+REXURRECT_INSTALLER_SHA256="de339760d139194bb3a725f1c0367667ab2f22bd2f0607efbcd8bc118f090796"
+# tws.lua loads this file. Only the plan step and refresh_rexurrect_lua write it.
+REXURRECT_LUA="$HOME/.config/tws/rexurrect.lua"
 
 rexurrect_bin() {
     command -v rexurrect 2>/dev/null || { [ -x "$INSTALL_DIR/rexurrect" ] && printf '%s\n' "$INSTALL_DIR/rexurrect"; }
 }
 
-tws_lua_restores() {
-    grep -qF -e "$REXURRECT_MARK" "$REX_LUA" 2>/dev/null
+# shasum is not on every Linux, and sha256sum is not on macOS.
+sha256_of() {
+    if command -v shasum &>/dev/null; then shasum -a 256 "$1"; else sha256sum "$1"; fi | cut -d' ' -f1
 }
 
 # rexurrect prints the line with its path, state directory and config file
 # pinned, because the Rex server does not have the environment of the shell.
-rexurrect_hook() {
-    local bin hook
-    bin="$(rexurrect_bin)" && hook="$("$bin" auto-restore --print-hook)" || return 1
-    printf '%s\n%s\n' "$REXURRECT_MARK" "$hook"
+# A temp file and mv, so a failure leaves the old file.
+write_rexurrect_lua() {
+    local hook
+    hook="$("$1" auto-restore --print-hook)" || return 1
+    mkdir -p "$(dirname "$REXURRECT_LUA")" \
+        && printf '%s\n%s\n' "-- Written by tws install.sh. To turn off the restore, make this file empty. Do not delete it." "$hook" > "$REXURRECT_LUA.tmp" \
+        && mv "$REXURRECT_LUA.tmp" "$REXURRECT_LUA"
+}
+
+# Each install writes the line again, because a rexurrect upgrade can change
+# it. A file without auto-restore is the user's choice, so it stays.
+refresh_rexurrect_lua() {
+    local bin
+    grep -q "auto-restore" "$REXURRECT_LUA" 2>/dev/null || return 0
+    if ! bin="$(rexurrect_bin)" || ! write_rexurrect_lua "$bin"; then
+        warn "Could not update $(tilde "$REXURRECT_LUA") — it keeps the old rexurrect line"
+    fi
+}
+
+# Unmanaged: the binary goes to INSTALL_DIR, and the installer edits no shell file.
+install_rexurrect() {
+    local tmp status=1
+    tmp="$(mktemp)"
+    if ! curl --proto '=https' --tlsv1.2 -fsSL "$REXURRECT_INSTALLER" -o "$tmp"; then
+        warn "Could not download the rexurrect installer"
+    elif [ "$(sha256_of "$tmp")" != "$REXURRECT_INSTALLER_SHA256" ]; then
+        warn "The rexurrect installer does not match its pinned checksum — not running it"
+    elif ! REXURRECT_UNMANAGED_INSTALL="$INSTALL_DIR" sh "$tmp" >/dev/null; then
+        warn "The rexurrect installer failed"
+    else
+        status=0
+    fi
+    rm -f "$tmp"
+    return "$status"
 }
 
 # The plan step. rexurrect restores one time for each server start, so the
 # reload here and later reloads restore nothing into the server that runs now.
 configure_rexurrect() {
-    local bin hook
+    local bin
     if ! rexurrect_bin >/dev/null; then
         info "Installing rexurrect $REXURRECT_VERSION..."
-        # Unmanaged: the binary goes to INSTALL_DIR, and the installer edits no shell file.
-        if ! curl --proto '=https' --tlsv1.2 -fsSL "$REXURRECT_INSTALLER" \
-            | REXURRECT_UNMANAGED_INSTALL="$INSTALL_DIR" sh >/dev/null; then
-            warn "Could not install rexurrect — skipping the restore of Rex sessions"
-            return 0
-        fi
+        install_rexurrect || { warn "Skipping the restore of Rex sessions"; return 0; }
     fi
-    bin="$(rexurrect_bin)"
+    if ! bin="$(rexurrect_bin)"; then
+        warn "rexurrect is not on PATH or in $(tilde "$INSTALL_DIR") — skipping the restore of Rex sessions"
+        return 0
+    fi
     if ! "$bin" autosave install >/dev/null; then
         warn "rexurrect autosave install failed — skipping the restore of Rex sessions"
         return 0
     fi
-    if ! hook="$(rexurrect_hook)" || ! printf '\n%s\n' "$hook" >> "$REX_LUA"; then
-        warn "Could not add the restore to $(tilde "$REX_LUA")"
+    if ! write_rexurrect_lua "$bin"; then
+        warn "Could not write $(tilde "$REXURRECT_LUA") — skipping the restore of Rex sessions"
         return 0
     fi
     rex config reload &>/dev/null || true
@@ -2579,7 +2612,10 @@ main() {
         if tmux_server_runs; then tmux_live=1; fi
         if confirm_default_conf; then install_default_conf; fi
     fi
-    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null; then install_rex_lua; fi
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null; then
+        install_rex_lua
+        refresh_rexurrect_lua
+    fi
 
     scan_plan
     print_plan

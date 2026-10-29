@@ -76,3 +76,7 @@ rex.action{
 }
 
 rex.bind(KEY, "tws_open")
+
+-- install.sh writes this file when you choose to restore the Rex sessions
+-- with rexurrect. pcall: the file does not exist when you did not.
+pcall(dofile, os.getenv("HOME") .. "/.config/tws/rexurrect.lua")
