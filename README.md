@@ -223,8 +223,13 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 curl -fsSL https://raw.githubusercontent.com/ytaskiran/tws/main/install.sh | bash
 ```
 
-Downloads the latest release binary to `~/.local/bin`. Then the script scans your
-setup and shows all the changes it can make in one list. It asks one main
+Downloads the latest release binary to `~/.local/bin`. Then it asks which backend
+you use: `rex`, `tmux`, or `both`. It sets up only what that backend needs: Rex
+gets the key that opens tws, and tmux gets the agent status hooks and the tmux
+pieces. The default is the backend in `config.toml`, else the one that is
+installed. A piped install with no terminal takes the default, or the answer in
+`TWS_BACKEND`, for example `curl ... | TWS_BACKEND=tmux bash`. Then the script
+scans your setup and shows all the changes it can make in one list. It asks one main
 question, `Apply these changes? [Y/n]`. Before it, the installer can ask about
 your own tmux status bar (see [Status bar](#status-bar)). The list can hold:
 
@@ -328,7 +333,7 @@ Inside a session, detach with `prefix + d` to return to tws.
 
 ## Backends
 
-tws can use [Rex](https://www.superlogical.com/rex/) or tmux. Rex is the default. To use tmux, add this line to `~/.config/tws/config.toml`:
+tws can use [Rex](https://www.superlogical.com/rex/) or tmux. Rex is the default. To use tmux, run `install.sh` and answer `tmux`, or add this line at the top of `~/.config/tws/config.toml`:
 
 ```toml
 backend = "tmux"

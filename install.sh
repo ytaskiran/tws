@@ -2013,6 +2013,73 @@ install_glow() {
     esac
 }
 
+# --- 6a. Backend ---
+
+TWS_CONFIG="$HOME/.config/tws/config.toml"
+# Set by choose_backend. "both" installs the pieces of each backend, and tws
+# runs Rex.
+want_rex=1 want_tmux=1 backend_value=rex
+
+# The backend that config.toml sets, or nothing. Only a top-level key counts:
+# a key after the first [table] belongs to that table.
+config_backend() {
+    awk '/^[[:space:]]*\[/ { exit }
+        /^[[:space:]]*backend[[:space:]]*=/ {
+            sub(/^[^=]*=/, ""); sub(/#.*/, ""); gsub(/["'"'"'[:space:]]/, ""); print; exit
+        }' "$TWS_CONFIG" 2>/dev/null || true
+}
+
+# Fails on a word that names no backend.
+set_backend() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        1|r|rex) want_rex=1 want_tmux=0 backend_value=rex ;;
+        2|t|tmux) want_rex=0 want_tmux=1 backend_value=tmux ;;
+        3|b|both) want_rex=1 want_tmux=1 backend_value=rex ;;
+        *) return 1 ;;
+    esac
+}
+
+# Asked first, because the answer decides the rest of the plan. TWS_BACKEND
+# answers it for a piped install, which has no terminal. The default is the
+# backend in config.toml, else the one that is installed, else Rex.
+choose_backend() {
+    local answer="${TWS_BACKEND:-}" def
+    def="$(config_backend)"
+    if [ -z "$def" ]; then
+        if command -v rex &>/dev/null; then def=rex
+        elif command -v tmux &>/dev/null; then def=tmux
+        else def=rex; fi
+    fi
+    if [ -z "$answer" ] && (exec </dev/tty) 2>/dev/null; then
+        echo ""
+        info "Which backend do you use? tws sets up only what it needs."
+        echo "   1) rex    the Rex key that opens tws (cmd+s)"
+        echo "   2) tmux   agent status hooks, the tmux status bar and keys"
+        echo "   3) both   all of it; tws runs Rex"
+        printf '%s' "Backend [$def]: "
+        read -r answer 2>/dev/null < /dev/tty || answer=""
+    fi
+    if ! set_backend "${answer:-$def}"; then
+        warn "\"$answer\" is not a backend — using $def"
+        set_backend "$def" || set_backend rex
+    fi
+}
+
+# The plan step. The key goes at the top: a line at the end could land in a
+# [table]. An old top-level backend line goes away.
+configure_backend() {
+    if ! { mkdir -p "$(dirname "$TWS_CONFIG")" && {
+            printf 'backend = "%s"\n' "$backend_value"
+            if [ -f "$TWS_CONFIG" ]; then
+                awk '/^[[:space:]]*\[/ { t = 1 } t || !/^[[:space:]]*backend[[:space:]]*=/' "$TWS_CONFIG"
+            fi
+        } > "$TWS_CONFIG.tmp" && mv "$TWS_CONFIG.tmp" "$TWS_CONFIG"; } 2>/dev/null; then
+        warn "Could not write $(tilde "$TWS_CONFIG") — add this line at its top: backend = \"$backend_value\""
+        return 0
+    fi
+    ok "tws backend: $backend_value"
+}
+
 # --- 7. Scan, plan, and the questions ---
 
 # The scan only reads. It records what the installer can change in plan_*
@@ -2020,7 +2087,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0 plan_backend=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2060,117 +2127,121 @@ scan_plan() {
             ;;
     esac
 
-    # A file that is not a JSON object goes under "Not changed", so the plan never
-    # lists a step that the apply step then cannot do.
-    local settings="$HOME/.claude/settings.json" codex_hooks="$HOME/.codex/hooks.json"
-    if [ -f "$settings" ]; then
-        plan_found+=("Claude Code")
-        if [ "$have_jq" -eq 0 ]; then
-            plan_notes+=("Claude Code hooks need jq — install jq, then run install again")
-        elif ! json_object_or_empty "$settings"; then
-            plan_notes+=("Claude Code hooks — $(tilde "$settings") is not a JSON object; fix it, then run install again")
-        else
-            plan_claude=1
+    # Agent status hooks and the tmux pieces serve only the tmux backend. Rex
+    # gets the agent status from the program itself.
+    if [ "$want_tmux" -eq 1 ]; then
+        # A file that is not a JSON object goes under "Not changed", so the plan never
+        # lists a step that the apply step then cannot do.
+        local settings="$HOME/.claude/settings.json" codex_hooks="$HOME/.codex/hooks.json"
+        if [ -f "$settings" ]; then
+            plan_found+=("Claude Code")
+            if [ "$have_jq" -eq 0 ]; then
+                plan_notes+=("Claude Code hooks need jq — install jq, then run install again")
+            elif ! json_object_or_empty "$settings"; then
+                plan_notes+=("Claude Code hooks — $(tilde "$settings") is not a JSON object; fix it, then run install again")
+            else
+                plan_claude=1
+            fi
         fi
-    fi
-    if [ -d "$HOME/.codex" ]; then
-        plan_found+=("Codex")
-        if [ "$have_jq" -eq 0 ]; then
-            plan_notes+=("Codex hooks need jq — install jq, then run install again")
-        elif [ -f "$codex_hooks" ] && ! json_object_or_empty "$codex_hooks"; then
-            plan_notes+=("Codex hooks — $(tilde "$codex_hooks") is not a JSON object; fix it, then run install again")
-        else
-            plan_codex=1
-            if codex_daemon_on; then
-                if confirm_codex_daemon; then
-                    plan_codex_daemon=1
-                else
-                    plan_notes+=("Codex daemon left on — status can be wrong with 2+ Codex panes")
+        if [ -d "$HOME/.codex" ]; then
+            plan_found+=("Codex")
+            if [ "$have_jq" -eq 0 ]; then
+                plan_notes+=("Codex hooks need jq — install jq, then run install again")
+            elif [ -f "$codex_hooks" ] && ! json_object_or_empty "$codex_hooks"; then
+                plan_notes+=("Codex hooks — $(tilde "$codex_hooks") is not a JSON object; fix it, then run install again")
+            else
+                plan_codex=1
+                if codex_daemon_on; then
+                    if confirm_codex_daemon; then
+                        plan_codex_daemon=1
+                    else
+                        plan_notes+=("Codex daemon left on — status can be wrong with 2+ Codex panes")
+                    fi
                 fi
             fi
         fi
-    fi
-    if [ -d "$HOME/.pi" ]; then
-        plan_found+=("Pi")
-        plan_pi=1
-    fi
-    # Devin Desktop is a different app; these paths belong to the CLI.
-    if [ -d "$HOME/.config/devin" ] || [ -d "$HOME/.local/share/devin/cli" ] || command -v devin &>/dev/null; then
-        plan_found+=("Devin CLI")
-        if [ "$have_jq" -eq 0 ]; then
-            plan_notes+=("Devin CLI hooks need jq — install jq, then run install again")
-        elif ! jsonc_object_or_empty "$(devin_config)"; then
-            plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not a JSON object; fix it, then run install again")
-        elif [ -e "$(devin_config)" ] && [ ! -w "$(devin_config)" ]; then
-            plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not writable (a read-only or managed file)")
-        else
-            plan_devin=1
+        if [ -d "$HOME/.pi" ]; then
+            plan_found+=("Pi")
+            plan_pi=1
         fi
-    fi
-    plan_oc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
-    if [ -d "$plan_oc_dir" ]; then
-        plan_found+=("OpenCode")
-        plan_opencode=1
-    fi
-
-    plan_conf="$(tmux_conf_path)"
-    if [ -n "$plan_conf" ]; then
-        plan_found+=("tmux config $(tilde "$plan_conf")")
-    fi
-
-    # The tmux steps only make sense next to agent hooks: the ack hooks clear the
-    # review state that they write, and prefix+F needs the Claude session pointer.
-    # A note that starts with a tab is a detail line under the note before it.
-    local broken_link tmux_blocked=0
-    broken_link="$(tmux_conf_broken_link)"
-    if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ]; then
-        if [ -n "$broken_link" ]; then
-            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
-            tmux_blocked=1
-        elif [ -n "$plan_conf" ] && [ ! -w "$plan_conf" ]; then
-            plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
-            tmux_blocked=1
-        fi
-    fi
-    if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
-        if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
-            plan_ack=1
-        else
-            plan_notes+=("tmux ack hooks — the binary path has a space or one of ' \" \\ \$ # ;")
-            plan_notes+=($'\t'"Put the binary at a path without these characters, then add these to your tmux config:")
-            local line
-            while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
-        fi
-    fi
-    # The bar shows what the agent hooks write, so it comes with the ack hooks.
-    if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
-        if nova_script >/dev/null; then
-            if nova_right_replaced; then
-                bar_replace=1
-            elif nova_right_has_more && confirm_nova_right; then
-                bar_replace=1 bar_backup=1
+        # Devin Desktop is a different app; these paths belong to the CLI.
+        if [ -d "$HOME/.config/devin" ] || [ -d "$HOME/.local/share/devin/cli" ] || command -v devin &>/dev/null; then
+            plan_found+=("Devin CLI")
+            if [ "$have_jq" -eq 0 ]; then
+                plan_notes+=("Devin CLI hooks need jq — install jq, then run install again")
+            elif ! jsonc_object_or_empty "$(devin_config)"; then
+                plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not a JSON object; fix it, then run install again")
+            elif [ -e "$(devin_config)" ] && [ ! -w "$(devin_config)" ]; then
+                plan_notes+=("Devin CLI hooks — $(tilde "$(devin_config)") is not writable (a read-only or managed file)")
+            else
+                plan_devin=1
             fi
-            plan_bar=1
-        elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
-            plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
-            plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
-        elif tmux_has_own_bar && ! confirm_own_bar; then
-            plan_notes+=("tmux status bar — your tmux config has its own bar. To show the agents on it, see")
-            plan_notes+=($'\t'"https://github.com/ytaskiran/tws#status-bar")
-        else
-            plan_bar=1
         fi
-    fi
-    if [ "$plan_claude" -eq 1 ] && [ "$tmux_blocked" -eq 0 ]; then
-        if fork_key_taken; then
-            plan_notes+=("tmux fork binding — prefix+F is already bound to something else")
-            plan_notes+=($'\t'"To use it on another key, change F in this line and add it to your tmux config:")
-            plan_notes+=($'\t'"  $FORK_BINDING")
-        elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
-            plan_notes+=("tmux fork binding — your tmux config loads other files or plugins, and their prefix+F keys")
-            plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
-        else
-            plan_fork=1
+        plan_oc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+        if [ -d "$plan_oc_dir" ]; then
+            plan_found+=("OpenCode")
+            plan_opencode=1
+        fi
+
+        plan_conf="$(tmux_conf_path)"
+        if [ -n "$plan_conf" ]; then
+            plan_found+=("tmux config $(tilde "$plan_conf")")
+        fi
+
+        # The tmux steps only make sense next to agent hooks: the ack hooks clear the
+        # review state that they write, and prefix+F needs the Claude session pointer.
+        # A note that starts with a tab is a detail line under the note before it.
+        local broken_link tmux_blocked=0
+        broken_link="$(tmux_conf_broken_link)"
+        if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ]; then
+            if [ -n "$broken_link" ]; then
+                plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$broken_link") is a broken symlink; fix it, then run install again")
+                tmux_blocked=1
+            elif [ -n "$plan_conf" ] && [ ! -w "$plan_conf" ]; then
+                plan_notes+=("tmux ack hooks, fork binding, and status bar — $(tilde "$plan_conf") is not writable (a read-only or managed file)")
+                tmux_blocked=1
+            fi
+        fi
+        if [ $((plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode)) -gt 0 ] && [ "$tmux_blocked" -eq 0 ]; then
+            if ack_path_is_safe "$INSTALL_DIR/$BINARY_NAME"; then
+                plan_ack=1
+            else
+                plan_notes+=("tmux ack hooks — the binary path has a space or one of ' \" \\ \$ # ;")
+                plan_notes+=($'\t'"Put the binary at a path without these characters, then add these to your tmux config:")
+                local line
+                while IFS= read -r line; do plan_notes+=($'\t'"  $line"); done <<< "$(ack_hook_block)"
+            fi
+        fi
+        # The bar shows what the agent hooks write, so it comes with the ack hooks.
+        if [ "$plan_ack" -eq 1 ] && ! tmux_conf_bar_off; then
+            if nova_script >/dev/null; then
+                if nova_right_replaced; then
+                    bar_replace=1
+                elif nova_right_has_more && confirm_nova_right; then
+                    bar_replace=1 bar_backup=1
+                fi
+                plan_bar=1
+            elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
+                plan_notes+=("tmux status bar — your tmux config loads other files or plugins, and their bar")
+                plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
+            elif tmux_has_own_bar && ! confirm_own_bar; then
+                plan_notes+=("tmux status bar — your tmux config has its own bar. To show the agents on it, see")
+                plan_notes+=($'\t'"https://github.com/ytaskiran/tws#status-bar")
+            else
+                plan_bar=1
+            fi
+        fi
+        if [ "$plan_claude" -eq 1 ] && [ "$tmux_blocked" -eq 0 ]; then
+            if fork_key_taken; then
+                plan_notes+=("tmux fork binding — prefix+F is already bound to something else")
+                plan_notes+=($'\t'"To use it on another key, change F in this line and add it to your tmux config:")
+                plan_notes+=($'\t'"  $FORK_BINDING")
+            elif [ "$tmux_live" -eq 0 ] && tmux_conf_loads_more; then
+                plan_notes+=("tmux fork binding — your tmux config loads other files or plugins, and their prefix+F keys")
+                plan_notes+=($'\t'"cannot be checked with no tmux server running. Start tmux, then run install again.")
+            else
+                plan_fork=1
+            fi
         fi
     fi
 
@@ -2185,9 +2256,13 @@ scan_plan() {
     fi
 
     # Only after install_rex_lua wrote the file: init.lua fails on a missing one.
-    if command -v rex &>/dev/null && [ -f "$REX_LUA" ] && ! rex_init_has_tws; then
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null && [ -f "$REX_LUA" ] && ! rex_init_has_tws; then
         plan_rex_init=1
     fi
+
+    local current
+    current="$(config_backend)"
+    if [ "${current:-rex}" != "$backend_value" ]; then plan_backend=1; fi
 }
 
 print_plan() {
@@ -2198,7 +2273,7 @@ print_plan() {
     echo ""
     if [ "${#plan_found[@]}" -gt 0 ]; then
         info "Found: $(IFS=,; printf '%s' "${plan_found[*]}" | sed 's/,/, /g')"
-    else
+    elif [ "$want_tmux" -eq 1 ]; then
         info "Found no agent and no tmux config"
     fi
 
@@ -2206,6 +2281,7 @@ print_plan() {
         info "Nothing else to set up"
     else
         info "tws will set up or update:"
+        if [ "$plan_backend" -eq 1 ]; then plan_row "tws backend: $backend_value" "$(tilde "$TWS_CONFIG")"; fi
         if [ "$plan_claude" -eq 1 ]; then plan_row "Claude Code status hooks" "$(tilde "$HOME/.claude/settings.json")"; fi
         if [ "$plan_codex" -eq 1 ]; then plan_row "Codex status hooks" "$(tilde "$HOME/.codex/hooks.json"), $(tilde "$HOME/.codex/config.toml")"; fi
         if [ "$plan_codex_daemon" -eq 1 ]; then plan_row "turn off the Codex daemon" "$(tilde "$HOME/.codex/config.toml")"; fi
@@ -2245,7 +2321,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]
+    [ $((plan_backend + plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2299,6 +2375,7 @@ confirm_plan() {
 }
 
 apply_plan() {
+    if [ "$plan_backend" -eq 1 ]; then configure_backend; fi
     if [ "$plan_path" -eq 1 ]; then configure_path "$plan_rc" "$plan_profile"; fi
     configure_agent_hooks
     if [ "$plan_ack" -eq 1 ]; then configure_ack_hooks; fi
@@ -2313,11 +2390,15 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]; then
+    if [ $((plan_backend + plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
     info "$none. Run install again to set them up, or add these by hand:"
+    if [ "$plan_backend" -eq 1 ]; then
+        echo "  At the top of $(tilde "$TWS_CONFIG"):"
+        echo "    backend = \"$backend_value\""
+    fi
     if [ "$plan_path" -eq 1 ]; then
         echo "  In $(tilde "$plan_rc") and $(tilde "$plan_profile"):"
         echo "    $PATH_EXPORT_LINE"
@@ -2402,10 +2483,13 @@ main() {
 
     install_binary "$target"
     migrate_state
+    choose_backend
 
-    if tmux_server_runs; then tmux_live=1; fi
-    if confirm_default_conf; then install_default_conf; fi
-    if command -v rex &>/dev/null; then install_rex_lua; fi
+    if [ "$want_tmux" -eq 1 ]; then
+        if tmux_server_runs; then tmux_live=1; fi
+        if confirm_default_conf; then install_default_conf; fi
+    fi
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null; then install_rex_lua; fi
 
     scan_plan
     print_plan
@@ -2421,10 +2505,15 @@ main() {
     ok "Done!"
     echo "  Binary:   $INSTALL_DIR/$BINARY_NAME"
     echo "  Run:      tws"
-    echo "  Detach:   prefix + d"
+    if [ "$want_rex" -eq 1 ]; then echo "  Open:     cmd+s in Rex"; fi
+    if [ "$want_tmux" -eq 1 ]; then echo "  Detach:   prefix + d"; fi
     echo ""
-    if ! command -v rex &>/dev/null; then
-        warn "tws uses Rex by default, and rex is not on PATH. Install Rex from https://www.superlogical.com/rex/docs/installation. To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml"
+    if [ "$want_rex" -eq 1 ] && ! command -v rex &>/dev/null; then
+        warn "rex is not on PATH. Install Rex from https://www.superlogical.com/rex/docs/installation, then run install again for the cmd+s key."
+        echo ""
+    fi
+    if [ "$want_tmux" -eq 1 ] && ! command -v tmux &>/dev/null; then
+        warn "tmux is not installed. Install it, then run install again for the tmux pieces."
         echo ""
     fi
 }
