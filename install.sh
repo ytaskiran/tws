@@ -2020,7 +2020,7 @@ install_glow() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2183,6 +2183,11 @@ scan_plan() {
             plan_notes+=("glow is missing and neither brew nor go is available — notes use basic rendering")
         fi
     fi
+
+    # Only after install_rex_lua wrote the file: init.lua fails on a missing one.
+    if command -v rex &>/dev/null && [ -f "$REX_LUA" ] && ! rex_init_has_tws; then
+        plan_rex_init=1
+    fi
 }
 
 print_plan() {
@@ -2220,6 +2225,7 @@ print_plan() {
         if [ "$plan_glow" -eq 1 ]; then
             if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
         fi
+        if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (ctrl+cmd+t)" "$(tilde "$REX_INIT")"; fi
     fi
 
     if [ "${#plan_notes[@]}" -gt 0 ]; then
@@ -2239,7 +2245,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]
+    [ $((plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2299,6 +2305,7 @@ apply_plan() {
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
     if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
+    if [ "$plan_rex_init" -eq 1 ]; then configure_rex_init; fi
 }
 
 # After a "no", show the user what to add by hand. The agent hooks are left out:
@@ -2306,7 +2313,7 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow)) -eq 0 ]; then
+    if [ $((plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
@@ -2323,6 +2330,62 @@ print_manual_steps() {
     fi
     if [ "$plan_glow" -eq 1 ]; then
         if [ "$plan_glow_via" = brew ]; then echo "  Install glow: brew install glow"; else echo "  Install glow: go install $GLOW_GO_PKG"; fi
+    fi
+    if [ "$plan_rex_init" -eq 1 ]; then
+        echo "  In $(tilde "$REX_INIT"), then run rex config reload:"
+        echo "    $REX_DOFILE_LINE"
+    fi
+}
+
+# --- Rex open-tws key ---
+
+REX_LUA_URL="https://raw.githubusercontent.com/$REPO/main/extras/rex/tws.lua"
+REX_LUA="$HOME/.config/tws/tws.lua"
+# Rex reads REX_CONFIG, else rex/init.lua in the XDG config directory.
+REX_INIT="${REX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rex/init.lua}"
+# pcall: a missing or broken tws.lua (tws removed, a failed write) must not
+# stop Rex from loading the rest of init.lua.
+REX_DOFILE_LINE='pcall(dofile, os.getenv("HOME") .. "/.config/tws/tws.lua")'
+
+# Writes the Rex action to REX_LUA on each install, so an upgrade updates it.
+# The source rule is the same as default_conf_text. When init.lua loads it
+# already, Rex reloads the config to use the new copy.
+install_rex_lua() {
+    local src="${BASH_SOURCE[0]:-}" text
+    if [ -n "$src" ] && [ -f "$(dirname "$src")/extras/rex/tws.lua" ]; then
+        text="$(cat "$(dirname "$src")/extras/rex/tws.lua")"
+    else
+        text="$(curl -fsSL "$REX_LUA_URL")" || text=""
+    fi
+    if ! grep -q 'name = "tws_open"' <<< "$text"; then
+        warn "Could not get the Rex action for tws — skipping it"
+        return
+    fi
+    # A temp file and mv, so a failed write never leaves half a file for Rex.
+    # A failure only skips this step: set -e must not stop the install.
+    if ! { mkdir -p "$(dirname "$REX_LUA")" && printf '%s\n' "$text" > "$REX_LUA.tmp" \
+        && mv "$REX_LUA.tmp" "$REX_LUA"; } 2>/dev/null; then
+        warn "Could not write $(tilde "$REX_LUA") — skipping the Rex key"
+        return 0
+    fi
+    if rex_init_has_tws; then rex config reload &>/dev/null || true; fi
+}
+
+rex_init_has_tws() {
+    grep -qF "$REX_DOFILE_LINE" "$REX_INIT" 2>/dev/null
+}
+
+# The plan step: init.lua loads the action, then Rex reloads the config.
+configure_rex_init() {
+    if ! mkdir -p "$(dirname "$REX_INIT")" \
+        || ! printf '\n-- tws: a key that opens tws (the key is set in %s)\n%s\n' "$(tilde "$REX_LUA")" "$REX_DOFILE_LINE" >> "$REX_INIT"; then
+        warn "Could not write $(tilde "$REX_INIT") — skipping the Rex key"
+        return
+    fi
+    if rex config reload &>/dev/null; then
+        ok "Rex key to open tws: ctrl+cmd+t"
+    else
+        warn "Added the tws key to $(tilde "$REX_INIT"). Run: rex config reload"
     fi
 }
 
@@ -2342,6 +2405,7 @@ main() {
 
     if tmux_server_runs; then tmux_live=1; fi
     if confirm_default_conf; then install_default_conf; fi
+    if command -v rex &>/dev/null; then install_rex_lua; fi
 
     scan_plan
     print_plan
