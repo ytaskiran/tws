@@ -162,13 +162,18 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
                 Open::Attach
             }
         }
-        // Rex tracks program status itself, so there is no ack to write.
+        // Rex keeps `done` until the program reports again, so tws remembers
+        // that you saw it.
         Backend::Rex => {
-            if let Some((_, block_id)) = target {
+            let pane = target.map(|(_, block_id)| block_id);
+            if let Some(block_id) = pane {
                 let _ = rex::select_pane(block_id);
             }
             match rex::show(name) {
-                Ok(()) => Open::Shown,
+                Ok(()) => {
+                    rex::mark_seen(name, pane);
+                    Open::Shown
+                }
                 Err(msg) => Open::Failed(msg),
             }
         }
