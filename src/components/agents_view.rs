@@ -187,18 +187,11 @@ pub fn render(
         .iter()
         .map(|row| match *row {
             Row::Gap => Line::from(""),
-            Row::Heading(l, count) => {
-                let style = if l == 0 {
-                    theme.status_waiting.bold()
-                } else {
-                    theme.path_dim
-                };
-                Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(LANE_NAMES[usize::from(l)], style),
-                    Span::styled(format!("  {count}"), theme.meta),
-                ])
-            }
+            Row::Heading(l, count) => Line::from(vec![
+                Span::raw(" "),
+                Span::styled(LANE_NAMES[usize::from(l)], theme.path_dim),
+                Span::styled(format!("  {count}"), theme.meta),
+            ]),
             Row::Card(i, k) => {
                 let a = &agents[i];
                 let bar = || Span::styled("▌ ", status_style(a.status, theme));

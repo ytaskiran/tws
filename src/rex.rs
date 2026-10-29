@@ -323,7 +323,57 @@ const PREVIEW_LINES: usize = 500;
 // `format` + `max_bytes` and `blob_read` if that transfer gets slow.
 pub fn capture_pane(block_id: &str) -> Option<String> {
     let vt = rex(&["capture", "-b", block_id, "--format=vt"])?;
-    Some(tail_lines(&vt, PREVIEW_LINES).to_string())
+    Some(expand_cursor_forward(tail_lines(&vt, PREVIEW_LINES)))
+}
+
+/// Rex writes a run of blank cells as `ESC[nC` (cursor forward), where tmux
+/// wrote spaces. `ansi_to_tui` drops cursor moves, so turn them into spaces.
+/// The skipped cells have no style, so the spaces go out unstyled and the
+/// pen (the SGR codes since the last reset) is restored after them.
+fn expand_cursor_forward(vt: &str) -> String {
+    // A terminal clamps the move at the right margin; no pane is this wide.
+    const MAX_MOVE: usize = 1024;
+    let mut out = String::with_capacity(vt.len());
+    let mut pen = String::new();
+    let mut rest = vt;
+    while let Some(i) = rest.find("\x1b[") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        let len = after
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || *b == b';')
+            .count();
+        let params = &after[..len];
+        match after.as_bytes().get(len) {
+            Some(b'C') if !params.contains(';') => {
+                let n = if params.is_empty() {
+                    1
+                } else {
+                    params.parse().unwrap_or(MAX_MOVE).clamp(1, MAX_MOVE)
+                };
+                out.push_str("\x1b[0m");
+                out.extend(std::iter::repeat_n(' ', n));
+                out.push_str(&pen);
+                rest = &after[len + 1..];
+            }
+            Some(b'm') => {
+                let seq = &rest[i..i + 2 + len + 1];
+                if params.is_empty() || params == "0" {
+                    pen.clear();
+                } else {
+                    pen.push_str(seq);
+                }
+                out.push_str(seq);
+                rest = &after[len + 1..];
+            }
+            _ => {
+                out.push_str("\x1b[");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn tail_lines(text: &str, n: usize) -> &str {
@@ -434,5 +484,31 @@ mod tests {
     fn preview_keeps_the_last_lines() {
         assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc");
         assert_eq!(tail_lines("a\nb", 5), "a\nb");
+    }
+
+    #[test]
+    fn preview_expands_cursor_forward_to_spaces() {
+        let vt = "a\x1b[1Cb\x1b[Cc\x1b[3C\x1b[1md\x1b[0m";
+        assert_eq!(
+            expand_cursor_forward(vt),
+            "a\x1b[0m b\x1b[0m c\x1b[0m   \x1b[1md\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn preview_gaps_drop_the_pen_and_restore_it() {
+        let vt = "\x1b[1m\x1b[48;2;1;2;3ma\x1b[2Cb\x1b[0m\x1b[Cc";
+        assert_eq!(
+            expand_cursor_forward(vt),
+            "\x1b[1m\x1b[48;2;1;2;3ma\x1b[0m  \x1b[1m\x1b[48;2;1;2;3mb\x1b[0m\x1b[0m c"
+        );
+    }
+
+    #[test]
+    fn preview_clamps_huge_moves() {
+        assert_eq!(
+            expand_cursor_forward("\x1b[99999999999999999999C").len(),
+            4 + 1024
+        );
     }
 }
