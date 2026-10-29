@@ -2393,7 +2393,7 @@ configure_rex_init() {
 
 main() {
     echo ""
-    info "Installing tws — tmux workspace manager"
+    info "Installing tws — terminal workspace manager"
     echo ""
 
     local target
