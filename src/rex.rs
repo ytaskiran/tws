@@ -332,7 +332,29 @@ const PREVIEW_LINES: usize = 500;
 // `format` + `max_bytes` and `blob_read` if that transfer gets slow.
 pub fn capture_pane(block_id: &str) -> Option<String> {
     let vt = rex(&["capture", "-b", block_id, "--format=vt"])?;
-    Some(tail_lines(&vt, PREVIEW_LINES).to_string())
+    Some(expand_cursor_forward(tail_lines(&vt, PREVIEW_LINES)))
+}
+
+/// Rex writes a run of blank cells as `ESC[nC` (cursor forward), where tmux
+/// wrote spaces. `ansi_to_tui` drops cursor moves, so turn them into spaces.
+fn expand_cursor_forward(vt: &str) -> String {
+    let mut out = String::with_capacity(vt.len());
+    let mut rest = vt;
+    while let Some(i) = rest.find("\x1b[") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        if after.as_bytes().get(digits) == Some(&b'C') {
+            let n = after[..digits].parse().unwrap_or(1).max(1);
+            out.extend(std::iter::repeat_n(' ', n));
+            rest = &after[digits + 1..];
+        } else {
+            out.push_str("\x1b[");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn tail_lines(text: &str, n: usize) -> &str {
@@ -430,5 +452,11 @@ mod tests {
     fn preview_keeps_the_last_lines() {
         assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc");
         assert_eq!(tail_lines("a\nb", 5), "a\nb");
+    }
+
+    #[test]
+    fn preview_expands_cursor_forward_to_spaces() {
+        let vt = "a\x1b[1Cb\x1b[Cc\x1b[3C\x1b[1md\x1b[0m";
+        assert_eq!(expand_cursor_forward(vt), "a b c   \x1b[1md\x1b[0m");
     }
 }
