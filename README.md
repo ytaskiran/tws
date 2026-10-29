@@ -376,6 +376,8 @@ rex.unbind("cmd+s", "tws_open")
 rex.bind("<your key>", "tws_open")
 ```
 
+`tws.lua` also binds **Cmd+Right** to the next tab and **Cmd+Left** to the previous tab. To use other keys, unbind them the same way after the `pcall(dofile, ...)` line.
+
 ### Restore sessions after a reboot
 
 When the Rex server stops, for example after a reboot, Rex loses its sessions. [rexurrect](https://github.com/cemcatik/rexurrect) saves the sessions every 15 minutes and restores them when the Rex server starts again.
