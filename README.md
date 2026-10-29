@@ -3,7 +3,7 @@
 
 **terminal workspace manager** — organize your terminal sessions into threads. Works with [Rex](https://www.superlogical.com/rex/) and [tmux](https://github.com/tmux/tmux).
 
-<img width="960" height="602" alt="tws-demo" src="assets/demo.gif" />
+<img width="960" height="618" alt="tws-demo" src="assets/demo.gif" />
 
 tws is a terminal UI that adds a persistent organizational layer on top of your terminal. It runs on one of two backends: [Rex](https://www.superlogical.com/rex/) (the default) or [tmux](https://github.com/tmux/tmux). Terminal sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and opens them for you.
 
@@ -12,7 +12,7 @@ tws is a terminal UI that adds a persistent organizational layer on top of your 
 
 Threads are saved to `~/.config/tws/`. Sessions are real Rex windows or tmux sessions that tws finds at runtime. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
 
-<img width="2914" height="1828" alt="tws-welcome" src="assets/welcome.png" />
+<img width="2882" height="1856" alt="tws-welcome" src="assets/welcome.png" />
 
 ## Features
 
@@ -20,7 +20,7 @@ Threads are saved to `~/.config/tws/`. Sessions are real Rex windows or tmux ses
 
 The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach.
 
-<img width="2914" height="1828" alt="tws-sessions" src="assets/sessions-view.png" />
+<img width="2882" height="1856" alt="tws-sessions" src="assets/sessions-view.png" />
 
 ### Thread working directories
 
@@ -45,7 +45,7 @@ is running inside tmux).
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi, Devin CLI, OpenCode) running across all your sessions, regardless of which thread owns them. Each agent is a card with its status and harness, in three lanes: needs you, working, and quiet. A card that starts to need you gets a short sweep of light. Press `r` to rename an agent. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="2914" height="1828" alt="tws-agents" src="assets/agents-view.png" />
+<img width="2882" height="1856" alt="tws-agents" src="assets/agents-view.png" />
 
 ### Session fork (experimental)
 
