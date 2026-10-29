@@ -2,7 +2,7 @@
 name = "tws"
 version = "1.18.0"
 edition = "2024"
-description = "tmux workspace manager — organize sessions into threads"
+description = "terminal workspace manager — organize sessions into threads, on Rex or tmux"
 authors = ["Yusuf Taskiran"]
 license = "MIT"
 repository = "https://github.com/ytaskiran/tws"
