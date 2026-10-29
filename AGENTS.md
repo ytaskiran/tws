@@ -49,13 +49,13 @@ Don't use `--follow-tags` (only pushes annotated tags) or `--tags` (pushes all l
 
 ## What This Is
 
-tws is a standalone Rust TUI that organizes tmux sessions into threads. It adds a persistent layer on top of ephemeral tmux sessions:
+tws is a standalone Rust TUI that organizes terminal sessions into threads. It runs on a Rex or a tmux backend. It adds a persistent layer on top of ephemeral terminal sessions:
 
 ```
 Thread → Session(s)
 ```
 
-Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live tmux sessions that tws finds at runtime. A session name is `twsr_<thread-slug>_<label>`. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each tmux pane.
+Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live terminal sessions that tws finds at runtime: Rex windows or tmux sessions. A session name is `twsr_<thread-slug>_<label>`. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each pane.
 
 ## Architecture
 
