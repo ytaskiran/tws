@@ -1,18 +1,18 @@
 
 # tws
 
-**tmux workspace manager** — organize your tmux sessions into threads.
+**terminal workspace manager** — organize your terminal sessions into threads. Works with [Rex](https://www.superlogical.com/rex/) and [tmux](https://github.com/tmux/tmux).
 
-<img width="960" height="624" alt="tws-demo" src="https://github.com/user-attachments/assets/7b6d8503-5b65-4669-8593-e86ed77fa9e0" />
+<img width="960" height="618" alt="tws-demo" src="assets/demo.gif" />
 
-tws is a terminal UI that adds a persistent organizational layer on top of tmux. tmux sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and attaches them for you.
+tws is a terminal UI that adds a persistent organizational layer on top of your terminal. It runs on one of two backends: [Rex](https://www.superlogical.com/rex/) (the default) or [tmux](https://github.com/tmux/tmux). Terminal sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and opens them for you.
 
 - **Threads** — units of work (e.g. `auth-refactor`, `bug-1234`, `scratch`), each holding one or more sessions
-- **Sessions** — live tmux sessions, launched and attached from tws
+- **Sessions** — live terminal sessions (a Rex window or a tmux session), launched and opened from tws
 
-Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovered at runtime. Detach from a tmux session to go back to tws.
+Threads are saved to `~/.config/tws/`. Sessions are real Rex windows or tmux sessions that tws finds at runtime. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
 
-<img width="2940" height="1912" alt="tws-welcome" src="https://github.com/user-attachments/assets/023bb887-9f75-4bdd-8a84-43d9c35fb8ef" />
+<img width="2882" height="1856" alt="tws-welcome" src="assets/welcome.png" />
 
 ## Features
 
@@ -20,7 +20,7 @@ Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovere
 
 The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach.
 
-<img width="2940" height="1912" alt="tws-sessions" src="https://github.com/user-attachments/assets/cc23cebe-38c1-44f3-9f85-657284c1000e" />
+<img width="2882" height="1856" alt="tws-sessions" src="assets/sessions-view.png" />
 
 ### Thread working directories
 
@@ -45,9 +45,11 @@ is running inside tmux).
 
 Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi, Devin CLI, OpenCode) running across all your sessions, regardless of which thread owns them. Each agent is a card with its status and harness, in three lanes: needs you, working, and quiet. A card that starts to need you gets a short sweep of light. Press `r` to rename an agent. Pin frequently-used agents to numbered slots — `p` to pin, `P` to set a slot, `0`–`9` to jump to a pinned agent from anywhere.
 
-<img width="2864" height="1804" alt="tws-agents" src="assets/agents-view.png" />
+<img width="2882" height="1856" alt="tws-agents" src="assets/agents-view.png" />
 
 ### Session fork (experimental)
+
+This feature works with the tmux backend only.
 
 Press `prefix+F` in a Claude Code pane to open a **forked** copy of that
 session in a new pane on the right. The fork inherits the whole conversation.
@@ -66,6 +68,8 @@ This feature works with Claude Code only. Codex, Pi, Devin and OpenCode panes do
 forking. `codex resume` appends to the parent session instead of forking it.
 
 ### Read a pane by moving into it
+
+This feature works with the tmux backend only.
 
 An agent pane in the review state means that the agent finished and you did not
 look yet. When you attach through tws, tws clears the state. When you move into
@@ -102,6 +106,8 @@ The fixed index `89` makes a reload replace the tws entry, and it leaves your ow
 hooks at other indexes alone.
 
 ### Status bar
+
+This feature works with the tmux backend only.
 
 The tmux status bar can show your agents, so you do not need to open tws to see
 them. Each window tab shows one glyph for each agent in that window: a green `●`
@@ -200,15 +206,15 @@ Press `/` to search across all active sessions by name or path, sorted by most-r
 
 ### Recent sessions
 
-Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row.
+Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row. This feature works with the tmux backend only, because Rex does not record when you last opened a window.
 
 ### Agent detection
 
-tws scans tmux panes periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan. When the optional hooks are installed, tws also shows each agent's live status — working, waiting for you, finished and awaiting review, or idle — as a colored bar and status chip in the agents view (`v`), with a count of working/waiting agents in the status bar. A pane that goes silent for 15 minutes while claiming to work is treated as no longer working and drops to idle, so an interrupted or crashed agent does not stay marked active forever.
+tws scans the panes of each session periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan. When the optional hooks are installed, tws also shows each agent's live status — working, waiting for you, finished and awaiting review, or idle — as a colored bar and status chip in the agents view (`v`), with a count of working/waiting agents in the status bar. A pane that goes silent for 15 minutes while claiming to work is treated as no longer working and drops to idle, so an interrupted or crashed agent does not stay marked active forever.
 
 ### Importing existing sessions
 
-Already have tmux sessions running? `tws import` walks you through assigning them to threads, so that they show in the tree.
+Already have tmux sessions running? `tws import` walks you through assigning them to threads, so that they show in the tree. This command works with the tmux backend only. To copy tmux sessions into Rex, see [Copy tmux sessions into Rex](#copy-tmux-sessions-into-rex).
 
 ## Requirements
 
@@ -329,7 +335,7 @@ The mouse works in both views: point at a row to select it, and click a session 
 | `Enter` | Attach to a session, or create a new one on a thread |
 | `x` | Kill the selected session (or a thread's sessions) |
 
-Inside a session, detach with `prefix + d` to return to tws.
+With Rex, tws stays open in its own tab: go back to that tab, or press **Cmd+S** to open tws as a popup. With tmux, detach with `prefix + d` to return to tws.
 
 ## Backends
 
