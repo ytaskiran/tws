@@ -356,6 +356,17 @@ These features work only with tmux:
 
 Rex does not clear `done` when you look at the agent. The agent stays in review until its next status.
 
+### Open tws with a key
+
+Press **Cmd+S** in Rex to open tws as a popup over the tab you are in. Pick a session, and Rex shows it and the popup closes. Press `q` to close the popup without a pick. tws keeps its cursor between popups. If tws already runs in a tab, for example one where you started it yourself, the key goes to that tab and does not start a second tws. The key works when Remote Control is off.
+
+`install.sh` puts the action in `~/.config/tws/tws.lua` and adds one `pcall(dofile, ...)` line to your Rex `init.lua` after you confirm. An install writes `tws.lua` again, so set a different key in `init.lua`. Add these lines after the `pcall(dofile, ...)` line, then run `rex config reload`:
+
+```lua
+rex.unbind("cmd+s", "tws_open")
+rex.bind("<your key>", "tws_open")
+```
+
 ### Copy tmux sessions into Rex
 
 Run `extras/rex/tmux2rex.py` on the machine that runs tmux. It does a dry run and shows the `rex` commands. Add `--apply` to create the Rex sessions on the Rex server of that machine. The script restarts each Claude Code pane with `claude --resume ID --fork-session`, so your tmux sessions do not change.

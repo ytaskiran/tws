@@ -140,6 +140,9 @@ pub struct App {
     pub state: AppState,
     pub tree_state: TreeState<String>,
     pub running: bool,
+    /// Quit after the Rex app shows a session. A popup cannot follow you to
+    /// another session, so it closes, and the next key press starts a new one.
+    pub popup: bool,
     mode: Mode,
     focus: Focus,
     notes: NoteStore,
@@ -199,6 +202,7 @@ impl App {
             state,
             tree_state: TreeState::default(),
             running: true,
+            popup: false,
             mode: Mode::Normal,
             focus: Focus::Tree,
             notes: NoteStore::new(),
@@ -1990,7 +1994,7 @@ impl App {
                 // the next draw stores a new frame.
                 self.hits = None;
             }
-            Open::Shown => {}
+            Open::Shown => self.running = !self.popup,
             Open::Failed(msg) => self.set_flash(&msg),
         }
         self.do_refresh_sessions();
