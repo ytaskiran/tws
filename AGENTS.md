@@ -88,8 +88,9 @@ Both list views keep their scroll offset between frames (`components::sticky_scr
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
-| `rex.rs` | Rex backend (the default). `backend` in `config.toml` or `TWS_BACKEND` picks it. One `rex do` Lua script reads every session, window, process, title and program status. tws keeps `twsr_<thread>_<label>` names and maps them to Rex session and window IDs |
-| `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command`. Each wrapper calls `rex.rs` first when the Rex backend is on |
+| `backend.rs` | The seam between the app and the two backends. `backend` in `config.toml` or `TWS_BACKEND` picks one at startup. Each function is one `match` on tmux or Rex. `app.rs` calls only `backend::`, never `tmux::`, `rex::` or the hook-file functions of `core/status.rs`. The tmux side owns the hook files (prune, expire, ack, trigger, subagent markers). The Rex side reads only the Rex snapshot and program status |
+| `rex.rs` | Rex backend (the default). One `rex do` Lua script reads every session, window, process, title and program status. tws keeps `twsr_<thread>_<label>` names and maps them to Rex session and window IDs |
+| `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command`. They know nothing of Rex |
 | `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
 | `theme.rs` | All `Style` constants, derived from the palette; `glass` leaves the background to the terminal |

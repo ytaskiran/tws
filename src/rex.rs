@@ -5,31 +5,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use serde::Deserialize;
 
-use crate::config::Backend;
 use crate::core::model::{AgentSession, AgentStatus};
 use crate::tmux::agent_scan::{self, PaneInfo};
-
-/// `backend` in config.toml picks the backend, and `TWS_BACKEND` overrides it.
-/// `run_tui` loads the config first, so a config that does not parse stops
-/// there with its own error before this default applies.
-pub fn enabled() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        let env = std::env::var("TWS_BACKEND").map(|v| v.to_ascii_lowercase());
-        let backend = match env.as_deref() {
-            Ok("tmux") => Backend::Tmux,
-            Ok("rex") => Backend::Rex,
-            _ => crate::config::try_load_config()
-                .map(|c| c.backend)
-                .unwrap_or_default(),
-        };
-        backend == Backend::Rex
-    })
-}
 
 /// One `rex do` call reads every session, window and terminal. Separate CLI
 /// calls cost about 20 ms each, which is a visible stall at 50 calls a scan.
@@ -65,7 +46,7 @@ for _, s in ipairs(rex.call("session.list").sessions) do
       end
     end
     ws[#ws + 1] = {window_id = w.window_id, label = w.label,
-      focused_block_id = w.focused_block_id, blocks = #blocks > 0 and blocks or nil}
+      blocks = #blocks > 0 and blocks or nil}
   end
   out[#out + 1] = {session_id = s.session_id, label = s.label, windows = #ws > 0 and ws or nil}
 end
@@ -86,7 +67,6 @@ struct RexWindow {
     window_id: String,
     #[serde(default)]
     label: String,
-    focused_block_id: Option<String>,
     #[serde(default)]
     blocks: Vec<RexBlock>,
 }
@@ -287,29 +267,37 @@ pub fn rename_thread(old_slug: &str, new_slug: &str) -> bool {
     )
 }
 
-pub fn active_pane(name: &str) -> Option<String> {
-    let sessions = take()?;
-    find(&sessions, name)?.1.focused_block_id.clone()
-}
-
 pub fn select_pane(block_id: &str) -> std::io::Result<bool> {
     rex_ok(&["block", "focus", block_id])
 }
 
 /// Shows the window in the Rex app. tws keeps running: unlike tmux, the app
 /// shows it next to tws, so there is nothing to exit or attach.
-/// The error is a flash message for the user.
-pub fn show(name: &str) -> Result<(), &'static str> {
+/// The error is a flash message for the user. Rex's own text names the cause,
+/// for example Remote Control that is off, so it wins over a fixed one.
+pub fn show(name: &str) -> Result<(), String> {
     let sessions = take().ok_or("Could not read the Rex sessions")?;
     let (s, w) = find(&sessions, name).ok_or("The session is gone")?;
     // ponytail: first app client wins; pick by label when several Macs connect.
     let client = app_client().ok_or("No Rex app is connected")?;
     let sid = format!("session_id={}", s.session_id);
     let wid = format!("window_id={}", w.window_id);
-    match rex_ok(&["-C", &client, "do", "session.select", &sid, &wid]) {
-        Ok(true) => Ok(()),
-        _ => Err("Could not open it — turn on Remote Control in Rex settings"),
+    let out = command(&["-C", &client, "do", "session.select", &sid, &wid])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(error_line(&stderr)
+        .unwrap_or("Could not open it — turn on Remote Control in Rex settings")
+        .to_string())
+}
+
+/// The first line of a rex error, without the `Error: ` prefix of the CLI.
+fn error_line(stderr: &str) -> Option<&str> {
+    let line = stderr.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.strip_prefix("Error: ").unwrap_or(line))
 }
 
 fn app_client() -> Option<String> {
@@ -402,7 +390,7 @@ mod tests {
     #[test]
     fn snapshot_maps_names_and_statuses() {
         let json = r#"[{"session_id":"session:1","label":"tws","windows":[
-            {"window_id":"window:1","label":"rex-backend","focused_block_id":"block:1",
+            {"window_id":"window:1","label":"rex-backend",
              "blocks":[{"block_id":"block:1","pid":42,"title":"t","state":"blocked"},
                        {"block_id":"block:2","pid":43}]},
             {"window_id":"window:2","label":"my_tab"}]},
@@ -410,7 +398,7 @@ mod tests {
         let sessions = parse_snapshot(json).unwrap();
         let (s, w) = find(&sessions, "twsr_tws_rex-backend").unwrap();
         assert_eq!(s.session_id, "session:1");
-        assert_eq!(w.focused_block_id.as_deref(), Some("block:1"));
+        assert_eq!(w.window_id, "window:1");
         // A label with `_` is not a tws session; an empty session stays known.
         assert!(tws_name(s, &s.windows[1]).is_none());
         assert!(sessions[1].windows.is_empty());
@@ -424,6 +412,19 @@ mod tests {
             Some(("tws", "rex-backend"))
         );
         assert_eq!(split_name("twsr__main"), None);
+    }
+
+    #[test]
+    fn error_line_takes_rex_message() {
+        let stderr = "Error: Rex.app is not accepting actions. Turn on Remote Control in its Settings under Rex Server.\n";
+        assert_eq!(
+            error_line(stderr),
+            Some(
+                "Rex.app is not accepting actions. Turn on Remote Control in its Settings under Rex Server."
+            )
+        );
+        assert_eq!(error_line("\n  \n"), None);
+        assert_eq!(error_line("plain\nsecond"), Some("plain"));
     }
 
     #[test]
