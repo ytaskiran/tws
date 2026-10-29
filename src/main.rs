@@ -1,4 +1,5 @@
 mod app;
+mod backend;
 mod bar;
 mod components;
 mod config;
@@ -65,7 +66,7 @@ fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Import) if rex::enabled() => {
+        Some(Command::Import) if backend::is_rex() => {
             eprintln!(
                 "tws import works with tmux only. To copy tmux sessions into Rex, \
                  run extras/rex/tmux2rex.py."
@@ -73,7 +74,7 @@ fn main() -> std::io::Result<()> {
             std::process::exit(1);
         }
         Some(Command::Import) => import::run(),
-        Some(Command::ForkPane { .. }) if rex::enabled() => {
+        Some(Command::ForkPane { .. }) if backend::is_rex() => {
             eprintln!("tws fork-pane does not work with the Rex backend.");
             std::process::exit(1);
         }
@@ -107,24 +108,12 @@ fn ack_pane(pane_id: Option<String>) {
 
 fn run_tui() -> std::io::Result<()> {
     // First, so a config that does not parse stops here with its own error.
-    // Otherwise rex::enabled() reads it as the default backend.
+    // Otherwise backend::current() reads it as the default backend.
     let cfg = config::load_config();
     // Without this check, tws opens and then stops with a raw OS error at the
     // first session that it tries to start.
-    if !tmux::commands::installed() {
-        if rex::enabled() {
-            eprintln!(
-                "tws uses Rex, and the rex command is not on PATH. \
-                 To use tmux, set backend = \"tmux\" in ~/.config/tws/config.toml."
-            );
-        } else {
-            let hint = if cfg!(target_os = "macos") {
-                "Install it with: brew install tmux"
-            } else {
-                "Install it with your package manager, for example: sudo apt install tmux"
-            };
-            eprintln!("tws needs tmux, and tmux is not installed. {hint}");
-        }
+    if !backend::installed() {
+        eprintln!("{}", backend::missing_message());
         std::process::exit(1);
     }
     let threads = persistence::load()?;

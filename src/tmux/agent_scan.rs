@@ -15,9 +15,6 @@ pub(crate) struct PaneInfo {
 /// Scan all tmux panes for known AI agents (Claude Code, Codex, Pi, Devin, OpenCode).
 /// Only scans panes belonging to the given tws-managed session names.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
-    if crate::rex::enabled() {
-        return crate::rex::scan_agents(tws_sessions);
-    }
     if tws_sessions.is_empty() {
         return Vec::new();
     }
