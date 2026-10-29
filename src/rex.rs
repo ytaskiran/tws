@@ -143,36 +143,19 @@ static PROCESSES: Mutex<Option<String>> = Mutex::new(None);
 /// and returns false, so one missed poll does not clear the tree, the pins
 /// and the agent names.
 /// `ps` does not need the snapshot, so it runs next to `rex do` and the two
-/// waits overlap. Each one costs 30 to 200 ms. The last snapshot tells if the
-/// agent scan needs `ps`; the first refresh has none, so it runs `ps`. A miss
-/// (a first tws pane) runs it after the snapshot.
+/// waits overlap. Each one costs 30 to 200 ms. Every labeled session is a tws
+/// session, and the one that runs tws has a process, so `ps` always runs.
 pub fn refresh() -> bool {
-    let expect_panes = cached(|s| s.is_empty() || has_tws_panes(s));
-    let (sessions, mut processes) = std::thread::scope(|scope| {
-        let ps = expect_panes.then(|| scope.spawn(agent_scan::list_all_processes));
-        (take(), ps.and_then(|ps| ps.join().ok().flatten()))
+    let (sessions, processes) = std::thread::scope(|scope| {
+        let ps = scope.spawn(agent_scan::list_all_processes);
+        (take(), ps.join().ok().flatten())
     });
     let Some(sessions) = sessions else {
         return false;
     };
-    if !has_tws_panes(&sessions) {
-        processes = None;
-    } else if processes.is_none() {
-        processes = agent_scan::list_all_processes();
-    }
     *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = sessions;
     *PROCESSES.lock().unwrap_or_else(|e| e.into_inner()) = processes;
     true
-}
-
-/// True when a tws window has a block with a process: the agent scan input.
-fn has_tws_panes(sessions: &[RexSession]) -> bool {
-    sessions.iter().any(|s| {
-        tws_name(s).is_some()
-            && s.windows
-                .iter()
-                .any(|w| w.blocks.iter().any(|b| b.pid.is_some()))
-    })
 }
 
 fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
@@ -580,9 +563,6 @@ mod tests {
             "window:1"
         );
         assert_eq!(landing_window(s, None).unwrap().window_id, "window:2");
-        // Only a tws session with a process needs `ps`.
-        assert!(has_tws_panes(&sessions));
-        assert!(!has_tws_panes(&sessions[1..]));
         let statuses = statuses_from(&sessions, &HashMap::new());
         assert_eq!(statuses["block:1"].0, AgentStatus::Waiting);
         assert!(!statuses.contains_key("block:2"));

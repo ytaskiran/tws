@@ -276,9 +276,16 @@ impl AppState {
     }
 
     /// Every live session shows: in the thread that lists it, else in `other`.
-    /// A listed session that is not live stays listed, because a missed poll
-    /// returns no sessions and must not empty the threads.
+    /// A listed session that is not live leaves its thread, so a new session
+    /// with the same name does not join the old thread. An empty list removes
+    /// nothing: tmux gives one when no server runs, and then nothing is known.
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
+        if !live_tmux_sessions.is_empty() {
+            for t in &mut self.threads {
+                t.sessions
+                    .retain(|name| live_tmux_sessions.iter().any(|(live, _)| live == name));
+            }
+        }
         if !self.threads.iter().any(|t| t.id == OTHER) {
             let mut other = Thread::new("other");
             other.id = OTHER;
@@ -477,6 +484,22 @@ mod tests {
         // A second refresh does not add a second `other`.
         state.refresh_sessions(&live);
         assert_eq!(state.threads.iter().filter(|t| t.id == OTHER).count(), 1);
+    }
+
+    #[test]
+    fn refresh_sessions_drops_dead_names_but_not_on_an_empty_list() {
+        let mut state = AppState::with_sample_data();
+        state.assign_session("api", Some(0));
+        state.assign_session("web", Some(0));
+        // No server: nothing is known, so the threads keep their names.
+        state.refresh_sessions(&[]);
+        assert_eq!(state.threads[0].sessions, ["api", "web"]);
+        // "api" ended outside tws, so it leaves the thread.
+        state.refresh_sessions(&[("web".to_string(), 0)]);
+        assert_eq!(state.threads[0].sessions, ["web"]);
+        // A new "api" is not in the old thread.
+        state.refresh_sessions(&[("api".to_string(), 0), ("web".to_string(), 0)]);
+        assert_eq!(state.active_sessions[0].thread_id, OTHER);
     }
 
     #[test]

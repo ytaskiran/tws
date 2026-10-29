@@ -49,7 +49,7 @@ def launch(pane, agents):
 
 
 def main():
-    fmt = "#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_current_path}"
+    fmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_current_path}"
     rows = subprocess.run(["tmux", "list-panes", "-a", "-F", fmt], check=True, capture_output=True, text=True).stdout
     agents = claude_by_pane()
     existing = set()
@@ -57,11 +57,12 @@ def main():
         ls = json.loads(subprocess.run([REX, "ls", "--json"], check=True, capture_output=True, text=True).stdout)
         existing = {s.get("label") for s in (ls.get("sessions", ls) if isinstance(ls, dict) else ls)}
 
-    # session -> window -> [(pane_id, cwd)] in tmux order
+    # session -> window index -> (window name, [(pane_id, cwd)]) in tmux order.
+    # The key is the index: two windows can have the same name, such as zsh.
     sessions = OrderedDict()
     for line in rows.splitlines():
-        name, window, pane, cwd = line.split("\t")
-        sessions.setdefault(name, OrderedDict()).setdefault(window, []).append((pane, cwd))
+        name, index, window, pane, cwd = line.split("\t")
+        sessions.setdefault(name, OrderedDict()).setdefault(index, (window, []))[1].append((pane, cwd))
 
     for name, windows in sessions.items():
         print(f"\n# {name}")
@@ -69,7 +70,7 @@ def main():
             print("  skip: a Rex session with this label exists")
             continue
         sid = None
-        for window, panes in windows.items():
+        for window, panes in windows.values():
             (cwd, cmd), rest = launch(panes[0], agents), panes[1:]
             if sid is None:
                 r = rex("new", name, "-c", cwd, *cmd)

@@ -41,16 +41,22 @@ pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
+/// An exact session target. A bare `-t api` falls back to a prefix match, so
+/// with `api` gone it would hit `api-v2`.
+fn exact(name: &str) -> String {
+    format!("={name}")
+}
+
 pub fn kill_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["kill-session", "-t", name])
+        .args(["kill-session", "-t", &exact(name)])
         .status()?;
     Ok(status.success())
 }
 
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["rename-session", "-t", old_name, new_name])
+        .args(["rename-session", "-t", &exact(old_name), new_name])
         .status()?;
     Ok(status.success())
 }
@@ -58,7 +64,7 @@ pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
 /// Switches the current client without blocking; only works inside tmux.
 pub fn switch_client(name: &str) -> std::io::Result<bool> {
     let output = Command::new("tmux")
-        .args(["switch-client", "-t", name])
+        .args(["switch-client", "-t", &exact(name)])
         .output()?;
     Ok(output.status.success())
 }
@@ -66,14 +72,14 @@ pub fn switch_client(name: &str) -> std::io::Result<bool> {
 /// Attaches outside tmux and blocks until the user detaches.
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["attach-session", "-t", name])
+        .args(["attach-session", "-t", &exact(name)])
         .status()?;
     Ok(status.success())
 }
 
 /// Selects a window across sessions without requiring an attached client.
 pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
-    let target = format!("{}:{}", session_name, window_index);
+    let target = format!("{}:{}", exact(session_name), window_index);
     let output = Command::new("tmux")
         .args(["select-window", "-t", &target])
         .output()?;
@@ -94,7 +100,14 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
 /// successfully for an unknown target.
 pub fn active_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args(["display-message", "-p", "-t", session_name, "#{pane_id}"])
+        // A pane target: `=name` alone finds no pane, `=name:` finds the active one.
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &format!("{}:", exact(session_name)),
+            "#{pane_id}",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {

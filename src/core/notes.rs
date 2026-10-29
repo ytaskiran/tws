@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use super::model::slugify;
 use super::persistence;
 
 /// File-based note storage. Each note is a `.md` file in `~/.config/tws/notes/`.
@@ -56,8 +57,10 @@ impl NoteStore {
         let _ = fs::rename(self.note_path(old_key), self.note_path(new_key));
     }
 
+    /// A key can be the name of a session that tws did not make, with `/` or
+    /// `..` in it, so the file name is its slug. It stays in the notes folder.
     pub fn note_path(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{}.md", key))
+        self.dir.join(format!("{}.md", slugify(key)))
     }
 }
 
@@ -139,6 +142,16 @@ mod note_store_tests {
         let dir = env::temp_dir().join(format!("tws_notes_test_{}", uuid::Uuid::new_v4()));
         let store = NoteStore::with_dir(dir.clone());
         (store, dir)
+    }
+
+    #[test]
+    fn a_path_like_key_stays_in_the_notes_folder() {
+        let (store, _) = temp_store();
+        assert_eq!(store.note_path("../state"), store.dir.join("state.md"));
+        assert_eq!(store.note_path("tws/main"), store.dir.join("tws-main.md"));
+        // Keys that tws makes keep their file names.
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(store.note_path(&id), store.dir.join(format!("{id}.md")));
     }
 
     #[test]

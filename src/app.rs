@@ -22,7 +22,7 @@ use crate::core::markdown::MarkdownRenderer;
 use crate::core::model::slugify;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
-use crate::core::state::{AppState, FlatAgent, SelectedItem};
+use crate::core::state::{AppState, FlatAgent, OTHER, SelectedItem};
 use crate::core::status::AgentTrigger;
 use crate::core::workdir::{self, DirPicker};
 use crate::event::{self, Input};
@@ -1271,7 +1271,12 @@ impl App {
                     };
                 }
             }
-            SelectedItem::Thread(thread_idx) if self.state.has_active_session(thread_idx) => {
+            // `other` holds sessions that tws did not make, maybe the one that
+            // runs tws, so they are killed one at a time only.
+            SelectedItem::Thread(thread_idx)
+                if self.state.has_active_session(thread_idx)
+                    && !self.state.is_other(thread_idx) =>
+            {
                 let thread_name = self.state.threads[thread_idx].name.clone();
                 self.mode = Mode::Confirm {
                     purpose: ConfirmPurpose::KillAllSessions {
@@ -1859,12 +1864,14 @@ impl App {
                     }
                     self.notes.remove_all(&note_keys);
                     self.state.delete_thread(thread_idx);
-                    // Select the thread that slid into this position, or the one before it.
+                    // Select the thread that slid into this position, or the last
+                    // one. Not `other`: when it is empty, it has no row.
                     let new_sel = self
                         .state
                         .threads
                         .get(thread_idx)
-                        .or_else(|| self.state.threads.last())
+                        .filter(|t| t.id != OTHER)
+                        .or_else(|| self.state.threads.iter().rev().find(|t| t.id != OTHER))
                         .map(|t| vec![t.id.to_string()])
                         .unwrap_or_default();
                     self.tree_state.select(new_sel);
@@ -1874,7 +1881,12 @@ impl App {
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
-                    let _ = backend::kill_session(&session_name);
+                    // A failed kill leaves the session live, so it keeps its
+                    // thread and its note.
+                    if !matches!(backend::kill_session(&session_name), Ok(true)) {
+                        self.set_flash("Could not kill the session");
+                        return;
+                    }
                     self.notes.remove(&session_name);
                     self.state.assign_session(&session_name, None);
                     self.save_state();
@@ -1903,17 +1915,25 @@ impl App {
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
+                    let mut failed = 0;
                     for name in &names {
-                        let _ = backend::kill_session(name);
-                        self.state.assign_session(name, None);
+                        if matches!(backend::kill_session(name), Ok(true)) {
+                            self.notes.remove(name);
+                            self.state.assign_session(name, None);
+                        } else {
+                            failed += 1;
+                        }
                     }
-                    self.notes.remove_all(&names);
                     self.save_state();
                     self.do_refresh_sessions();
                     // Select the parent thread so the sidebar stays visible.
                     let thread_path = vec![self.state.threads[thread_idx].id.to_string()];
                     self.tree_state.select(thread_path);
-                    self.set_flash("All sessions killed");
+                    if failed == 0 {
+                        self.set_flash("All sessions killed");
+                    } else {
+                        self.set_flash(&format!("Could not kill {failed} session(s)"));
+                    }
                     self.sync_note_editor();
                 }
             }
