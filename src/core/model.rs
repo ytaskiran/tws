@@ -86,7 +86,8 @@ impl AgentStatus {
     }
 }
 
-/// Runtime-only. Represents an AI agent detected in a tmux pane.
+/// An AI agent detected in a tmux pane. Rebuilt on each scan; only a custom
+/// name and a pin slot outlive tws, through `UiState`, keyed by pane id.
 #[derive(Debug, Clone)]
 pub struct AgentSession {
     pub agent_type: AgentType,
@@ -96,7 +97,6 @@ pub struct AgentSession {
     pub display_name: String,
     pub renamed: bool,
     /// Pin slot 0..=9 if this agent is pinned, None otherwise.
-    /// Runtime-only, dies with the pane.
     pub pin_slot: Option<u8>,
     /// Live activity state, joined from `~/.config/tws/agents/<pane_id>`. Runtime-only.
     pub status: AgentStatus,

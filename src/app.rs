@@ -1786,6 +1786,19 @@ impl App {
         if let Mode::Input { purpose, buffer } = old_mode {
             let trimmed = buffer.trim().to_string();
             if trimmed.is_empty() {
+                // An empty agent name drops the custom name; the scan derives
+                // the default one again.
+                if let InputPurpose::RenameAgent { pane_id } = purpose
+                    && let Some(agent) = self
+                        .state
+                        .agent_sessions
+                        .iter_mut()
+                        .find(|a| a.pane_id == pane_id && a.renamed)
+                {
+                    agent.renamed = false;
+                    self.do_agent_scan();
+                    self.set_flash("Agent name reset");
+                }
                 return Ok(());
             }
             match purpose {
@@ -2214,11 +2227,14 @@ impl App {
             .all_agents_flat()
             .get(self.agent_list_cursor)
             .map(|a| a.pane_id.clone());
+        // Entries still pending had no scan to apply them yet; keep them, or
+        // a quit before the first scan erases them.
         let pins: Vec<(String, u8)> = self
             .state
             .agent_sessions
             .iter()
             .filter_map(|a| a.pin_slot.map(|s| (a.pane_id.clone(), s)))
+            .chain(self.pending_pin_restore.iter().cloned())
             .collect();
         let names: Vec<(String, String)> = self
             .state
@@ -2226,6 +2242,7 @@ impl App {
             .iter()
             .filter(|a| a.renamed)
             .map(|a| (a.pane_id.clone(), a.display_name.clone()))
+            .chain(self.pending_name_restore.iter().cloned())
             .collect();
         let ui = persistence::UiState {
             open_nodes,
