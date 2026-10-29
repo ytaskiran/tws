@@ -2107,7 +2107,7 @@ configure_backend() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0 plan_backend=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0 plan_rexurrect=0 plan_backend=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2280,6 +2280,17 @@ scan_plan() {
         plan_rex_init=1
     fi
 
+    # tws.lua loads the restore, so it needs that file. An init.lua without the
+    # dofile line gets it from plan_rex_init in the same plan. An existing
+    # REXURRECT_LUA means the user chose already: an empty one keeps it off.
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null && [ -f "$REX_LUA" ] && [ ! -e "$REXURRECT_LUA" ]; then
+        if grep -qF "auto-restore" "$REX_INIT" 2>/dev/null; then
+            plan_notes+=("rexurrect restore — $(tilde "$REX_INIT") already runs rexurrect auto-restore")
+        else
+            plan_rexurrect=1
+        fi
+    fi
+
     local current
     current="$(config_backend)"
     if [ "${current:-rex}" != "$backend_value" ]; then plan_backend=1; fi
@@ -2322,6 +2333,9 @@ print_plan() {
             if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
         fi
         if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (cmd+s)" "$(tilde "$REX_INIT")"; fi
+        if [ "$plan_rexurrect" -eq 1 ]; then
+            plan_row "restore Rex sessions at start" "$(rexurrect_bin >/dev/null || printf 'install rexurrect %s, ' "$REXURRECT_VERSION")autosave, $(tilde "$REXURRECT_LUA")"
+        fi
     fi
 
     if [ "${#plan_notes[@]}" -gt 0 ]; then
@@ -2341,7 +2355,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_backend + plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]
+    [ $((plan_backend + plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init + plan_rexurrect)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2402,6 +2416,7 @@ apply_plan() {
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
     if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
+    if [ "$plan_rexurrect" -eq 1 ]; then configure_rexurrect; fi
     if [ "$plan_rex_init" -eq 1 ]; then configure_rex_init; fi
 }
 
@@ -2410,7 +2425,7 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_backend + plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]; then
+    if [ $((plan_backend + plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init + plan_rexurrect)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
@@ -2435,6 +2450,12 @@ print_manual_steps() {
     if [ "$plan_rex_init" -eq 1 ]; then
         echo "  In $(tilde "$REX_INIT"), then run rex config reload:"
         echo "    $REX_DOFILE_LINE"
+    fi
+    if [ "$plan_rexurrect" -eq 1 ]; then
+        echo "  To restore the Rex sessions after a reboot (https://github.com/cemcatik/rexurrect):"
+        echo "    Install rexurrect $REXURRECT_VERSION, then run:"
+        echo "    rexurrect autosave install"
+        echo "    rexurrect auto-restore --print-hook > $(tilde "$REXURRECT_LUA")"
     fi
 }
 
@@ -2490,6 +2511,88 @@ configure_rex_init() {
     fi
 }
 
+# --- rexurrect: restore the Rex sessions after a reboot ---
+
+# The installer runs the code of this release, so change the version and the
+# checksum only after a review of the new release. The installer then checks
+# the checksum of each binary that it downloads.
+REXURRECT_VERSION="0.2.1"
+REXURRECT_INSTALLER="https://github.com/cemcatik/rexurrect/releases/download/v$REXURRECT_VERSION/rexurrect-installer.sh"
+REXURRECT_INSTALLER_SHA256="de339760d139194bb3a725f1c0367667ab2f22bd2f0607efbcd8bc118f090796"
+# tws.lua loads this file. Only the plan step and refresh_rexurrect_lua write it.
+REXURRECT_LUA="$HOME/.config/tws/rexurrect.lua"
+
+rexurrect_bin() {
+    command -v rexurrect 2>/dev/null || { [ -x "$INSTALL_DIR/rexurrect" ] && printf '%s\n' "$INSTALL_DIR/rexurrect"; }
+}
+
+# shasum is not on every Linux, and sha256sum is not on macOS.
+sha256_of() {
+    if command -v shasum &>/dev/null; then shasum -a 256 "$1"; else sha256sum "$1"; fi | cut -d' ' -f1
+}
+
+# rexurrect prints the line with its path, state directory and config file
+# pinned, because the Rex server does not have the environment of the shell.
+# A temp file and mv, so a failure leaves the old file.
+write_rexurrect_lua() {
+    local hook
+    hook="$("$1" auto-restore --print-hook)" || return 1
+    mkdir -p "$(dirname "$REXURRECT_LUA")" \
+        && printf '%s\n%s\n' "-- Written by tws install.sh. To turn off the restore, make this file empty. Do not delete it." "$hook" > "$REXURRECT_LUA.tmp" \
+        && mv "$REXURRECT_LUA.tmp" "$REXURRECT_LUA"
+}
+
+# Each install writes the line again, because a rexurrect upgrade can change
+# it. A file without auto-restore is the user's choice, so it stays.
+refresh_rexurrect_lua() {
+    local bin
+    grep -q "auto-restore" "$REXURRECT_LUA" 2>/dev/null || return 0
+    if ! bin="$(rexurrect_bin)" || ! write_rexurrect_lua "$bin"; then
+        warn "Could not update $(tilde "$REXURRECT_LUA") — it keeps the old rexurrect line"
+    fi
+}
+
+# Unmanaged: the binary goes to INSTALL_DIR, and the installer edits no shell file.
+install_rexurrect() {
+    local tmp status=1
+    tmp="$(mktemp)"
+    if ! curl --proto '=https' --tlsv1.2 -fsSL "$REXURRECT_INSTALLER" -o "$tmp"; then
+        warn "Could not download the rexurrect installer"
+    elif [ "$(sha256_of "$tmp")" != "$REXURRECT_INSTALLER_SHA256" ]; then
+        warn "The rexurrect installer does not match its pinned checksum — not running it"
+    elif ! REXURRECT_UNMANAGED_INSTALL="$INSTALL_DIR" sh "$tmp" >/dev/null; then
+        warn "The rexurrect installer failed"
+    else
+        status=0
+    fi
+    rm -f "$tmp"
+    return "$status"
+}
+
+# The plan step. rexurrect restores one time for each server start, so the
+# reload here and later reloads restore nothing into the server that runs now.
+configure_rexurrect() {
+    local bin
+    if ! rexurrect_bin >/dev/null; then
+        info "Installing rexurrect $REXURRECT_VERSION..."
+        install_rexurrect || { warn "Skipping the restore of Rex sessions"; return 0; }
+    fi
+    if ! bin="$(rexurrect_bin)"; then
+        warn "rexurrect is not on PATH or in $(tilde "$INSTALL_DIR") — skipping the restore of Rex sessions"
+        return 0
+    fi
+    if ! "$bin" autosave install >/dev/null; then
+        warn "rexurrect autosave install failed — skipping the restore of Rex sessions"
+        return 0
+    fi
+    if ! write_rexurrect_lua "$bin"; then
+        warn "Could not write $(tilde "$REXURRECT_LUA") — skipping the restore of Rex sessions"
+        return 0
+    fi
+    rex config reload &>/dev/null || true
+    ok "rexurrect saves the Rex sessions every 15 minutes and restores them when Rex starts"
+}
+
 # --- Main ---
 
 main() {
@@ -2509,7 +2612,10 @@ main() {
         if tmux_server_runs; then tmux_live=1; fi
         if confirm_default_conf; then install_default_conf; fi
     fi
-    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null; then install_rex_lua; fi
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null; then
+        install_rex_lua
+        refresh_rexurrect_lua
+    fi
 
     scan_plan
     print_plan

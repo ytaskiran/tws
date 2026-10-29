@@ -376,6 +376,20 @@ rex.unbind("cmd+s", "tws_open")
 rex.bind("<your key>", "tws_open")
 ```
 
+### Restore sessions after a reboot
+
+When the Rex server stops, for example after a reboot, Rex loses its sessions. [rexurrect](https://github.com/cemcatik/rexurrect) saves the sessions every 15 minutes and restores them when the Rex server starts again.
+
+`install.sh` adds this to the plan when your Rex config does not already run rexurrect. After you confirm, the installer:
+
+1. Installs rexurrect 0.2.1 in `~/.local/bin` from its GitHub release, if `rexurrect` is not on your `PATH`. The installer script must match a SHA-256 checksum in `install.sh`, or it does not run.
+2. Runs `rexurrect autosave install`.
+3. Writes the line from `rexurrect auto-restore --print-hook` to `~/.config/tws/rexurrect.lua`. `tws.lua` loads this file.
+
+Each install writes the line again with the rexurrect that you have now, so a rexurrect upgrade gets the correct line. If this fails, the old file stays and the installer shows a warning.
+
+To turn off the restore, make `~/.config/tws/rexurrect.lua` empty and run `rexurrect autosave uninstall`. Do not delete the file: the next install then asks again.
+
 ### Copy tmux sessions into Rex
 
 Run `extras/rex/tmux2rex.py` on the machine that runs tmux. It does a dry run and shows the `rex` commands. Add `--apply` to create the Rex sessions on the Rex server of that machine. The script restarts each Claude Code pane with `claude --resume ID --fork-session`, so your tmux sessions do not change.
