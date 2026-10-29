@@ -35,9 +35,12 @@ for _, s in ipairs(rex.call("session.list").sessions) do
         local p = rex.block.call(T, "process", a)
         local t = rex.block.call(T, "title", a)
         local st = rex.block.call(T, "program_status", a)
+        -- The top rank picks the state; in a tie the newest report gives `at`,
+        -- so a new subagent `error` after a seen `done` shows again.
         local state, at
         for _, r in ipairs(st and st.records or {}) do
-          if state == nil or (RANK[r.state] or 1) > (RANK[state] or 1) then
+          local rank, top = RANK[r.state] or 1, RANK[state] or 1
+          if state == nil or rank > top or (rank == top and (r.updated_at or "") > (at or "")) then
             state, at = r.state, r.updated_at
           end
         end
@@ -450,7 +453,15 @@ pub fn mark_seen(name: &str, pane: Option<&str>) {
     let Some(sessions) = take() else { return };
     let mut seen = load_seen();
     mark_seen_in(&sessions, name, pane, &mut seen);
-    let _ = std::fs::write(seen_path(), format_seen(&seen));
+    let _ = save_seen(&seen_path(), &seen);
+}
+
+/// Atomic: the popup and another tws can read the file while this one writes.
+fn save_seen(path: &Path, seen: &HashMap<String, String>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    crate::core::status::write_atomic(path, &format_seen(seen))
 }
 
 /// `pane` is the agent that you picked; without it, the app lands on the
@@ -639,5 +650,17 @@ mod tests {
             ("block:2".to_string(), "t2".to_string()),
         ]);
         assert_eq!(parse_seen(&format_seen(&seen)), seen);
+    }
+
+    #[test]
+    fn saving_seen_makes_the_folder_and_replaces_the_file() {
+        let dir = std::env::temp_dir().join(format!("tws-seen-{}", std::process::id()));
+        let path = dir.join("tws").join("rex-seen");
+        let first = HashMap::from([("block:1".to_string(), "t1".to_string())]);
+        save_seen(&path, &first).unwrap();
+        let second = HashMap::from([("block:2".to_string(), "t2".to_string())]);
+        save_seen(&path, &second).unwrap();
+        assert_eq!(parse_seen(&std::fs::read_to_string(&path).unwrap()), second);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

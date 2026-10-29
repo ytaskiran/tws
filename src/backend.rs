@@ -165,10 +165,11 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
         // Rex keeps `done` until the program reports again, so tws remembers
         // that you saw it.
         Backend::Rex => {
-            let pane = target.map(|(_, block_id)| block_id);
-            if let Some(block_id) = pane {
-                let _ = rex::select_pane(block_id);
-            }
+            // A pane that did not get the focus is not where you land, so the
+            // mark goes to the focused pane.
+            let pane = target
+                .map(|(_, block_id)| block_id)
+                .filter(|block_id| matches!(rex::select_pane(block_id), Ok(true)));
             match rex::show(name) {
                 Ok(()) => {
                     rex::mark_seen(name, pane);
