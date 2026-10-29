@@ -272,16 +272,16 @@ pub fn agents(session_names: &[String]) -> Vec<AgentSession> {
     }
 }
 
-/// Recount the running subagents: tmux reads the hook markers, Rex reads the
-/// child records of the last snapshot.
+/// Recount the running subagents from the tmux hook markers. Under Rex the
+/// agent scan sets the counts from the snapshot, which changes only on a
+/// refresh, so there is nothing to recount.
 pub fn recount_subagents(agents: &mut [AgentSession]) {
-    match current() {
-        Backend::Tmux => status::apply_subagent_counts(
+    if current() == Backend::Tmux {
+        status::apply_subagent_counts(
             agents,
             &status::subagents_dir(),
             crate::components::agent_meta::now(),
-        ),
-        Backend::Rex => rex::apply_subagent_counts(agents),
+        );
     }
 }
 
