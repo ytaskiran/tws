@@ -52,7 +52,7 @@ fn rows(state: &AppState) -> Vec<Row<'_>> {
             .filter(|s| s.thread_id == thread.id)
             .collect();
         if sessions.is_empty() {
-            // An empty Other is not a thread the user made, so it has no row.
+            // An empty `other` is not a thread the user made, so it has no row.
             if thread.id != OTHER {
                 idle.push(Row::IdleThread(tpath, thread));
             }

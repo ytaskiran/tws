@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use super::model::{AgentSession, Session, Thread};
 
-/// The ID of Other: the group of live sessions that no thread lists. It is
+/// The ID of `other`: the group of live sessions that no thread lists. It is
 /// the last thread, and it is never saved.
 pub const OTHER: Uuid = Uuid::nil();
 
@@ -65,7 +65,7 @@ impl AppState {
         }
     }
 
-    /// A new thread goes before Other, so Other stays last.
+    /// A new thread goes before `other`, so `other` stays last.
     pub fn add_thread(&mut self, name: String) -> usize {
         let idx = self
             .threads
@@ -80,7 +80,7 @@ impl AppState {
         self.threads.get(thread_idx).is_some_and(|t| t.id == OTHER)
     }
 
-    /// The threads to save: all except Other.
+    /// The threads to save: all except `other`.
     pub fn saved_threads(&self) -> Vec<Thread> {
         self.threads
             .iter()
@@ -89,7 +89,7 @@ impl AppState {
             .collect()
     }
 
-    /// Puts the session `name` in the thread at `thread_idx`. Other, or no
+    /// Puts the session `name` in the thread at `thread_idx`. `other`, or no
     /// thread, removes it from every list.
     pub fn assign_session(&mut self, name: &str, thread_idx: Option<usize>) {
         for t in &mut self.threads {
@@ -275,12 +275,12 @@ impl AppState {
             .is_some_and(|t| self.active_sessions.iter().any(|s| s.thread_id == t.id))
     }
 
-    /// Every live session shows: in the thread that lists it, else in Other.
+    /// Every live session shows: in the thread that lists it, else in `other`.
     /// A listed session that is not live stays listed, because a missed poll
     /// returns no sessions and must not empty the threads.
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
         if !self.threads.iter().any(|t| t.id == OTHER) {
-            let mut other = Thread::new("Other");
+            let mut other = Thread::new("other");
             other.id = OTHER;
             self.threads.push(other);
         }
@@ -469,12 +469,12 @@ mod tests {
         assert_eq!(state.active_sessions[0].display_name, "bugfix");
         assert_eq!(state.active_sessions[0].thread_id, state.threads[0].id);
         assert_eq!(state.active_sessions[2].thread_id, OTHER);
-        // Other is last, never saved, and a new thread goes before it.
+        // `other` is last, never saved, and a new thread goes before it.
         assert!(state.is_other(state.threads.len() - 1));
         assert!(state.saved_threads().iter().all(|t| t.id != OTHER));
         let idx = state.add_thread("New".into());
         assert!(state.is_other(idx + 1));
-        // A second refresh does not add a second Other.
+        // A second refresh does not add a second `other`.
         state.refresh_sessions(&live);
         assert_eq!(state.threads.iter().filter(|t| t.id == OTHER).count(), 1);
     }

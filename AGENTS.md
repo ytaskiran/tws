@@ -55,7 +55,7 @@ tws is a standalone Rust TUI that organizes terminal sessions into threads. It r
 Thread → Session(s)
 ```
 
-Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live terminal sessions that tws finds at runtime: Rex sessions or tmux sessions. A session name is the slug of its label, with no thread part. Each thread lists the names of its sessions (`Thread.sessions`); a live session that no thread lists goes to Other, a thread with the nil UUID (`state::OTHER`) that is always last and never saved. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each pane.
+Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live terminal sessions that tws finds at runtime: Rex sessions or tmux sessions. A session name is the slug of its label, with no thread part. Each thread lists the names of its sessions (`Thread.sessions`); a live session that no thread lists goes to `other`, a thread with the nil UUID (`state::OTHER`) that is always last and never saved. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each pane.
 
 ## Architecture
 

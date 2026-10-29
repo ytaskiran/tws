@@ -10,7 +10,7 @@ tws is a terminal UI that adds a persistent organizational layer on top of your 
 - **Threads** — units of work (e.g. `auth-refactor`, `bug-1234`, `scratch`), each holding one or more sessions
 - **Sessions** — live terminal sessions (a Rex session or a tmux session), launched and opened from tws
 
-Threads are saved to `~/.config/tws/`. Sessions are real Rex sessions or tmux sessions that tws finds at runtime. tws shows every session. A session that no thread holds shows under **Other**, and `m` moves it into a thread. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
+Threads are saved to `~/.config/tws/`. Sessions are real Rex sessions or tmux sessions that tws finds at runtime. tws shows every session. A session that no thread holds shows under **other**, and `m` moves it into a thread. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
 
 <img width="2882" height="1856" alt="tws-welcome" src="assets/welcome.png" />
 
@@ -214,7 +214,7 @@ tws scans the panes of each session periodically and identifies running AI codin
 
 ### Existing sessions
 
-tws shows the sessions that you already have under **Other**. Select one and press `m` to move it into a thread. A move changes only `state.json`; the session keeps its name. To copy tmux sessions into Rex, see [Copy tmux sessions into Rex](#copy-tmux-sessions-into-rex).
+tws shows the sessions that you already have under **other**. Select one and press `m` to move it into a thread. A move changes only `state.json`; the session keeps its name. To copy tmux sessions into Rex, see [Copy tmux sessions into Rex](#copy-tmux-sessions-into-rex).
 
 ## Requirements
 

@@ -16,7 +16,7 @@ pub struct Thread {
     #[serde(default)]
     pub working_dir: Option<PathBuf>,
     /// The names of the live sessions that belong to this thread. A session
-    /// that no thread lists shows under Other.
+    /// that no thread lists shows under `other`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<String>,
 }
