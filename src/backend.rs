@@ -144,8 +144,9 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
             // Attaching is acknowledgment of the pane you land on, and only that
             // pane: a session can hold several agents, and seeing one says nothing
             // about its siblings. When the caller picked a pane we use it;
-            // otherwise we ask tmux which pane the client will land on. The
-            // refresh after the open reloads the file into memory.
+            // otherwise we ask tmux which pane the client will land on. When tws
+            // keeps running (an attach outside tmux), the refresh after the open
+            // reloads the file into memory.
             let landing = match target {
                 Some((_, pane_id)) => Some(pane_id.to_string()),
                 None => tmux::active_pane(name),
