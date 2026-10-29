@@ -35,17 +35,15 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
         return Vec::new();
     }
 
-    match_panes(&panes)
+    match_panes(&panes, list_all_processes().as_deref())
 }
 
-/// The process search for panes from either backend.
-pub(crate) fn match_panes(panes: &[PaneInfo]) -> Vec<AgentSession> {
-    if panes.is_empty() {
-        return Vec::new();
-    }
-    match list_all_processes() {
-        Some(raw) => match_agents(panes, &parse_processes(&raw)),
-        None => Vec::new(),
+/// The process search for panes from either backend. `processes` is the
+/// output of `list_all_processes`.
+pub(crate) fn match_panes(panes: &[PaneInfo], processes: Option<&str>) -> Vec<AgentSession> {
+    match processes {
+        Some(raw) if !panes.is_empty() => match_agents(panes, &parse_processes(raw)),
+        _ => Vec::new(),
     }
 }
 
@@ -67,7 +65,7 @@ fn list_all_panes() -> Option<String> {
     }
 }
 
-fn list_all_processes() -> Option<String> {
+pub(crate) fn list_all_processes() -> Option<String> {
     let output = Command::new("ps")
         .args(["-e", "-ww", "-o", "pid,ppid,command"])
         .output()

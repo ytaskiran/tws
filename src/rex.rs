@@ -129,17 +129,42 @@ fn take() -> Option<Vec<RexSession>> {
 /// load of one refresh all read it, so a refresh costs one `rex do` call.
 static CACHE: Mutex<Vec<RexSession>> = Mutex::new(Vec::new());
 
+/// The `ps` output of the last refresh, for the agent scan.
+static PROCESSES: Mutex<Option<String>> = Mutex::new(None);
+
 /// Takes a new snapshot for the readers. On a failure it keeps the last one
 /// and returns false, so one missed poll does not clear the tree, the pins
 /// and the agent names.
+/// `ps` does not need the snapshot, so it runs next to `rex do` and the two
+/// waits overlap. Each one costs 30 to 200 ms. The last snapshot tells if the
+/// agent scan needs `ps`; the first refresh has none, so it runs `ps`. A miss
+/// (a first tws pane) runs it after the snapshot.
 pub fn refresh() -> bool {
-    match take() {
-        Some(sessions) => {
-            *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = sessions;
-            true
-        }
-        None => false,
+    let expect_panes = cached(|s| s.is_empty() || has_tws_panes(s));
+    let (sessions, mut processes) = std::thread::scope(|scope| {
+        let ps = expect_panes.then(|| scope.spawn(agent_scan::list_all_processes));
+        (take(), ps.and_then(|ps| ps.join().ok().flatten()))
+    });
+    let Some(sessions) = sessions else {
+        return false;
+    };
+    if !has_tws_panes(&sessions) {
+        processes = None;
+    } else if processes.is_none() {
+        processes = agent_scan::list_all_processes();
     }
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = sessions;
+    *PROCESSES.lock().unwrap_or_else(|e| e.into_inner()) = processes;
+    true
+}
+
+/// True when a tws window has a block with a process: the agent scan input.
+fn has_tws_panes(sessions: &[RexSession]) -> bool {
+    sessions.iter().any(|s| {
+        s.windows
+            .iter()
+            .any(|w| tws_name(s, w).is_some() && w.blocks.iter().any(|b| b.pid.is_some()))
+    })
 }
 
 fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
@@ -171,11 +196,8 @@ fn find<'a>(sessions: &'a [RexSession], name: &str) -> Option<(&'a RexSession, &
     })
 }
 
-/// A PATH lookup, not a `rex --help` run: the open-tws key starts tws on each
-/// press, and the run costs about 20 ms of that start.
 pub fn installed() -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rex").is_file()))
+    crate::core::on_path("rex")
 }
 
 /// Rex has no last-attached time, so the recent bar stays empty.
@@ -285,13 +307,23 @@ pub fn select_pane(block_id: &str) -> std::io::Result<bool> {
 /// shows it next to tws, so there is nothing to exit or attach.
 /// The error is a flash message for the user. Rex's own text names the cause,
 /// for example Remote Control that is off, so it wins over a fixed one.
+/// The last snapshot first: it is what you picked from, and a window closed
+/// since then makes `session.select` fail with its own error. A window that
+/// tws made after that snapshot (a launch) needs a new one.
 pub fn show(name: &str) -> Result<(), String> {
-    let sessions = take().ok_or("Could not read the Rex sessions")?;
-    let (s, w) = find(&sessions, name).ok_or("The session is gone")?;
+    let ids = |sessions: &[RexSession]| {
+        find(sessions, name).map(|(s, w)| (s.session_id.clone(), w.window_id.clone()))
+    };
+    let (session_id, window_id) = match cached(ids) {
+        Some(found) => found,
+        None => {
+            ids(&take().ok_or("Could not read the Rex sessions")?).ok_or("The session is gone")?
+        }
+    };
     // ponytail: first app client wins; pick by label when several Macs connect.
     let client = app_client().ok_or("No Rex app is connected")?;
-    let sid = format!("session_id={}", s.session_id);
-    let wid = format!("window_id={}", w.window_id);
+    let sid = format!("session_id={session_id}");
+    let wid = format!("window_id={window_id}");
     let out = command(&["-C", &client, "do", "session.select", &sid, &wid])
         .output()
         .map_err(|e| e.to_string())?;
@@ -414,7 +446,8 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
         }
         panes
     });
-    agent_scan::match_panes(&panes)
+    let processes = PROCESSES.lock().unwrap_or_else(|e| e.into_inner());
+    agent_scan::match_panes(&panes, processes.as_deref())
 }
 
 /// Program status (OSC 7501) replaces the hook files under Rex. Only agents
@@ -547,6 +580,9 @@ mod tests {
         // A label with `_` is not a tws session; an empty session stays known.
         assert!(tws_name(s, &s.windows[1]).is_none());
         assert!(sessions[1].windows.is_empty());
+        // Only a tws window with a process needs `ps`.
+        assert!(has_tws_panes(&sessions));
+        assert!(!has_tws_panes(&sessions[1..]));
         let statuses = statuses_from(&sessions, &HashMap::new());
         assert_eq!(statuses["block:1"].0, AgentStatus::Waiting);
         assert!(!statuses.contains_key("block:2"));

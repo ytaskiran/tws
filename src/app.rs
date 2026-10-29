@@ -1997,7 +1997,10 @@ impl App {
             Open::Shown => self.running = !self.popup,
             Open::Failed(msg) => self.set_flash(&msg),
         }
-        self.do_refresh_sessions();
+        // tws exits before it draws again, so a refresh is only a wait.
+        if self.running {
+            self.do_refresh_sessions();
+        }
         Ok(())
     }
 
