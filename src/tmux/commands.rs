@@ -1,35 +1,12 @@
 use std::path::Path;
 use std::process::Command;
 
-/// A session tws owns: every thread session starts with `twsr_`.
-pub fn is_managed(name: &str) -> bool {
-    name.starts_with("twsr_")
-}
-
 /// False when tmux cannot start at all, for example when it is not installed.
 pub fn installed() -> bool {
     Command::new("tmux").arg("-V").output().is_ok()
 }
 
-pub fn list_sessions() -> Vec<String> {
-    let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
+pub fn list_sessions_with_timestamps() -> Vec<(String, i64)> {
     let output = Command::new("tmux")
         .args([
             "list-sessions",
@@ -45,9 +22,6 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
                 .lines()
                 .filter_map(|line| {
                     let (name, ts_str) = line.split_once('\t')?;
-                    if !is_managed(name) {
-                        return None;
-                    }
                     let ts = ts_str.parse::<i64>().unwrap_or(0);
                     Some((name.to_string(), ts))
                 })
@@ -67,16 +41,22 @@ pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
+/// An exact session target. A bare `-t api` falls back to a prefix match, so
+/// with `api` gone it would hit `api-v2`.
+fn exact(name: &str) -> String {
+    format!("={name}")
+}
+
 pub fn kill_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["kill-session", "-t", name])
+        .args(["kill-session", "-t", &exact(name)])
         .status()?;
     Ok(status.success())
 }
 
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["rename-session", "-t", old_name, new_name])
+        .args(["rename-session", "-t", &exact(old_name), new_name])
         .status()?;
     Ok(status.success())
 }
@@ -84,7 +64,7 @@ pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
 /// Switches the current client without blocking; only works inside tmux.
 pub fn switch_client(name: &str) -> std::io::Result<bool> {
     let output = Command::new("tmux")
-        .args(["switch-client", "-t", name])
+        .args(["switch-client", "-t", &exact(name)])
         .output()?;
     Ok(output.status.success())
 }
@@ -92,14 +72,14 @@ pub fn switch_client(name: &str) -> std::io::Result<bool> {
 /// Attaches outside tmux and blocks until the user detaches.
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["attach-session", "-t", name])
+        .args(["attach-session", "-t", &exact(name)])
         .status()?;
     Ok(status.success())
 }
 
 /// Selects a window across sessions without requiring an attached client.
 pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
-    let target = format!("{}:{}", session_name, window_index);
+    let target = format!("{}:{}", exact(session_name), window_index);
     let output = Command::new("tmux")
         .args(["select-window", "-t", &target])
         .output()?;
@@ -120,7 +100,14 @@ pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
 /// successfully for an unknown target.
 pub fn active_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args(["display-message", "-p", "-t", session_name, "#{pane_id}"])
+        // A pane target: `=name` alone finds no pane, `=name:` finds the active one.
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &format!("{}:", exact(session_name)),
+            "#{pane_id}",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -155,16 +142,4 @@ pub fn capture_pane(pane_id: &str) -> Option<String> {
 
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_thread_sessions_are_managed() {
-        assert!(is_managed("twsr_api_main"));
-        assert!(!is_managed("tws_work_api_main"));
-        assert!(!is_managed("scratch"));
-    }
 }

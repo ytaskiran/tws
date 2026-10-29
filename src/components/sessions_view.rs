@@ -15,7 +15,7 @@ use ratatui::widgets::Paragraph;
 
 use super::agent_meta;
 use crate::core::model::{AgentSession, AgentStatus, Session, Thread};
-use crate::core::state::AppState;
+use crate::core::state::{AppState, OTHER};
 use crate::core::status::status_glyph;
 use crate::core::workdir::shorten_home;
 use crate::theme::Theme;
@@ -52,7 +52,10 @@ fn rows(state: &AppState) -> Vec<Row<'_>> {
             .filter(|s| s.thread_id == thread.id)
             .collect();
         if sessions.is_empty() {
-            idle.push(Row::IdleThread(tpath, thread));
+            // An empty `other` is not a thread the user made, so it has no row.
+            if thread.id != OTHER {
+                idle.push(Row::IdleThread(tpath, thread));
+            }
             continue;
         }
         out.push(Row::Thread(tpath.clone(), thread));
@@ -273,6 +276,7 @@ mod tests {
             name: name.into(),
             description: None,
             working_dir: None,
+            sessions: Vec::new(),
         }
     }
 

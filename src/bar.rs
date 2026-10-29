@@ -10,7 +10,6 @@ use ratatui::style::Color;
 use crate::config;
 use crate::config::palette::Palette;
 use crate::core::model::{AgentStatus, Thread};
-use crate::core::state::AppState;
 use crate::core::{persistence, status};
 
 /// Prints the glyphs of the agent panes in one window. tmux gives the panes
@@ -32,20 +31,13 @@ pub fn session_label(session_name: &str) {
 /// tmux reads `#` in job output as the start of a format, so each `#` in a
 /// name is doubled.
 fn label_for(threads: Vec<Thread>, session_name: &str) -> String {
-    let mut state = AppState {
-        threads,
-        active_sessions: Vec::new(),
-        agent_sessions: Vec::new(),
-    };
-    state.refresh_sessions(&[(session_name.to_string(), 0)]);
-    let label = state
-        .active_sessions
-        .first()
-        .and_then(|s| {
-            let thread = state.threads.iter().find(|t| t.id == s.thread_id)?;
-            Some(format!("{} › {}", thread.name, s.display_name))
-        })
-        .unwrap_or_else(|| session_name.to_string());
+    let label = threads
+        .iter()
+        .find(|t| t.sessions.iter().any(|s| s == session_name))
+        .map_or_else(
+            || session_name.to_string(),
+            |t| format!("{} › {session_name}", t.name),
+        );
     label.replace('#', "##")
 }
 
@@ -305,14 +297,17 @@ mod tests {
         assert_eq!(hex(Color::Rgb(0x82, 0xb4, 0x02)), "#82b402");
     }
 
-    fn threads(names: &[&str]) -> Vec<Thread> {
-        names.iter().map(|n| Thread::new(*n)).collect()
+    /// One thread that lists one session.
+    fn threads(name: &str, session: &str) -> Vec<Thread> {
+        let mut t = Thread::new(name);
+        t.sessions.push(session.to_string());
+        vec![t]
     }
 
     #[test]
     fn where_thread_and_session() {
         assert_eq!(
-            label_for(threads(&["tws"]), "twsr_tws_status-bar"),
+            label_for(threads("tws", "status-bar"), "status-bar"),
             "tws › status-bar"
         );
     }
@@ -325,7 +320,7 @@ mod tests {
     #[test]
     fn where_escapes_the_tmux_format_character() {
         assert_eq!(
-            label_for(threads(&["C# work"]), "twsr_c-work_main"),
+            label_for(threads("C# work", "main"), "main"),
             "C## work › main"
         );
         assert_eq!(label_for(Vec::new(), "a#[fg=red]"), "a##[fg=red]");

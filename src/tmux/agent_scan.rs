@@ -365,10 +365,10 @@ mod tests {
 
     #[test]
     fn parse_panes_basic() {
-        let raw = "twsr_dev\t0\t%0\t12345\tsome title\ntwsr_dev\t1\t%1\t12346\t\n";
+        let raw = "dev\t0\t%0\t12345\tsome title\ndev\t1\t%1\t12346\t\n";
         let panes = parse_panes(raw);
         assert_eq!(panes.len(), 2);
-        assert_eq!(panes[0].session_name, "twsr_dev");
+        assert_eq!(panes[0].session_name, "dev");
         assert_eq!(panes[0].window_index, 0);
         assert_eq!(panes[0].pane_id, "%0");
         assert_eq!(panes[0].pane_pid, 12345);
@@ -379,7 +379,7 @@ mod tests {
 
     fn pane(pane_id: &str, pane_pid: u32) -> PaneInfo {
         PaneInfo {
-            session_name: "twsr_dev".into(),
+            session_name: "dev".into(),
             window_index: 0,
             pane_id: pane_id.into(),
             pane_pid,
@@ -739,7 +739,7 @@ mod tests {
         let agents = match_agents(&panes, &t);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_type, AgentType::ClaudeCode);
-        assert_eq!(agents[0].tmux_session_name, "twsr_dev");
+        assert_eq!(agents[0].tmux_session_name, "dev");
         assert_eq!(agents[0].pane_id, "%0");
         assert_eq!(agents[0].display_name, "fix-bug");
         assert!(!agents[0].renamed);

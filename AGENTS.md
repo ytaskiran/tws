@@ -55,7 +55,7 @@ tws is a standalone Rust TUI that organizes terminal sessions into threads. It r
 Thread → Session(s)
 ```
 
-Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live terminal sessions that tws finds at runtime: Rex windows or tmux sessions. A session name is `twsr_<thread-slug>_<label>`. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each pane.
+Threads are user-created and persist to `~/.config/tws/state.json` as a plain array. Sessions are live terminal sessions that tws finds at runtime: Rex sessions or tmux sessions. A session name is the slug of its label, with no thread part. Each thread lists the names of its sessions in `Thread.sessions`. A live session that no thread lists goes to `other`. `other` is a thread with the nil UUID (`state::OTHER`). It is always the last thread, and tws does not save it. tws detects agent sessions (Claude Code, Codex, Pi, Devin CLI, OpenCode) when it scans the process tree of each pane.
 
 ## Architecture
 
@@ -88,8 +88,8 @@ Both list views keep their scroll offset between frames (`components::sticky_scr
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
-| `backend.rs` | The seam between the app and the two backends. `backend` in `config.toml` or `TWS_BACKEND` picks one at startup. Each function is one `match` on tmux or Rex. `app.rs` calls only `backend::`, never `tmux::`, `rex::` or the hook-file functions of `core/status.rs`. The tmux side owns the hook files (prune, expire, ack, trigger, subagent markers). The Rex side reads only the Rex snapshot and program status, and counts live child records as subagents |
-| `rex.rs` | Rex backend (the default). One `rex do` Lua script reads every session, window, process, title and program status. tws keeps `twsr_<thread>_<label>` names and maps them to Rex session and window IDs |
+| `backend.rs` | The seam between the app and the two backends. `backend` in `config.toml` or `TWS_BACKEND` picks one at startup. Each function is one `match` on tmux or Rex. `app.rs` calls only `backend::`, never `tmux::`, `rex::` or the hook-file functions of `core/status.rs`. The tmux side owns the hook files (prune, expire, ack, trigger, subagent markers). The Rex side reads only the Rex snapshot and program status |
+| `rex.rs` | Rex backend (the default). One `rex do` Lua script reads every session, window, process, title and program status. A tws session is a Rex session, and its label is the session name; tws maps the name to the Rex session ID |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command`. They know nothing of Rex |
 | `tmux/agent_scan.rs` | Detect AI agents with `tmux list-panes` + `ps -e`. Search the process tree of each pane |
 | `components/` | Stateless render functions: sessions_view, agents_view, input_modal, confirm_modal, finder_modal, notes_sidebar, agent_preview, status_bar, recent_bar |
@@ -170,7 +170,6 @@ The hook commands are shell, not Rust, so `cargo test` cannot reach them. `scrip
 
 ```
 tws              # launch TUI (default)
-tws import       # interactive import of unmanaged tmux sessions
 tws ack-pane [PANE_ID]  # review -> idle for one pane; tmux hooks call it
 ```
 

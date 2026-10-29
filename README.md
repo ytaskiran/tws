@@ -8,9 +8,9 @@
 tws is a terminal UI that adds a persistent organizational layer on top of your terminal. It runs on one of two backends: [Rex](https://www.superlogical.com/rex/) (the default) or [tmux](https://github.com/tmux/tmux). Terminal sessions are flat and ephemeral; tws groups them into **threads** you control, and launches and opens them for you.
 
 - **Threads** — units of work (e.g. `auth-refactor`, `bug-1234`, `scratch`), each holding one or more sessions
-- **Sessions** — live terminal sessions (a Rex window or a tmux session), launched and opened from tws
+- **Sessions** — live terminal sessions (a Rex session or a tmux session), launched and opened from tws
 
-Threads are saved to `~/.config/tws/`. Sessions are real Rex windows or tmux sessions that tws finds at runtime. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
+Threads are saved to `~/.config/tws/`. Sessions are real Rex sessions or tmux sessions that tws finds at runtime. tws shows every session. A session that no thread holds shows under **other**, and `m` moves it into a thread. With Rex, tws stays open in its own tab, or opens as a popup with **Cmd+S**. With tmux, detach from a session to go back to tws. See [Backends](#backends).
 
 <img width="2882" height="1856" alt="tws-welcome" src="assets/welcome.png" />
 
@@ -206,15 +206,15 @@ Press `/` to search across all active sessions by name or path, sorted by most-r
 
 ### Recent sessions
 
-Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row. This feature works with the tmux backend only, because Rex does not record when you last opened a window.
+Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row. This feature works with the tmux backend only, because Rex does not record when you last opened a session.
 
 ### Agent detection
 
 tws scans the panes of each session periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan. When the optional hooks are installed, tws also shows each agent's live status — working, waiting for you, finished and awaiting review, or idle — as a colored bar and status chip in the agents view (`v`), with a count of working/waiting agents in the status bar. A pane that goes silent for 15 minutes while claiming to work is treated as no longer working and drops to idle, so an interrupted or crashed agent does not stay marked active forever.
 
-### Importing existing sessions
+### Existing sessions
 
-Already have tmux sessions running? `tws import` walks you through assigning them to threads, so that they show in the tree. This command works with the tmux backend only. To copy tmux sessions into Rex, see [Copy tmux sessions into Rex](#copy-tmux-sessions-into-rex).
+tws shows the sessions that you already have under **other**. Select one and press `m` to move it into a thread. A move changes only `state.json`; the session keeps its name. To copy tmux sessions into Rex, see [Copy tmux sessions into Rex](#copy-tmux-sessions-into-rex).
 
 ## Requirements
 
@@ -295,7 +295,6 @@ xattr -dr com.apple.quarantine ~/.local/bin/tws
 
 ```sh
 tws          # launch the TUI
-tws import   # interactively import existing unmanaged tmux sessions
 tws ack-pane [PANE_ID]   # mark a pane as read (used by the tmux hooks)
 ```
 
@@ -349,21 +348,20 @@ The `TWS_BACKEND` environment variable (`rex` or `tmux`) overrides the config fo
 
 ### Rex
 
-- A thread is a Rex session. The session label is the thread slug.
-- A tws session is a window (tab) in that Rex session. The window label is the session label.
-- Extra shells are splits in that tab.
+- A tws session is a Rex session. The session label is the session name, as with tmux.
+- A thread exists only in tws. The Rex app shows a flat list of sessions.
+- Tabs and splits in a session are yours. tws does not show them, but it finds the agents in all of them.
 
-tws shows every Rex session whose label is the same as a thread slug, also a session that you made in Rex. tws ignores a session or a window that has `_` in its label. Two windows in one thread cannot have the same label.
+tws shows every Rex session that has a label. Rex accepts two sessions with the same label, but tws shows only the first one.
 
-To open a session, tws tells the Rex app to show the window. tws does not exit. Turn on **Remote Control** in the Rex settings (under Rex Server), or the app does not accept this request. When the app refuses, tws shows the error from Rex in the status bar.
+To open a session, tws tells the Rex app to show the session. When you pick an agent, the app shows the tab of that agent. tws does not exit. Turn on **Remote Control** in the Rex settings (under Rex Server), or the app does not accept this request. When the app refuses, tws shows the error from Rex in the status bar.
 
 Agent status comes from the program status that the agent sends to Rex (OSC 7501). Claude Code sends it. tws shows `working` as working, `blocked` as waiting, `done` and `error` as review, and other states as idle. An agent that sends no program status shows no status. Each `working` or `blocked` child record (one with an `id`) counts as a running subagent.
 
 These features work only with tmux:
 
-- `tws import`, `tws fork-pane`, the tmux status bar, and `tws ack-pane`.
-- The recent sessions bar. Rex does not record when you last opened a window.
-- A move of a session to a different thread. Rex cannot move a window to a different session.
+- `tws fork-pane`, the tmux status bar, and `tws ack-pane`.
+- The recent sessions bar. Rex does not record when you last opened a session.
 
 Rex keeps `done` until the agent reports again, and it does not tell tws what you look at. So tws clears the review when you open the agent, or the session that lands on it, from tws, and it saves that in `~/.config/tws/rex-seen`. When you go to the agent in Rex directly, the review stays until you open it from tws or the agent reports again.
 

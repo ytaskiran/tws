@@ -19,10 +19,10 @@ use crate::config;
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::config::palette::PaletteOverride;
 use crate::core::markdown::MarkdownRenderer;
-use crate::core::model::thread_slug;
+use crate::core::model::slugify;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
-use crate::core::state::{AppState, FlatAgent, SelectedItem};
+use crate::core::state::{AppState, FlatAgent, OTHER, SelectedItem};
 use crate::core::status::AgentTrigger;
 use crate::core::workdir::{self, DirPicker};
 use crate::event::{self, Input};
@@ -31,19 +31,10 @@ use crate::tui::{self, Tui};
 
 enum InputPurpose {
     AddThread,
-    RenameThread {
-        thread_idx: usize,
-    },
-    NewSession {
-        thread_idx: usize,
-    },
-    RenameSession {
-        thread_idx: usize,
-        old_tmux_name: String,
-    },
-    RenameAgent {
-        pane_id: String,
-    },
+    RenameThread { thread_idx: usize },
+    NewSession { thread_idx: usize },
+    RenameSession { old_tmux_name: String },
+    RenameAgent { pane_id: String },
 }
 
 enum ConfirmPurpose {
@@ -122,7 +113,6 @@ enum Mode {
     ThreadPicker {
         state: FinderState,
         session_name: String,
-        session_label: String,
     },
     DirPicker {
         picker: DirPicker,
@@ -1225,13 +1215,13 @@ impl App {
             None => return,
         };
         let purpose = match selected {
+            SelectedItem::Thread(thread_idx) if self.state.is_other(thread_idx) => return,
             SelectedItem::Thread(thread_idx) => InputPurpose::RenameThread { thread_idx },
             SelectedItem::Session(thread_idx, sess_idx) => {
                 let thread_id = self.state.threads[thread_idx].id;
                 let sessions = self.state.sessions_for_thread(thread_id);
                 match sessions.get(sess_idx) {
                     Some(session) => InputPurpose::RenameSession {
-                        thread_idx,
                         old_tmux_name: session.tmux_session_name.clone(),
                     },
                     None => return,
@@ -1256,6 +1246,7 @@ impl App {
     fn start_delete(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match &selected {
+            SelectedItem::Thread(thread_idx) if self.state.is_other(*thread_idx) => return,
             SelectedItem::Thread(thread_idx) => {
                 let name = self.state.threads[*thread_idx].name.clone();
                 ConfirmPurpose::DeleteThread {
@@ -1281,7 +1272,12 @@ impl App {
                     };
                 }
             }
-            SelectedItem::Thread(thread_idx) if self.state.has_active_session(thread_idx) => {
+            // `other` holds sessions that tws did not make, maybe the one that
+            // runs tws, so they are killed one at a time only.
+            SelectedItem::Thread(thread_idx)
+                if self.state.has_active_session(thread_idx)
+                    && !self.state.is_other(thread_idx) =>
+            {
                 let thread_name = self.state.threads[thread_idx].name.clone();
                 self.mode = Mode::Confirm {
                     purpose: ConfirmPurpose::KillAllSessions {
@@ -1308,7 +1304,6 @@ impl App {
             None => return,
         };
         let session_name = session.tmux_session_name.clone();
-        let session_label = session.display_name.clone();
 
         let entries: Vec<(String, String)> = self
             .state
@@ -1327,7 +1322,6 @@ impl App {
         self.mode = Mode::ThreadPicker {
             state: FinderState::new(entries),
             session_name,
-            session_label,
         };
     }
 
@@ -1643,7 +1637,6 @@ impl App {
         if let Mode::ThreadPicker {
             state,
             session_name,
-            session_label,
         } = old_mode
             && let Some(&idx) = state.filtered.get(state.cursor)
         {
@@ -1654,23 +1647,14 @@ impl App {
                 return;
             };
 
-            if let Some(new_tmux_name) = self.state.make_session_name(dest_thread, &session_label) {
-                if !matches!(
-                    backend::rename_session(&session_name, &new_tmux_name),
-                    Ok(true)
-                ) {
-                    self.set_flash("Could not move the session");
-                    return;
-                }
-                self.notes.rename(&session_name, &new_tmux_name);
-                self.do_refresh_sessions();
-
-                if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
-                    self.tree_state.select(path);
-                }
-                self.sync_note_editor();
-                self.set_flash(&format!("Session moved to {}", dest_display));
+            self.state.assign_session(&session_name, Some(dest_thread));
+            self.save_state();
+            self.do_refresh_sessions();
+            if let Some(path) = self.state.session_tree_path(&session_name) {
+                self.tree_state.select(path);
             }
+            self.sync_note_editor();
+            self.set_flash(&format!("Session moved to {}", dest_display));
         }
     }
 
@@ -1813,52 +1797,33 @@ impl App {
                     self.open_dir_picker(thread_idx);
                 }
                 InputPurpose::RenameThread { thread_idx } => {
-                    // Collect old tmux session names before the rename changes the prefix.
-                    let old_sessions: Vec<(String, String)> = self
-                        .state
-                        .threads
-                        .get(thread_idx)
-                        .map(|thread| {
-                            self.state
-                                .sessions_for_thread(thread.id)
-                                .into_iter()
-                                .map(|s| (s.tmux_session_name.clone(), s.display_name.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    // Before the state changes, so a failure leaves both sides as they were.
-                    let renames = backend::thread_renames(&old_sessions, &trimmed);
-                    if let Some(thread) = self.state.threads.get(thread_idx)
-                        && !backend::rename_thread(
-                            &thread_slug(&thread.name),
-                            &thread_slug(&trimmed),
-                            &renames,
-                        )
-                    {
-                        self.set_flash("Could not rename the Rex session — is the name taken?");
-                        return Ok(());
-                    }
                     self.state.rename_thread(thread_idx, trimmed);
-                    self.do_refresh_sessions();
                     self.save_state();
                     self.set_flash("Thread renamed");
                 }
                 InputPurpose::NewSession { thread_idx } => {
-                    if let Some(session_name) = self.state.make_session_name(thread_idx, &trimmed) {
-                        self.save_state();
+                    let session_name = slugify(&trimmed);
+                    if !session_name.is_empty() {
                         self.launch_session(&session_name, thread_idx, terminal)?;
                     }
                 }
-                InputPurpose::RenameSession {
-                    thread_idx,
-                    old_tmux_name,
-                } => {
-                    if let Some(new_tmux_name) = self.state.make_session_name(thread_idx, &trimmed)
-                    {
-                        let _ = backend::rename_session(&old_tmux_name, &new_tmux_name);
-                        self.do_refresh_sessions();
-                        self.set_flash("Session renamed");
+                InputPurpose::RenameSession { old_tmux_name } => {
+                    let new_tmux_name = slugify(&trimmed);
+                    if new_tmux_name.is_empty() {
+                        return Ok(());
                     }
+                    if !matches!(
+                        backend::rename_session(&old_tmux_name, &new_tmux_name),
+                        Ok(true)
+                    ) {
+                        self.set_flash("Could not rename the session — is the name taken?");
+                        return Ok(());
+                    }
+                    self.state.rename_session(&old_tmux_name, &new_tmux_name);
+                    self.notes.rename(&old_tmux_name, &new_tmux_name);
+                    self.save_state();
+                    self.do_refresh_sessions();
+                    self.set_flash("Session renamed");
                 }
                 InputPurpose::RenameAgent { pane_id } => {
                     if let Some(agent) = self
@@ -1900,12 +1865,14 @@ impl App {
                     }
                     self.notes.remove_all(&note_keys);
                     self.state.delete_thread(thread_idx);
-                    // Select the thread that slid into this position, or the one before it.
+                    // Select the thread that slid into this position, or the last
+                    // one. Not `other`: when it is empty, it has no row.
                     let new_sel = self
                         .state
                         .threads
                         .get(thread_idx)
-                        .or_else(|| self.state.threads.last())
+                        .filter(|t| t.id != OTHER)
+                        .or_else(|| self.state.threads.iter().rev().find(|t| t.id != OTHER))
                         .map(|t| vec![t.id.to_string()])
                         .unwrap_or_default();
                     self.tree_state.select(new_sel);
@@ -1915,8 +1882,15 @@ impl App {
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
-                    let _ = backend::kill_session(&session_name);
+                    // A failed kill leaves the session live, so it keeps its
+                    // thread and its note.
+                    if !matches!(backend::kill_session(&session_name), Ok(true)) {
+                        self.set_flash("Could not kill the session");
+                        return;
+                    }
                     self.notes.remove(&session_name);
+                    self.state.assign_session(&session_name, None);
+                    self.save_state();
                     self.do_refresh_sessions();
                     // Move selection up to the parent thread so the sidebar stays visible.
                     // Without this the tree widget clears the selection on the next render
@@ -1942,15 +1916,25 @@ impl App {
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
+                    let mut failed = 0;
                     for name in &names {
-                        let _ = backend::kill_session(name);
+                        if matches!(backend::kill_session(name), Ok(true)) {
+                            self.notes.remove(name);
+                            self.state.assign_session(name, None);
+                        } else {
+                            failed += 1;
+                        }
                     }
-                    self.notes.remove_all(&names);
+                    self.save_state();
                     self.do_refresh_sessions();
                     // Select the parent thread so the sidebar stays visible.
                     let thread_path = vec![self.state.threads[thread_idx].id.to_string()];
                     self.tree_state.select(thread_path);
-                    self.set_flash("All sessions killed");
+                    if failed == 0 {
+                        self.set_flash("All sessions killed");
+                    } else {
+                        self.set_flash(&format!("Could not kill {failed} session(s)"));
+                    }
                     self.sync_note_editor();
                 }
             }
@@ -1978,6 +1962,8 @@ impl App {
             );
             return Ok(());
         }
+        self.state.assign_session(session_name, Some(thread_idx));
+        self.save_state();
         if missing {
             // Inside tmux the app exits via switch-client before another frame is
             // drawn, so a flash would never be painted; the tmux status line is the
@@ -2207,7 +2193,7 @@ impl App {
     }
 
     fn save_state(&self) {
-        if let Err(e) = persistence::save(&self.state.threads) {
+        if let Err(e) = persistence::save(&self.state.saved_threads()) {
             eprintln!("Failed to save state: {}", e);
         }
     }

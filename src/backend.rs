@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::core::model::{AgentSession, AgentStatus, tmux_session_name_labeled};
+use crate::core::model::{AgentSession, AgentStatus};
 use crate::core::status::{self, AgentTrigger};
 use crate::rex;
 use crate::tmux::agent_scan;
@@ -76,8 +76,8 @@ pub fn refresh_interval() -> Duration {
 /// drop the sessions, the pins and the agent names.
 pub fn refresh() -> Option<Vec<(String, i64)>> {
     match current() {
-        Backend::Tmux => Some(tmux::list_tws_sessions_with_timestamps()),
-        Backend::Rex => rex::refresh().then(rex::list_tws_sessions_with_timestamps),
+        Backend::Tmux => Some(tmux::list_sessions_with_timestamps()),
+        Backend::Rex => rex::refresh().then(rex::list_sessions_with_timestamps),
     }
 }
 
@@ -171,7 +171,7 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
             let pane = target
                 .map(|(_, block_id)| block_id)
                 .filter(|block_id| matches!(rex::select_pane(block_id), Ok(true)));
-            match rex::show(name) {
+            match rex::show(name, target.map(|(_, block_id)| block_id)) {
                 Ok(()) => {
                     rex::mark_seen(name, pane);
                     Open::Shown
@@ -186,39 +186,6 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
 pub fn attach_blocking(name: &str) {
     if current() == Backend::Tmux {
         let _ = tmux::attach_session(name);
-    }
-}
-
-/// The `(old, new)` session names after a thread rename. `sessions` holds
-/// `(session name, label)`.
-pub fn thread_renames(
-    sessions: &[(String, String)],
-    new_thread_name: &str,
-) -> Vec<(String, String)> {
-    sessions
-        .iter()
-        .map(|(old, label)| {
-            (
-                old.clone(),
-                tmux_session_name_labeled(new_thread_name, label),
-            )
-        })
-        .collect()
-}
-
-/// Call it before the thread changes in the state, so a failure leaves both
-/// sides as they were. A Rex thread is one Rex session, so one rename moves
-/// every window. tmux renames each session; a failure there is ignored, as
-/// the next refresh shows what is live.
-pub fn rename_thread(old_slug: &str, new_slug: &str, renames: &[(String, String)]) -> bool {
-    match current() {
-        Backend::Tmux => {
-            for (old, new) in renames {
-                let _ = tmux::rename_session(old, new);
-            }
-            true
-        }
-        Backend::Rex => rex::rename_thread(old_slug, new_slug),
     }
 }
 
@@ -281,32 +248,6 @@ pub fn recount_subagents(agents: &mut [AgentSession]) {
             agents,
             &status::subagents_dir(),
             crate::components::agent_meta::now(),
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thread_renames_map_each_session() {
-        let sessions = vec![
-            ("twsr_old-name_main".to_string(), "main".to_string()),
-            ("twsr_old-name_fix".to_string(), "fix".to_string()),
-        ];
-        assert_eq!(
-            thread_renames(&sessions, "New Name"),
-            vec![
-                (
-                    "twsr_old-name_main".to_string(),
-                    "twsr_new-name_main".to_string()
-                ),
-                (
-                    "twsr_old-name_fix".to_string(),
-                    "twsr_new-name_fix".to_string()
-                ),
-            ]
         );
     }
 }
