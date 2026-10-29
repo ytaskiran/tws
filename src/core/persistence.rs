@@ -48,7 +48,7 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     let data = serde_json::to_string_pretty(ui)?;
-    fs::write(ui_state_file(), data)?;
+    crate::core::status::write_atomic(&ui_state_file(), &data)?;
     Ok(())
 }
 
