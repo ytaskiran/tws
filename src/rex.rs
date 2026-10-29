@@ -46,7 +46,7 @@ for _, s in ipairs(rex.call("session.list").sessions) do
           if state == nil or rank > top or (rank == top and (r.updated_at or "") > (at or "")) then
             state, at = r.state, r.updated_at
           end
-          if r.id and rank >= 3 then subs = subs + 1 end
+          if type(r.id) == "string" and (r.state == "working" or r.state == "blocked") then subs = subs + 1 end
         end
         blocks[#blocks + 1] = {block_id = b.block_id, pid = p and p.child and p.child.pid,
           title = t and t.title, state = state, at = at, subagents = subs}
