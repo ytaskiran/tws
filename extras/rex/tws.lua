@@ -77,6 +77,10 @@ rex.action{
 
 rex.bind(KEY, "tws_open")
 
+-- Tabs. Rex gets these keys first, so the shell does not get them.
+rex.bind("cmd+right", "client.tab.next")
+rex.bind("cmd+left", "client.tab.previous")
+
 -- install.sh writes this file when you choose to restore the Rex sessions
 -- with rexurrect. pcall: the file does not exist when you did not.
 pcall(dofile, os.getenv("HOME") .. "/.config/tws/rexurrect.lua")
