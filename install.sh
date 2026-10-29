@@ -2107,7 +2107,7 @@ configure_backend() {
 # answers one question for the whole plan. Before it, the scan can ask about
 # a status bar of the user's own (confirm_own_bar, confirm_nova_right) and the
 # Codex daemon (confirm_codex_daemon).
-plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0 plan_backend=0
+plan_path=0 plan_claude=0 plan_codex=0 plan_codex_daemon=0 plan_pi=0 plan_devin=0 plan_opencode=0 plan_ack=0 plan_fork=0 plan_bar=0 plan_glow=0 plan_rex_init=0 plan_rexurrect=0 plan_backend=0
 plan_rc="" plan_profile="" plan_conf="" plan_glow_via=""
 plan_found=()
 plan_notes=()
@@ -2280,6 +2280,16 @@ scan_plan() {
         plan_rex_init=1
     fi
 
+    # The restore goes into tws.lua, so it needs the file. An init.lua without the
+    # dofile line gets it from plan_rex_init in the same plan.
+    if [ "$want_rex" -eq 1 ] && command -v rex &>/dev/null && [ -f "$REX_LUA" ] && ! tws_lua_restores; then
+        if grep -qF "auto-restore" "$REX_INIT" 2>/dev/null; then
+            plan_notes+=("rexurrect restore — $(tilde "$REX_INIT") already runs rexurrect auto-restore")
+        else
+            plan_rexurrect=1
+        fi
+    fi
+
     local current
     current="$(config_backend)"
     if [ "${current:-rex}" != "$backend_value" ]; then plan_backend=1; fi
@@ -2322,6 +2332,9 @@ print_plan() {
             if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
         fi
         if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (cmd+s)" "$(tilde "$REX_INIT")"; fi
+        if [ "$plan_rexurrect" -eq 1 ]; then
+            plan_row "restore Rex sessions at start" "$(rexurrect_bin >/dev/null || printf 'install rexurrect %s, ' "$REXURRECT_VERSION")autosave, $(tilde "$REX_LUA")"
+        fi
     fi
 
     if [ "${#plan_notes[@]}" -gt 0 ]; then
@@ -2341,7 +2354,7 @@ plan_row() {
 }
 
 plan_is_empty() {
-    [ $((plan_backend + plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]
+    [ $((plan_backend + plan_path + plan_claude + plan_codex + plan_pi + plan_devin + plan_opencode + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init + plan_rexurrect)) -eq 0 ]
 }
 
 # Asked during the scan, only when the user has a bar of their own. The tws
@@ -2402,6 +2415,7 @@ apply_plan() {
     if [ "$plan_fork" -eq 1 ]; then configure_fork_binding; fi
     if [ "$plan_bar" -eq 1 ]; then configure_status_bar; fi
     if [ "$plan_glow" -eq 1 ]; then install_glow; fi
+    if [ "$plan_rexurrect" -eq 1 ]; then configure_rexurrect; fi
     if [ "$plan_rex_init" -eq 1 ]; then configure_rex_init; fi
 }
 
@@ -2410,7 +2424,7 @@ apply_plan() {
 print_manual_steps() {
     local none="No changes made"
     [ "$default_conf_done" -eq 0 ] || none="No other changes made"
-    if [ $((plan_backend + plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init)) -eq 0 ]; then
+    if [ $((plan_backend + plan_path + plan_ack + plan_fork + plan_bar + plan_glow + plan_rex_init + plan_rexurrect)) -eq 0 ]; then
         info "$none. Run install again to set them up."
         return
     fi
@@ -2436,6 +2450,9 @@ print_manual_steps() {
         echo "  In $(tilde "$REX_INIT"), then run rex config reload:"
         echo "    $REX_DOFILE_LINE"
     fi
+    if [ "$plan_rexurrect" -eq 1 ]; then
+        echo "  To restore the Rex sessions after a reboot, see https://github.com/cemcatik/rexurrect"
+    fi
 }
 
 # --- Rex open-tws key ---
@@ -2452,7 +2469,7 @@ REX_DOFILE_LINE='pcall(dofile, os.getenv("HOME") .. "/.config/tws/tws.lua")'
 # The source rule is the same as default_conf_text. When init.lua loads it
 # already, Rex reloads the config to use the new copy.
 install_rex_lua() {
-    local src="${BASH_SOURCE[0]:-}" text
+    local src="${BASH_SOURCE[0]:-}" text hook
     if [ -n "$src" ] && [ -f "$(dirname "$src")/extras/rex/tws.lua" ]; then
         text="$(cat "$(dirname "$src")/extras/rex/tws.lua")"
     else
@@ -2462,6 +2479,9 @@ install_rex_lua() {
         warn "Could not get the Rex action for tws — skipping it"
         return
     fi
+    # Keep the restore that an earlier install added, with the hook of the
+    # rexurrect installed now: a rexurrect upgrade can change the line.
+    if tws_lua_restores && hook="$(rexurrect_hook)"; then text+=$'\n\n'"$hook"; fi
     # A temp file and mv, so a failed write never leaves half a file for Rex.
     # A failure only skips this step: set -e must not stop the install.
     if ! { mkdir -p "$(dirname "$REX_LUA")" && printf '%s\n' "$text" > "$REX_LUA.tmp" \
@@ -2488,6 +2508,56 @@ configure_rex_init() {
     else
         warn "Added the tws key to $(tilde "$REX_INIT"). Run: rex config reload"
     fi
+}
+
+# --- rexurrect: restore the Rex sessions after a reboot ---
+
+# The installer runs the code of this release, so change the version only
+# after a review of the new release.
+REXURRECT_VERSION="0.2.1"
+REXURRECT_INSTALLER="https://github.com/cemcatik/rexurrect/releases/download/v$REXURRECT_VERSION/rexurrect-installer.sh"
+REXURRECT_MARK="-- tws: restore the Rex sessions with rexurrect (https://github.com/cemcatik/rexurrect)"
+
+rexurrect_bin() {
+    command -v rexurrect 2>/dev/null || { [ -x "$INSTALL_DIR/rexurrect" ] && printf '%s\n' "$INSTALL_DIR/rexurrect"; }
+}
+
+tws_lua_restores() {
+    grep -qF -e "$REXURRECT_MARK" "$REX_LUA" 2>/dev/null
+}
+
+# rexurrect prints the line with its path, state directory and config file
+# pinned, because the Rex server does not have the environment of the shell.
+rexurrect_hook() {
+    local bin hook
+    bin="$(rexurrect_bin)" && hook="$("$bin" auto-restore --print-hook)" || return 1
+    printf '%s\n%s\n' "$REXURRECT_MARK" "$hook"
+}
+
+# The plan step. rexurrect restores one time for each server start, so the
+# reload here and later reloads restore nothing into the server that runs now.
+configure_rexurrect() {
+    local bin hook
+    if ! rexurrect_bin >/dev/null; then
+        info "Installing rexurrect $REXURRECT_VERSION..."
+        # Unmanaged: the binary goes to INSTALL_DIR, and the installer edits no shell file.
+        if ! curl --proto '=https' --tlsv1.2 -fsSL "$REXURRECT_INSTALLER" \
+            | REXURRECT_UNMANAGED_INSTALL="$INSTALL_DIR" sh >/dev/null; then
+            warn "Could not install rexurrect — skipping the restore of Rex sessions"
+            return 0
+        fi
+    fi
+    bin="$(rexurrect_bin)"
+    if ! "$bin" autosave install >/dev/null; then
+        warn "rexurrect autosave install failed — skipping the restore of Rex sessions"
+        return 0
+    fi
+    if ! hook="$(rexurrect_hook)" || ! printf '\n%s\n' "$hook" >> "$REX_LUA"; then
+        warn "Could not add the restore to $(tilde "$REX_LUA")"
+        return 0
+    fi
+    rex config reload &>/dev/null || true
+    ok "rexurrect saves the Rex sessions every 15 minutes and restores them when Rex starts"
 }
 
 # --- Main ---
