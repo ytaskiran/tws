@@ -25,12 +25,7 @@ struct RenderCache {
 
 impl MarkdownRenderer {
     pub fn new(stylesheet: NoteStyleSheet) -> Self {
-        let glow_available = Command::new("glow")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+        let glow_available = super::on_path("glow");
 
         let theme_path = persistence::config_dir().join("glow-theme.json");
         if glow_available && !theme_path.exists() {

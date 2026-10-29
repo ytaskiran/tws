@@ -25,3 +25,10 @@ pub fn restore() -> io::Result<()> {
     disable_raw_mode()?;
     screen.and(drained)
 }
+
+/// The Rex popup block closes when tws exits, so no shell is left to get a
+/// late mouse report. The 50 ms drain of `restore` is only a wait there.
+pub fn restore_popup() -> io::Result<()> {
+    execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    disable_raw_mode()
+}

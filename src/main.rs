@@ -142,6 +142,10 @@ fn run_tui(popup: bool) -> std::io::Result<()> {
     }));
     let mut terminal = tui::init()?;
     let result = app.run(&mut terminal, ui_state);
-    tui::restore()?;
+    if popup {
+        tui::restore_popup()?;
+    } else {
+        tui::restore()?;
+    }
     result
 }
