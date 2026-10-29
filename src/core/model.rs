@@ -15,6 +15,10 @@ pub struct Thread {
     /// the home directory. Stored absolute; the `~` form is display-only.
     #[serde(default)]
     pub working_dir: Option<PathBuf>,
+    /// The names of the live sessions that belong to this thread. A session
+    /// that no thread lists shows under Other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<String>,
 }
 
 /// Runtime-only, never serialized. Represents a live tmux session.
@@ -111,13 +115,15 @@ impl Thread {
             name: name.into(),
             description: None,
             working_dir: None,
+            sessions: Vec::new(),
         }
     }
 }
 
 /// Converts a string to a URL-style slug: lowercase, non-alphanumeric → hyphens,
 /// consecutive hyphens collapsed, leading/trailing hyphens stripped.
-fn slugify(s: &str) -> String {
+/// A new session's name is the slug of its label.
+pub fn slugify(s: &str) -> String {
     let slug: String = s
         .to_lowercase()
         .chars()
@@ -139,23 +145,6 @@ fn slugify(s: &str) -> String {
     }
 
     result.trim_matches('-').to_string()
-}
-
-/// Generates the base prefix for a thread's tmux sessions.
-/// Format: `twsr_{thread_slug}`
-pub fn tmux_session_prefix(thread_name: &str) -> String {
-    format!("twsr_{}", thread_slug(thread_name))
-}
-
-/// The thread part of a session name, and the label of its Rex session.
-pub fn thread_slug(thread_name: &str) -> String {
-    slugify(thread_name)
-}
-
-/// Generates a labeled tmux session name for a thread.
-/// Format: `twsr_{thread_slug}_{label_slug}`
-pub fn tmux_session_name_labeled(thread_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_session_prefix(thread_name), slugify(label))
 }
 
 #[cfg(test)]
@@ -204,27 +193,6 @@ mod tests {
     #[test]
     fn slugify_unicode() {
         assert_eq!(slugify("Derin Notlar"), "derin-notlar");
-    }
-
-    #[test]
-    fn tmux_session_prefix_format() {
-        assert_eq!(tmux_session_prefix("general"), "twsr_general");
-        assert_eq!(
-            tmux_session_prefix("My Quick Thread"),
-            "twsr_my-quick-thread"
-        );
-    }
-
-    #[test]
-    fn tmux_session_name_labeled_format() {
-        assert_eq!(
-            tmux_session_name_labeled("general", "bugfix"),
-            "twsr_general_bugfix"
-        );
-        assert_eq!(
-            tmux_session_name_labeled("My Quick Thread", "Hot Fix 2"),
-            "twsr_my-quick-thread_hot-fix-2"
-        );
     }
 
     #[test]

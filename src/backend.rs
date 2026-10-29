@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::core::model::{AgentSession, AgentStatus, tmux_session_name_labeled};
+use crate::core::model::{AgentSession, AgentStatus};
 use crate::core::status::{self, AgentTrigger};
 use crate::rex;
 use crate::tmux::agent_scan;
@@ -76,8 +76,8 @@ pub fn refresh_interval() -> Duration {
 /// drop the sessions, the pins and the agent names.
 pub fn refresh() -> Option<Vec<(String, i64)>> {
     match current() {
-        Backend::Tmux => Some(tmux::list_tws_sessions_with_timestamps()),
-        Backend::Rex => rex::refresh().then(rex::list_tws_sessions_with_timestamps),
+        Backend::Tmux => Some(tmux::list_sessions_with_timestamps()),
+        Backend::Rex => rex::refresh().then(rex::list_sessions_with_timestamps),
     }
 }
 
@@ -189,31 +189,6 @@ pub fn attach_blocking(name: &str) {
     }
 }
 
-/// The `(old, new)` session names after a thread rename. `sessions` holds
-/// `(session name, label)`.
-pub fn thread_renames(
-    sessions: &[(String, String)],
-    new_thread_name: &str,
-) -> Vec<(String, String)> {
-    sessions
-        .iter()
-        .map(|(old, label)| {
-            (
-                old.clone(),
-                tmux_session_name_labeled(new_thread_name, label),
-            )
-        })
-        .collect()
-}
-
-/// Renames each session of a thread. A failure is ignored, as the next
-/// refresh shows what is live.
-pub fn rename_thread(renames: &[(String, String)]) {
-    for (old, new) in renames {
-        let _ = rename_session(old, new);
-    }
-}
-
 /// The file that tmux agent hooks touch after a status write. Rex has no
 /// hooks, so there is nothing to watch.
 pub fn agent_trigger() -> Option<AgentTrigger> {
@@ -272,32 +247,6 @@ pub fn recount_subagents(agents: &mut [AgentSession]) {
             agents,
             &status::subagents_dir(),
             crate::components::agent_meta::now(),
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thread_renames_map_each_session() {
-        let sessions = vec![
-            ("twsr_old-name_main".to_string(), "main".to_string()),
-            ("twsr_old-name_fix".to_string(), "fix".to_string()),
-        ];
-        assert_eq!(
-            thread_renames(&sessions, "New Name"),
-            vec![
-                (
-                    "twsr_old-name_main".to_string(),
-                    "twsr_new-name_main".to_string()
-                ),
-                (
-                    "twsr_old-name_fix".to_string(),
-                    "twsr_new-name_fix".to_string()
-                ),
-            ]
         );
     }
 }

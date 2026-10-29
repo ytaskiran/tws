@@ -582,7 +582,7 @@ mod tests {
         // acknowledgment of that one only — the other two stay in review.
         let mut agents = vec![mk_agent("%52"), mk_agent("%53"), mk_agent("%61")];
         for a in agents.iter_mut() {
-            a.tmux_session_name = "twsr_experiments_software-factory".into();
+            a.tmux_session_name = "software-factory".into();
             a.window_index = 0;
             a.status = AgentStatus::Review;
         }

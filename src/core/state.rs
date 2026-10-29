@@ -1,6 +1,10 @@
 use uuid::Uuid;
 
-use super::model::{AgentSession, Session, Thread, tmux_session_name_labeled, tmux_session_prefix};
+use super::model::{AgentSession, Session, Thread};
+
+/// The ID of Other: the group of live sessions that no thread lists. It is
+/// the last thread, and it is never saved.
+pub const OTHER: Uuid = Uuid::nil();
 
 pub struct AppState {
     pub threads: Vec<Thread>,
@@ -61,9 +65,50 @@ impl AppState {
         }
     }
 
+    /// A new thread goes before Other, so Other stays last.
     pub fn add_thread(&mut self, name: String) -> usize {
-        self.threads.push(Thread::new(name));
-        self.threads.len() - 1
+        let idx = self
+            .threads
+            .iter()
+            .position(|t| t.id == OTHER)
+            .unwrap_or(self.threads.len());
+        self.threads.insert(idx, Thread::new(name));
+        idx
+    }
+
+    pub fn is_other(&self, thread_idx: usize) -> bool {
+        self.threads.get(thread_idx).is_some_and(|t| t.id == OTHER)
+    }
+
+    /// The threads to save: all except Other.
+    pub fn saved_threads(&self) -> Vec<Thread> {
+        self.threads
+            .iter()
+            .filter(|t| t.id != OTHER)
+            .cloned()
+            .collect()
+    }
+
+    /// Puts the session `name` in the thread at `thread_idx`. Other, or no
+    /// thread, removes it from every list.
+    pub fn assign_session(&mut self, name: &str, thread_idx: Option<usize>) {
+        for t in &mut self.threads {
+            t.sessions.retain(|s| s != name);
+        }
+        if let Some(t) = thread_idx.and_then(|i| self.threads.get_mut(i))
+            && t.id != OTHER
+        {
+            t.sessions.push(name.to_string());
+        }
+    }
+
+    /// Keeps a renamed session in its thread.
+    pub fn rename_session(&mut self, old: &str, new: &str) {
+        for t in &mut self.threads {
+            for s in t.sessions.iter_mut().filter(|s| *s == old) {
+                *s = new.to_string();
+            }
+        }
     }
 
     pub fn rename_thread(&mut self, thread_idx: usize, new_name: String) {
@@ -99,11 +144,6 @@ impl AppState {
                 .resolve_agent(*thread_idx, *sess_idx, *agent_idx)
                 .map(|a| a.display_name.clone()),
         }
-    }
-
-    pub fn make_session_name(&self, thread_idx: usize, label: &str) -> Option<String> {
-        let thread = self.threads.get(thread_idx)?;
-        Some(tmux_session_name_labeled(&thread.name, label))
     }
 
     /// Assign the lowest free pin slot, preserving an existing assignment.
@@ -235,25 +275,28 @@ impl AppState {
             .is_some_and(|t| self.active_sessions.iter().any(|s| s.thread_id == t.id))
     }
 
-    // Prefix matching supports multiple labeled sessions per thread.
+    /// Every live session shows: in the thread that lists it, else in Other.
+    /// A listed session that is not live stays listed, because a missed poll
+    /// returns no sessions and must not empty the threads.
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
+        if !self.threads.iter().any(|t| t.id == OTHER) {
+            let mut other = Thread::new("Other");
+            other.id = OTHER;
+            self.threads.push(other);
+        }
         self.active_sessions.clear();
-
-        for thread in &self.threads {
-            let prefix = tmux_session_prefix(&thread.name);
-            for (session_name, last_attached) in live_tmux_sessions {
-                if let Some(rest) = session_name.strip_prefix(&prefix)
-                    && let Some(label) = rest.strip_prefix('_')
-                    && !label.is_empty()
-                {
-                    self.active_sessions.push(Session {
-                        tmux_session_name: session_name.clone(),
-                        display_name: label.to_string(),
-                        thread_id: thread.id,
-                        last_attached: *last_attached,
-                    });
-                }
-            }
+        for (session_name, last_attached) in live_tmux_sessions {
+            let thread_id = self
+                .threads
+                .iter()
+                .find(|t| t.sessions.contains(session_name))
+                .map_or(OTHER, |t| t.id);
+            self.active_sessions.push(Session {
+                tmux_session_name: session_name.clone(),
+                display_name: session_name.clone(),
+                thread_id,
+                last_attached: *last_attached,
+            });
         }
     }
 
@@ -412,54 +455,51 @@ mod tests {
     }
 
     #[test]
-    fn make_session_name_labeled() {
-        let state = AppState::with_sample_data();
-        let name = state.make_session_name(0, "bugfix").unwrap();
-        assert_eq!(name, "twsr_edge-device-pipeline_bugfix");
-    }
-
-    #[test]
-    fn make_session_name_slugifies_label() {
-        let state = AppState::with_sample_data();
-        let name = state.make_session_name(0, "Hot Fix 2").unwrap();
-        assert_eq!(name, "twsr_edge-device-pipeline_hot-fix-2");
-    }
-
-    #[test]
-    fn refresh_sessions_discovers_labeled() {
+    fn refresh_sessions_groups_by_thread_and_other() {
         let mut state = AppState::with_sample_data();
+        state.assign_session("bugfix", Some(0));
+        state.assign_session("hotfix", Some(0));
         let live = vec![
-            ("twsr_edge-device-pipeline_bugfix".to_string(), 0),
-            ("twsr_edge-device-pipeline_hotfix".to_string(), 0),
+            ("bugfix".to_string(), 0),
+            ("hotfix".to_string(), 0),
+            ("scratch".to_string(), 0),
         ];
         state.refresh_sessions(&live);
-        assert_eq!(state.active_sessions.len(), 2);
+        assert_eq!(state.active_sessions.len(), 3);
         assert_eq!(state.active_sessions[0].display_name, "bugfix");
-        assert_eq!(state.active_sessions[1].display_name, "hotfix");
         assert_eq!(state.active_sessions[0].thread_id, state.threads[0].id);
+        assert_eq!(state.active_sessions[2].thread_id, OTHER);
+        // Other is last, never saved, and a new thread goes before it.
+        assert!(state.is_other(state.threads.len() - 1));
+        assert!(state.saved_threads().iter().all(|t| t.id != OTHER));
+        let idx = state.add_thread("New".into());
+        assert!(state.is_other(idx + 1));
+        // A second refresh does not add a second Other.
+        state.refresh_sessions(&live);
+        assert_eq!(state.threads.iter().filter(|t| t.id == OTHER).count(), 1);
     }
 
     #[test]
-    fn refresh_sessions_ignores_non_matching() {
+    fn assign_and_rename_move_a_session() {
         let mut state = AppState::with_sample_data();
-        let live = vec![("some-other-session".to_string(), 0)];
-        state.refresh_sessions(&live);
-        assert!(state.active_sessions.is_empty());
-    }
-
-    #[test]
-    fn refresh_sessions_ignores_bare_prefix() {
-        let mut state = AppState::with_sample_data();
-        let live = vec![("twsr_edge-device-pipeline".to_string(), 0)];
-        state.refresh_sessions(&live);
-        assert!(state.active_sessions.is_empty());
+        state.assign_session("dev", Some(0));
+        state.assign_session("dev", Some(1));
+        assert!(state.threads[0].sessions.is_empty());
+        assert_eq!(state.threads[1].sessions, ["dev"]);
+        state.rename_session("dev", "api");
+        assert_eq!(state.threads[1].sessions, ["api"]);
+        state.assign_session("api", None);
+        assert!(state.threads[1].sessions.is_empty());
     }
 
     #[test]
     fn has_active_session_works() {
         let mut state = AppState::with_sample_data();
         assert!(!state.has_active_session(0));
-        let live = vec![("twsr_edge-device-pipeline_bugfix".to_string(), 0)];
+        let live = vec![("bugfix".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
         assert!(state.has_active_session(0));
         assert!(!state.has_active_session(1));
@@ -468,11 +508,14 @@ mod tests {
     #[test]
     fn resolve_session_selection() {
         let mut state = AppState::with_sample_data();
-        let live = vec![("twsr_edge-device-pipeline_bugfix".to_string(), 0)];
+        let live = vec![("bugfix".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         let thread_id = state.threads[0].id.to_string();
-        let sess_name = "twsr_edge-device-pipeline_bugfix".to_string();
+        let sess_name = "bugfix".to_string();
         match state.resolve_selection(&[thread_id, sess_name]) {
             SelectedItem::Session(thread_idx, sess_idx) => {
                 assert_eq!(thread_idx, 0);
@@ -485,15 +528,15 @@ mod tests {
     #[test]
     fn resolve_session_selection_multiple() {
         let mut state = AppState::with_sample_data();
-        let live = vec![
-            ("twsr_edge-device-pipeline_bugfix".to_string(), 0),
-            ("twsr_edge-device-pipeline_hotfix".to_string(), 0),
-        ];
+        let live = vec![("bugfix".to_string(), 0), ("hotfix".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         let thread_id = state.threads[0].id.to_string();
 
-        let sess_name = "twsr_edge-device-pipeline_hotfix".to_string();
+        let sess_name = "hotfix".to_string();
         match state.resolve_selection(&[thread_id, sess_name]) {
             SelectedItem::Session(_, sess_idx) => assert_eq!(sess_idx, 1),
             _ => panic!("expected Session"),
@@ -511,21 +554,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_sessions_discovers_root_sessions() {
-        let mut state = AppState::new();
-        state.ensure_general_thread();
-        state.add_thread("scratch".into());
-        let live = vec![
-            ("twsr_general_quick".to_string(), 100),
-            ("twsr_scratch_dev".to_string(), 200),
-        ];
-        state.refresh_sessions(&live);
-        assert_eq!(state.active_sessions.len(), 2);
-        assert_eq!(state.active_sessions[0].display_name, "quick");
-        assert_eq!(state.active_sessions[1].display_name, "dev");
-    }
-
-    #[test]
     fn resolve_root_thread_selection() {
         let mut state = AppState::new();
         state.ensure_general_thread();
@@ -540,11 +568,14 @@ mod tests {
     fn resolve_root_session_selection() {
         let mut state = AppState::new();
         state.ensure_general_thread();
-        let live = vec![("twsr_general_quick".to_string(), 100)];
+        let live = vec![("quick".to_string(), 100)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         let thread_id = state.threads[0].id.to_string();
-        let sess_name = "twsr_general_quick".to_string();
+        let sess_name = "quick".to_string();
         match state.resolve_selection(&[thread_id, sess_name]) {
             SelectedItem::Session(thread_idx, sess_idx) => {
                 assert_eq!(thread_idx, 0);
@@ -555,17 +586,12 @@ mod tests {
     }
 
     #[test]
-    fn make_session_name_root() {
-        let mut state = AppState::new();
-        state.ensure_general_thread();
-        let name = state.make_session_name(0, "bugfix").unwrap();
-        assert_eq!(name, "twsr_general_bugfix");
-    }
-
-    #[test]
     fn session_display_path_regular() {
         let mut state = AppState::with_sample_data();
-        let live = vec![("twsr_edge-device-pipeline_bugfix".to_string(), 0)];
+        let live = vec![("bugfix".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
         let path = state
             .session_display_path(&state.active_sessions[0])
@@ -577,21 +603,15 @@ mod tests {
     fn session_display_path_root() {
         let mut state = AppState::new();
         state.ensure_general_thread();
-        let live = vec![("twsr_general_quick".to_string(), 0)];
+        let live = vec![("quick".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
         let path = state
             .session_display_path(&state.active_sessions[0])
             .unwrap();
         assert_eq!(path, "general/quick");
-    }
-
-    #[test]
-    fn refresh_sessions_ignores_bare_root_prefix() {
-        let mut state = AppState::new();
-        state.ensure_general_thread();
-        let live = vec![("twsr_general".to_string(), 0)];
-        state.refresh_sessions(&live);
-        assert!(state.active_sessions.is_empty());
     }
 
     fn make_agent(pane_id: &str) -> super::AgentSession {
@@ -730,10 +750,13 @@ mod tests {
     fn recent_sessions_sorted_by_recency() {
         let mut state = AppState::with_sample_data();
         let live = vec![
-            ("twsr_edge-device-pipeline_bugfix".to_string(), 1000),
-            ("twsr_edge-device-pipeline_hotfix".to_string(), 3000),
-            ("twsr_model-training-infra_main".to_string(), 2000),
+            ("bugfix".to_string(), 1000),
+            ("hotfix".to_string(), 3000),
+            ("main".to_string(), 2000),
         ];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         let recent = state.recent_sessions(5);
@@ -751,13 +774,16 @@ mod tests {
     #[test]
     fn all_agents_flat_sorts_pinned_first_with_gaps_preserved() {
         let mut state = AppState::with_sample_data();
-        let live = vec![("twsr_edge-device-pipeline_one".to_string(), 0)];
+        let live = vec![("one".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         use crate::core::model::{AgentSession, AgentStatus, AgentType};
         let mk = |id: &str, slot: Option<u8>| AgentSession {
             agent_type: AgentType::ClaudeCode,
-            tmux_session_name: "twsr_edge-device-pipeline_one".into(),
+            tmux_session_name: "one".into(),
             window_index: 0,
             pane_id: id.into(),
             display_name: id.into(),
@@ -781,13 +807,16 @@ mod tests {
     #[test]
     fn all_agents_flat_sorts_by_lane_then_pin() {
         let mut state = AppState::with_sample_data();
-        let live = vec![("twsr_edge-device-pipeline_one".to_string(), 0)];
+        let live = vec![("one".to_string(), 0)];
+        for (name, _) in &live {
+            state.assign_session(name, Some(0));
+        }
         state.refresh_sessions(&live);
 
         use crate::core::model::{AgentSession, AgentStatus, AgentType};
         let mk = |id: &str, slot: Option<u8>, status: AgentStatus| AgentSession {
             agent_type: AgentType::ClaudeCode,
-            tmux_session_name: "twsr_edge-device-pipeline_one".into(),
+            tmux_session_name: "one".into(),
             window_index: 0,
             pane_id: id.into(),
             display_name: id.into(),

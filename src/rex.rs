@@ -1,5 +1,5 @@
-//! The Rex backend, the default. A tws session is a Rex session whose label is
-//! its `twsr_<thread>_<label>` name, as with tmux. Threads live only in tws.
+//! The Rex backend, the default. A tws session is a Rex session, and its name
+//! is the session label, as with tmux. Threads live only in tws.
 //! The windows (tabs) in a session are its own layout, as tmux windows are.
 
 use std::collections::{HashMap, HashSet};
@@ -173,16 +173,9 @@ fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
     f(&CACHE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// A session that you made in Rex has no `twsr_` label, so tws ignores it.
+/// A session with no label has no name, so tws cannot show it.
 fn tws_name(session: &RexSession) -> Option<&str> {
-    split_name(&session.label).map(|_| session.label.as_str())
-}
-
-/// `twsr_<thread>_<label>` -> (thread, label). Slugs use `-`, never `_`.
-/// An empty part (a thread name of only symbols) has no Rex label.
-fn split_name(name: &str) -> Option<(&str, &str)> {
-    let (thread, label) = name.strip_prefix("twsr_")?.split_once('_')?;
-    (!thread.is_empty() && !label.is_empty()).then_some((thread, label))
+    (!session.label.is_empty()).then_some(session.label.as_str())
 }
 
 fn find<'a>(sessions: &'a [RexSession], name: &str) -> Option<&'a RexSession> {
@@ -208,11 +201,15 @@ pub fn installed() -> bool {
 }
 
 /// Rex has no last-attached time, so the recent bar stays empty.
-pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
+/// Rex accepts duplicate labels. tws shows only the first session of a label,
+/// because `find` reaches only that one.
+pub fn list_sessions_with_timestamps() -> Vec<(String, i64)> {
     cached(|sessions| {
+        let mut seen = HashSet::new();
         sessions
             .iter()
             .filter_map(tws_name)
+            .filter(|name| seen.insert(*name))
             .map(|name| (name.to_string(), 0))
             .collect()
     })
@@ -221,7 +218,7 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
 /// Rex accepts duplicate labels, and tmux does not. A duplicate would map two
 /// sessions to one tws name, so refuse it here as tmux does.
 pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
-    if split_name(name).is_none() {
+    if name.is_empty() {
         return Ok(false);
     }
     let Some(sessions) = take() else {
@@ -248,9 +245,8 @@ pub fn kill_session(name: &str) -> std::io::Result<bool> {
     rex_ok(&["session", "kill", &s.session_id])
 }
 
-/// Also moves a session to a different thread: the thread is part of the label.
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
-    if split_name(new_name).is_none() {
+    if new_name.is_empty() {
         return Ok(false);
     }
     let Some(sessions) = take() else {
@@ -542,18 +538,18 @@ mod tests {
 
     #[test]
     fn snapshot_maps_names_and_statuses() {
-        let json = r#"[{"session_id":"session:1","label":"twsr_tws_rex-backend","active":"window:2",
+        let json = r#"[{"session_id":"session:1","label":"rex-backend","active":"window:2",
             "windows":[
             {"window_id":"window:1",
              "blocks":[{"block_id":"block:1","pid":42,"title":"t","state":"blocked"},
                        {"block_id":"block:2","pid":43}]},
             {"window_id":"window:2"}]},
-            {"session_id":"session:2","label":"mine","windows":[
+            {"session_id":"session:2","label":"","windows":[
             {"window_id":"window:3","blocks":[{"block_id":"block:3","pid":44}]}]}]"#;
         let sessions = parse_snapshot(json).unwrap();
-        let s = find(&sessions, "twsr_tws_rex-backend").unwrap();
+        let s = find(&sessions, "rex-backend").unwrap();
         assert_eq!(s.session_id, "session:1");
-        // A session that you made in Rex is not a tws session.
+        // A session with no label has no name.
         assert!(tws_name(&sessions[1]).is_none());
         // A picked pane lands on its window; without one, on the active window.
         assert_eq!(
@@ -569,11 +565,6 @@ mod tests {
         assert!(!statuses.contains_key("block:2"));
         assert_eq!(parse_snapshot("{}").map(|s| s.len()), Some(0));
         assert!(parse_snapshot("not json").is_none());
-        assert_eq!(
-            split_name("twsr_tws_rex-backend"),
-            Some(("tws", "rex-backend"))
-        );
-        assert_eq!(split_name("twsr__main"), None);
     }
 
     #[test]
@@ -621,7 +612,7 @@ mod tests {
         );
     }
 
-    const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"twsr_tws_w",
+    const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"w",
         "active":"window:1","windows":[
         {"window_id":"window:1","focused":"block:2",
          "blocks":[{"block_id":"block:1","pid":1,"state":"done","at":"t1"},
@@ -646,15 +637,15 @@ mod tests {
         let sessions = parse_snapshot(SEEN_SNAPSHOT).unwrap();
         let mut seen = HashMap::from([("block:gone".to_string(), "t0".to_string())]);
         // Without a pane, the app lands on the focused one. A gone block drops out.
-        mark_seen_in(&sessions, "twsr_tws_w", None, &mut seen);
+        mark_seen_in(&sessions, "w", None, &mut seen);
         assert_eq!(
             seen,
             HashMap::from([("block:2".to_string(), "t2".to_string())])
         );
-        mark_seen_in(&sessions, "twsr_tws_w", Some("block:1"), &mut seen);
+        mark_seen_in(&sessions, "w", Some("block:1"), &mut seen);
         assert_eq!(seen.get("block:1").map(String::as_str), Some("t1"));
         // Only a review is remembered: a working agent has nothing to see.
-        mark_seen_in(&sessions, "twsr_tws_w", Some("block:3"), &mut seen);
+        mark_seen_in(&sessions, "w", Some("block:3"), &mut seen);
         assert!(!seen.contains_key("block:3"));
     }
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Rebuild tws tmux sessions as Rex sessions. Dry run unless --apply.
 
-A twsr_* tmux session -> a Rex session with the same label, each window -> a tab,
-extra panes in a window -> splits.
+Each tmux session -> a Rex session with the same label, each window -> a tab,
+extra panes in a window -> splits. The names stay, so tws keeps each session in its thread.
 Claude panes restart as `claude --resume ID --fork-session`, so tmux is untouched.
 """
 import glob, json, os, shutil, subprocess, sys
@@ -61,8 +61,7 @@ def main():
     sessions = OrderedDict()
     for line in rows.splitlines():
         name, window, pane, cwd = line.split("\t")
-        if name.startswith("twsr_"):
-            sessions.setdefault(name, OrderedDict()).setdefault(window, []).append((pane, cwd))
+        sessions.setdefault(name, OrderedDict()).setdefault(window, []).append((pane, cwd))
 
     for name, windows in sessions.items():
         print(f"\n# {name}")
