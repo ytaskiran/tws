@@ -282,9 +282,10 @@ impl App {
                 self.do_refresh_sessions();
             }
 
-            // Every 250 ms tick, with no trigger: a recount is a few small
-            // readdirs, and it sees every marker change, whichever hook made
-            // it. The 40 ms sweep frames skip it.
+            // Every 250 ms tick, with no trigger: under tmux a recount is a
+            // few small readdirs, and it sees every marker change, whichever
+            // hook made it. Under Rex it does nothing. The 40 ms sweep frames
+            // skip it.
             if self.last_recount.elapsed() >= Duration::from_millis(250) {
                 self.recount_subagents();
                 self.last_recount = Instant::now();
@@ -2143,8 +2144,8 @@ impl App {
                 agent.renamed = true;
             }
         }
-        // The scan rebuilt every agent with no subagents; count them now, so
-        // no frame draws the zeros.
+        // The tmux scan rebuilt every agent with no subagents; count them now,
+        // so no frame draws the zeros. The Rex scan set its counts already.
         self.recount_subagents();
         self.last_recount = Instant::now();
 
@@ -2157,8 +2158,8 @@ impl App {
         }
     }
 
-    /// Recount the running subagents of the known agents. It reads only the
-    /// marker directories, so it costs no tmux or ps scan.
+    /// Recount the running subagents of the known agents. Under tmux it reads
+    /// only the marker directories, so it costs no tmux or ps scan.
     fn recount_subagents(&mut self) {
         backend::recount_subagents(&mut self.state.agent_sessions);
     }

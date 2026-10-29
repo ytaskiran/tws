@@ -100,7 +100,8 @@ pub struct AgentSession {
     pub pin_slot: Option<u8>,
     /// Live activity state, joined from `~/.config/tws/agents/<pane_id>`. Runtime-only.
     pub status: AgentStatus,
-    /// Running subagents, counted from `~/.config/tws/subagents/<pane_id>/`. Runtime-only.
+    /// Running subagents: tmux counts `~/.config/tws/subagents/<pane_id>/`, Rex
+    /// counts live OSC 7501 child records. Runtime-only.
     pub subagents: usize,
 }
 
