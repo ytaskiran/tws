@@ -20,7 +20,8 @@ use crate::tmux::agent_scan::{self, PaneInfo};
 /// A program can report child records (a subagent), so the most urgent state
 /// of all records wins: blocked, then working, then done or error.
 /// A child record (one with an `id`) that is `working` or `blocked` is a
-/// running subagent. Rex drops both states when the process exits.
+/// running subagent. Claude Code clears the record when the subagent stops,
+/// and Rex drops both states when the process exits.
 const SNAPSHOT_LUA: &str = r#"
 local T = "com.superlogical.terminal"
 local RANK = {blocked = 4, working = 3, done = 2, error = 2}
@@ -89,8 +90,14 @@ struct RexBlock {
     /// When the program reported `state`. A new report gets a new time.
     at: Option<String>,
     /// Running subagents: live child records.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lua_count")]
     subagents: usize,
+}
+
+/// A Lua number can come back as `1.0`. A strict `usize` would then fail the
+/// whole snapshot, so the count reads any number.
+fn lua_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    Ok(f64::deserialize(d)? as usize)
 }
 
 /// tws runs in a Rex terminal, so it inherits `REX_SESSION` and `REX_BLOCK`.
@@ -429,31 +436,45 @@ fn tail_lines(text: &str, n: usize) -> &str {
     }
 }
 
+/// The snapshot changes only here, so the scan sets the subagent counts and
+/// the 250 ms recount has nothing to do under Rex.
 pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
     let wanted: HashSet<&str> = tws_sessions.iter().map(String::as_str).collect();
-    let panes = cached(|sessions| {
-        let mut panes = Vec::new();
-        for s in sessions {
-            for w in &s.windows {
-                let Some(name) = tws_name(s, w).filter(|n| wanted.contains(n.as_str())) else {
-                    continue;
-                };
-                for b in &w.blocks {
-                    let Some(pid) = b.pid else { continue };
-                    panes.push(PaneInfo {
-                        session_name: name.clone(),
-                        window_index: 0,
-                        pane_id: b.block_id.clone(),
-                        pane_pid: pid,
-                        pane_title: b.title.clone(),
-                    });
-                }
+    let (panes, counts) = cached(|sessions| panes_from(sessions, &wanted));
+    let processes = PROCESSES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut agents = agent_scan::match_panes(&panes, processes.as_deref());
+    for agent in &mut agents {
+        agent.subagents = counts.get(&agent.pane_id).copied().unwrap_or(0);
+    }
+    agents
+}
+
+/// The panes of the tws windows, and the subagent count of each one.
+fn panes_from(
+    sessions: &[RexSession],
+    wanted: &HashSet<&str>,
+) -> (Vec<PaneInfo>, HashMap<String, usize>) {
+    let mut panes = Vec::new();
+    let mut counts = HashMap::new();
+    for s in sessions {
+        for w in &s.windows {
+            let Some(name) = tws_name(s, w).filter(|n| wanted.contains(n.as_str())) else {
+                continue;
+            };
+            for b in &w.blocks {
+                let Some(pid) = b.pid else { continue };
+                panes.push(PaneInfo {
+                    session_name: name.clone(),
+                    window_index: 0,
+                    pane_id: b.block_id.clone(),
+                    pane_pid: pid,
+                    pane_title: b.title.clone(),
+                });
+                counts.insert(b.block_id.clone(), b.subagents);
             }
         }
-        panes
-    });
-    let processes = PROCESSES.lock().unwrap_or_else(|e| e.into_inner());
-    agent_scan::match_panes(&panes, processes.as_deref())
+    }
+    (panes, counts)
 }
 
 /// Program status (OSC 7501) replaces the hook files under Rex. Only agents
@@ -461,23 +482,6 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
 pub fn load_statuses() -> HashMap<String, (AgentStatus, i64)> {
     let seen = load_seen();
     cached(|sessions| statuses_from(sessions, &seen))
-}
-
-/// Set each agent's count of running subagents from the last snapshot.
-pub fn apply_subagent_counts(agents: &mut [AgentSession]) {
-    cached(|sessions| subagent_counts_from(sessions, agents));
-}
-
-fn subagent_counts_from(sessions: &[RexSession], agents: &mut [AgentSession]) {
-    let counts: HashMap<&str, usize> = sessions
-        .iter()
-        .flat_map(|s| &s.windows)
-        .flat_map(|w| &w.blocks)
-        .map(|b| (b.block_id.as_str(), b.subagents))
-        .collect();
-    for agent in agents {
-        agent.subagents = counts.get(agent.pane_id.as_str()).copied().unwrap_or(0);
-    }
 }
 
 /// Rex keeps `done` until the program reports again, and it does not say
@@ -665,29 +669,18 @@ mod tests {
 
     #[test]
     fn subagent_counts_come_from_the_snapshot() {
+        // `1.0`: a Lua number may come back as a float.
         let json = r#"[{"session_id":"session:1","label":"tws","windows":[
             {"window_id":"window:1","label":"w",
              "blocks":[{"block_id":"block:1","pid":1,"state":"working","subagents":2},
-                       {"block_id":"block:2","pid":2}]}]}]"#;
+                       {"block_id":"block:2","pid":2,"subagents":1.0},
+                       {"block_id":"block:3","pid":3}]}]}]"#;
         let sessions = parse_snapshot(json).unwrap();
-        let mut agents: Vec<AgentSession> = ["block:1", "block:2", "block:gone"]
-            .into_iter()
-            .map(|pane| AgentSession {
-                agent_type: crate::core::model::AgentType::ClaudeCode,
-                tmux_session_name: "twsr_tws_w".into(),
-                window_index: 0,
-                pane_id: pane.into(),
-                display_name: "claude".into(),
-                renamed: false,
-                pin_slot: None,
-                status: AgentStatus::Unknown,
-                // A stale count must not survive a block that reports none.
-                subagents: 9,
-            })
-            .collect();
-        subagent_counts_from(&sessions, &mut agents);
-        let counts: Vec<usize> = agents.iter().map(|a| a.subagents).collect();
-        assert_eq!(counts, [2, 0, 0]);
+        let (panes, counts) = panes_from(&sessions, &HashSet::from(["twsr_tws_w"]));
+        assert_eq!(panes.len(), 3);
+        assert_eq!(counts["block:1"], 2);
+        assert_eq!(counts["block:2"], 1);
+        assert_eq!(counts["block:3"], 0);
     }
 
     const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"tws","windows":[
