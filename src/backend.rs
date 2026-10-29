@@ -171,7 +171,7 @@ pub fn open(name: &str, target: Option<(u32, &str)>, agents: &[AgentSession]) ->
             let pane = target
                 .map(|(_, block_id)| block_id)
                 .filter(|block_id| matches!(rex::select_pane(block_id), Ok(true)));
-            match rex::show(name) {
+            match rex::show(name, target.map(|(_, block_id)| block_id)) {
                 Ok(()) => {
                     rex::mark_seen(name, pane);
                     Open::Shown
@@ -206,19 +206,11 @@ pub fn thread_renames(
         .collect()
 }
 
-/// Call it before the thread changes in the state, so a failure leaves both
-/// sides as they were. A Rex thread is one Rex session, so one rename moves
-/// every window. tmux renames each session; a failure there is ignored, as
-/// the next refresh shows what is live.
-pub fn rename_thread(old_slug: &str, new_slug: &str, renames: &[(String, String)]) -> bool {
-    match current() {
-        Backend::Tmux => {
-            for (old, new) in renames {
-                let _ = tmux::rename_session(old, new);
-            }
-            true
-        }
-        Backend::Rex => rex::rename_thread(old_slug, new_slug),
+/// Renames each session of a thread. A failure is ignored, as the next
+/// refresh shows what is live.
+pub fn rename_thread(renames: &[(String, String)]) {
+    for (old, new) in renames {
+        let _ = rename_session(old, new);
     }
 }
 

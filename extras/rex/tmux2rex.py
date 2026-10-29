@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Rebuild tws tmux sessions as Rex sessions. Dry run unless --apply.
 
-thread -> Rex session, twsr_<thread>_<label> -> tab, extra tmux windows -> splits.
+A twsr_* tmux session -> a Rex session with the same label, each window -> a tab,
+extra panes in a window -> splits.
 Claude panes restart as `claude --resume ID --fork-session`, so tmux is untouched.
 """
 import glob, json, os, shutil, subprocess, sys
@@ -10,19 +11,6 @@ from collections import OrderedDict
 REX = os.environ.get("REX_BIN") or shutil.which("rex") or os.path.expanduser(
     "~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex")
 APPLY = "--apply" in sys.argv
-
-
-def parse_name(name):
-    """twsr_<thread>_<label> -> (thread, label); slugs use '-', never '_'."""
-    if not name.startswith("twsr_"):
-        return None
-    thread, _, label = name[5:].partition("_")
-    return thread, label or "main"
-
-
-assert parse_name("twsr_safe-open-weight-protocol_brainstorm") == ("safe-open-weight-protocol", "brainstorm")
-assert parse_name("twsr_tws_agent-session-recovery") == ("tws", "agent-session-recovery")
-assert parse_name("work") is None
 
 
 def claude_by_pane():
@@ -61,7 +49,7 @@ def launch(pane, agents):
 
 
 def main():
-    fmt = "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}"
+    fmt = "#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_current_path}"
     rows = subprocess.run(["tmux", "list-panes", "-a", "-F", fmt], check=True, capture_output=True, text=True).stdout
     agents = claude_by_pane()
     existing = set()
@@ -69,27 +57,26 @@ def main():
         ls = json.loads(subprocess.run([REX, "ls", "--json"], check=True, capture_output=True, text=True).stdout)
         existing = {s.get("label") for s in (ls.get("sessions", ls) if isinstance(ls, dict) else ls)}
 
-    # thread -> label -> [(pane_id, cwd)] in tmux order
-    threads = OrderedDict()
+    # session -> window -> [(pane_id, cwd)] in tmux order
+    sessions = OrderedDict()
     for line in rows.splitlines():
-        name, _, pane, cwd = line.split("\t")
-        parsed = parse_name(name)
-        if parsed:
-            threads.setdefault(parsed[0], OrderedDict()).setdefault(parsed[1], []).append((pane, cwd))
+        name, window, pane, cwd = line.split("\t")
+        if name.startswith("twsr_"):
+            sessions.setdefault(name, OrderedDict()).setdefault(window, []).append((pane, cwd))
 
-    for thread, tabs in threads.items():
-        print(f"\n# thread {thread}")
-        if thread in existing:
+    for name, windows in sessions.items():
+        print(f"\n# {name}")
+        if name in existing:
             print("  skip: a Rex session with this label exists")
             continue
         sid = None
-        for label, panes in tabs.items():
+        for window, panes in windows.items():
             (cwd, cmd), rest = launch(panes[0], agents), panes[1:]
             if sid is None:
-                r = rex("new", thread, "--window", label, "-c", cwd, *cmd)
+                r = rex("new", name, "-c", cwd, *cmd)
                 sid, anchor = r["session_id"], r["initial_windows"][0]["block_ids"][0]
             else:
-                anchor = rex("window", "new", "-s", sid, label, "-c", cwd, *cmd)["block_ids"][0]
+                anchor = rex("window", "new", "-s", sid, window, "-c", cwd, *cmd)["block_ids"][0]
             for pane in rest:
                 split_cwd, split_cmd = launch(pane, agents)
                 rex("split", "-s", sid, "-b", anchor, "--split=right", "--ratio", "35", "--focus=false",

@@ -1,6 +1,6 @@
-//! The Rex backend, the default. A thread is a Rex session labeled with the thread
-//! slug, and a tws session is a window (tab) in it. tws keeps its
-//! `twsr_<thread>_<label>` names as keys and maps them to Rex IDs on each call.
+//! The Rex backend, the default. A tws session is a Rex session whose label is
+//! its `twsr_<thread>_<label>` name, as with tmux. Threads live only in tws.
+//! The windows (tabs) in a session are its own layout, as tmux windows are.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -48,10 +48,11 @@ for _, s in ipairs(rex.call("session.list").sessions) do
           title = t and t.title, state = state, at = at}
       end
     end
-    ws[#ws + 1] = {window_id = w.window_id, label = w.label, focused = w.focused_block_id,
+    ws[#ws + 1] = {window_id = w.window_id, focused = w.focused_block_id,
       blocks = #blocks > 0 and blocks or nil}
   end
-  out[#out + 1] = {session_id = s.session_id, label = s.label, windows = #ws > 0 and ws or nil}
+  out[#out + 1] = {session_id = s.session_id, label = s.label, active = view and view.active_window_id,
+    windows = #ws > 0 and ws or nil}
 end
 return out
 "#;
@@ -61,6 +62,8 @@ struct RexSession {
     session_id: String,
     #[serde(default)]
     label: String,
+    /// The window that the app shows for the session.
+    active: Option<String>,
     #[serde(default)]
     windows: Vec<RexWindow>,
 }
@@ -68,8 +71,6 @@ struct RexSession {
 #[derive(Debug, Deserialize)]
 struct RexWindow {
     window_id: String,
-    #[serde(default)]
-    label: String,
     /// The pane that the app lands on when it shows the window.
     focused: Option<String>,
     #[serde(default)]
@@ -161,9 +162,10 @@ pub fn refresh() -> bool {
 /// True when a tws window has a block with a process: the agent scan input.
 fn has_tws_panes(sessions: &[RexSession]) -> bool {
     sessions.iter().any(|s| {
-        s.windows
-            .iter()
-            .any(|w| tws_name(s, w).is_some() && w.blocks.iter().any(|b| b.pid.is_some()))
+        tws_name(s).is_some()
+            && s.windows
+                .iter()
+                .any(|w| w.blocks.iter().any(|b| b.pid.is_some()))
     })
 }
 
@@ -171,12 +173,9 @@ fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
     f(&CACHE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// A label with `_` would make an ambiguous name, and tws slugs never have
-/// one, so such sessions and windows are not tws sessions.
-fn tws_name(session: &RexSession, window: &RexWindow) -> Option<String> {
-    let ok = |l: &str| !l.is_empty() && !l.contains('_');
-    (ok(&session.label) && ok(&window.label))
-        .then(|| format!("twsr_{}_{}", session.label, window.label))
+/// A session that you made in Rex has no `twsr_` label, so tws ignores it.
+fn tws_name(session: &RexSession) -> Option<&str> {
+    split_name(&session.label).map(|_| session.label.as_str())
 }
 
 /// `twsr_<thread>_<label>` -> (thread, label). Slugs use `-`, never `_`.
@@ -186,14 +185,22 @@ fn split_name(name: &str) -> Option<(&str, &str)> {
     (!thread.is_empty() && !label.is_empty()).then_some((thread, label))
 }
 
-fn find<'a>(sessions: &'a [RexSession], name: &str) -> Option<(&'a RexSession, &'a RexWindow)> {
-    sessions.iter().find_map(|s| {
-        let w = s
-            .windows
+fn find<'a>(sessions: &'a [RexSession], name: &str) -> Option<&'a RexSession> {
+    sessions.iter().find(|s| tws_name(s) == Some(name))
+}
+
+/// The window that has `block_id`, else the one that the app shows.
+fn landing_window<'a>(s: &'a RexSession, block_id: Option<&str>) -> Option<&'a RexWindow> {
+    let has = |w: &&RexWindow| {
+        w.blocks
             .iter()
-            .find(|w| tws_name(s, w).as_deref() == Some(name))?;
-        Some((s, w))
-    })
+            .any(|b| Some(b.block_id.as_str()) == block_id)
+    };
+    let active = |w: &&RexWindow| s.active.as_deref() == Some(w.window_id.as_str());
+    s.windows
+        .iter()
+        .find(has)
+        .or_else(|| s.windows.iter().find(active))
 }
 
 pub fn installed() -> bool {
@@ -205,18 +212,18 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     cached(|sessions| {
         sessions
             .iter()
-            .flat_map(|s| s.windows.iter().filter_map(move |w| tws_name(s, w)))
-            .map(|name| (name, 0))
+            .filter_map(tws_name)
+            .map(|name| (name.to_string(), 0))
             .collect()
     })
 }
 
 /// Rex accepts duplicate labels, and tmux does not. A duplicate would map two
-/// windows to one tws name, so refuse it here as tmux does.
+/// sessions to one tws name, so refuse it here as tmux does.
 pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
-    let Some((thread, label)) = split_name(name) else {
+    if split_name(name).is_none() {
         return Ok(false);
-    };
+    }
     let Some(sessions) = take() else {
         return Ok(false);
     };
@@ -224,39 +231,26 @@ pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
         return Ok(false);
     }
     let cwd = cwd.map(|d| d.to_string_lossy().into_owned());
-    let mut args = match sessions.iter().find(|s| s.label == thread) {
-        Some(s) => vec!["window", "new", "-s", &s.session_id, label, "--focus=false"],
-        None => vec!["new", thread, "--window", label],
-    };
+    let mut args = vec!["new", name];
     if let Some(dir) = &cwd {
         args.extend(["-c", dir]);
     }
     rex_ok(&args)
 }
 
-/// Closing the last window leaves an empty Rex session, so kill it instead.
 pub fn kill_session(name: &str) -> std::io::Result<bool> {
     let Some(sessions) = take() else {
         return Ok(false);
     };
-    let Some((s, w)) = find(&sessions, name) else {
+    let Some(s) = find(&sessions, name) else {
         return Ok(false);
     };
-    if s.windows.len() == 1 {
-        rex_ok(&["session", "kill", &s.session_id])
-    } else {
-        rex_ok(&["window", "close", "-s", &s.session_id, &w.window_id])
-    }
+    rex_ok(&["session", "kill", &s.session_id])
 }
 
-/// Rex cannot move a window to another session, so a move between threads fails.
+/// Also moves a session to a different thread: the thread is part of the label.
 pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
-    let (Some((old_thread, _)), Some((new_thread, new_label))) =
-        (split_name(old_name), split_name(new_name))
-    else {
-        return Ok(false);
-    };
-    if old_thread != new_thread {
+    if split_name(new_name).is_none() {
         return Ok(false);
     }
     let Some(sessions) = take() else {
@@ -265,54 +259,29 @@ pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
     if find(&sessions, new_name).is_some() {
         return Ok(false);
     }
-    let Some((s, w)) = find(&sessions, old_name) else {
+    let Some(s) = find(&sessions, old_name) else {
         return Ok(false);
     };
-    rex_ok(&[
-        "window",
-        "rename",
-        "-s",
-        &s.session_id,
-        &w.window_id,
-        new_label,
-    ])
-}
-
-/// A thread rename is one Rex session rename; every window follows. True when
-/// there is nothing to rename. False when Rex fails or `new_slug` is taken.
-pub fn rename_thread(old_slug: &str, new_slug: &str) -> bool {
-    if old_slug == new_slug {
-        return true;
-    }
-    let Some(sessions) = take() else {
-        return false;
-    };
-    let Some(s) = sessions.iter().find(|s| s.label == old_slug) else {
-        return true;
-    };
-    if new_slug.is_empty() || sessions.iter().any(|s| s.label == new_slug) {
-        return false;
-    }
-    matches!(
-        rex_ok(&["session", "rename", &s.session_id, new_slug]),
-        Ok(true)
-    )
+    rex_ok(&["session", "rename", &s.session_id, new_name])
 }
 
 pub fn select_pane(block_id: &str) -> std::io::Result<bool> {
     rex_ok(&["block", "focus", block_id])
 }
 
-/// Shows the window in the Rex app. tws keeps running: unlike tmux, the app
+/// Shows the session in the Rex app, on the window of `pane` when given. tws keeps running: unlike tmux, the app
 /// shows it next to tws, so there is nothing to exit or attach.
 /// The error is a flash message for the user. Rex's own text names the cause,
 /// for example Remote Control that is off, so it wins over a fixed one.
 /// The last snapshot first: it is what you picked from, and a window closed
 /// since then makes `session.select` fail with its own error. A window that
 /// tws made after that snapshot (a launch) needs a new one.
-pub fn show(name: &str) -> Result<(), String> {
+pub fn show(name: &str, pane: Option<&str>) -> Result<(), String> {
     let ids = |sessions: &[RexSession]| {
-        find(sessions, name).map(|(s, w)| (s.session_id.clone(), w.window_id.clone()))
+        find(sessions, name).map(|s| {
+            let window = landing_window(s, pane).map(|w| w.window_id.clone());
+            (s.session_id.clone(), window)
+        })
     };
     let (session_id, window_id) = match cached(ids) {
         Some(found) => found,
@@ -323,10 +292,16 @@ pub fn show(name: &str) -> Result<(), String> {
     // ponytail: first app client wins; pick by label when several Macs connect.
     let client = app_client().ok_or("No Rex app is connected")?;
     let sid = format!("session_id={session_id}");
-    let wid = format!("window_id={window_id}");
-    let out = command(&["-C", &client, "do", "session.select", &sid, &wid])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "-C".to_string(),
+        client,
+        "do".into(),
+        "session.select".into(),
+        sid,
+    ];
+    args.extend(window_id.map(|w| format!("window_id={w}")));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = command(&args).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(());
     }
@@ -428,14 +403,14 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
     let panes = cached(|sessions| {
         let mut panes = Vec::new();
         for s in sessions {
+            let Some(name) = tws_name(s).filter(|n| wanted.contains(n)) else {
+                continue;
+            };
             for w in &s.windows {
-                let Some(name) = tws_name(s, w).filter(|n| wanted.contains(n.as_str())) else {
-                    continue;
-                };
                 for b in &w.blocks {
                     let Some(pid) = b.pid else { continue };
                     panes.push(PaneInfo {
-                        session_name: name.clone(),
+                        session_name: name.to_string(),
                         window_index: 0,
                         pane_id: b.block_id.clone(),
                         pane_pid: pid,
@@ -498,7 +473,7 @@ fn save_seen(path: &Path, seen: &HashMap<String, String>) -> std::io::Result<()>
 }
 
 /// `pane` is the agent that you picked; without it, the app lands on the
-/// focused pane of the window. Blocks that are gone drop out.
+/// focused pane of the active window. Blocks that are gone drop out.
 fn mark_seen_in(
     sessions: &[RexSession],
     name: &str,
@@ -512,7 +487,7 @@ fn mark_seen_in(
         .map(|b| b.block_id.as_str())
         .collect();
     seen.retain(|id, _| live.contains(id.as_str()));
-    let Some((_, w)) = find(sessions, name) else {
+    let Some(w) = find(sessions, name).and_then(|s| landing_window(s, pane)) else {
         return;
     };
     let Some(id) = pane.or(w.focused.as_deref()) else {
@@ -567,20 +542,26 @@ mod tests {
 
     #[test]
     fn snapshot_maps_names_and_statuses() {
-        let json = r#"[{"session_id":"session:1","label":"tws","windows":[
-            {"window_id":"window:1","label":"rex-backend",
+        let json = r#"[{"session_id":"session:1","label":"twsr_tws_rex-backend","active":"window:2",
+            "windows":[
+            {"window_id":"window:1",
              "blocks":[{"block_id":"block:1","pid":42,"title":"t","state":"blocked"},
                        {"block_id":"block:2","pid":43}]},
-            {"window_id":"window:2","label":"my_tab"}]},
-            {"session_id":"session:2","label":"empty"}]"#;
+            {"window_id":"window:2"}]},
+            {"session_id":"session:2","label":"mine","windows":[
+            {"window_id":"window:3","blocks":[{"block_id":"block:3","pid":44}]}]}]"#;
         let sessions = parse_snapshot(json).unwrap();
-        let (s, w) = find(&sessions, "twsr_tws_rex-backend").unwrap();
+        let s = find(&sessions, "twsr_tws_rex-backend").unwrap();
         assert_eq!(s.session_id, "session:1");
-        assert_eq!(w.window_id, "window:1");
-        // A label with `_` is not a tws session; an empty session stays known.
-        assert!(tws_name(s, &s.windows[1]).is_none());
-        assert!(sessions[1].windows.is_empty());
-        // Only a tws window with a process needs `ps`.
+        // A session that you made in Rex is not a tws session.
+        assert!(tws_name(&sessions[1]).is_none());
+        // A picked pane lands on its window; without one, on the active window.
+        assert_eq!(
+            landing_window(s, Some("block:2")).unwrap().window_id,
+            "window:1"
+        );
+        assert_eq!(landing_window(s, None).unwrap().window_id, "window:2");
+        // Only a tws session with a process needs `ps`.
         assert!(has_tws_panes(&sessions));
         assert!(!has_tws_panes(&sessions[1..]));
         let statuses = statuses_from(&sessions, &HashMap::new());
@@ -640,8 +621,9 @@ mod tests {
         );
     }
 
-    const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"tws","windows":[
-        {"window_id":"window:1","label":"w","focused":"block:2",
+    const SEEN_SNAPSHOT: &str = r#"[{"session_id":"session:1","label":"twsr_tws_w",
+        "active":"window:1","windows":[
+        {"window_id":"window:1","focused":"block:2",
          "blocks":[{"block_id":"block:1","pid":1,"state":"done","at":"t1"},
                    {"block_id":"block:2","pid":2,"state":"error","at":"t2"},
                    {"block_id":"block:3","pid":3,"state":"working","at":"t3"}]}]}]"#;

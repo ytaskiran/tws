@@ -19,7 +19,6 @@ use crate::config;
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::config::palette::PaletteOverride;
 use crate::core::markdown::MarkdownRenderer;
-use crate::core::model::thread_slug;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
@@ -1808,18 +1807,7 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    // Before the state changes, so a failure leaves both sides as they were.
-                    let renames = backend::thread_renames(&old_sessions, &trimmed);
-                    if let Some(thread) = self.state.threads.get(thread_idx)
-                        && !backend::rename_thread(
-                            &thread_slug(&thread.name),
-                            &thread_slug(&trimmed),
-                            &renames,
-                        )
-                    {
-                        self.set_flash("Could not rename the Rex session — is the name taken?");
-                        return Ok(());
-                    }
+                    backend::rename_thread(&backend::thread_renames(&old_sessions, &trimmed));
                     self.state.rename_thread(thread_idx, trimmed);
                     self.do_refresh_sessions();
                     self.save_state();
