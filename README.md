@@ -356,7 +356,7 @@ tws shows every Rex session that has a label. Rex accepts two sessions with the 
 
 To open a session, tws tells the Rex app to show the session. When you pick an agent, the app shows the tab of that agent. tws does not exit. Turn on **Remote Control** in the Rex settings (under Rex Server), or the app does not accept this request. When the app refuses, tws shows the error from Rex in the status bar.
 
-Agent status comes from the program status that the agent sends to Rex (OSC 7501). Claude Code sends it. tws shows `working` as working, `blocked` as waiting, `done` and `error` as review, and other states as idle. An agent that sends no program status shows no status.
+Agent status comes from the program status that the agent sends to Rex (OSC 7501). Claude Code sends it. tws shows `working` as working, `blocked` as waiting, `done` and `error` as review, and other states as idle. An agent that sends no program status shows no status. Each `working` or `blocked` child record (one with an `id`) counts as a running subagent.
 
 These features work only with tmux:
 
