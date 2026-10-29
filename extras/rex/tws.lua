@@ -5,11 +5,12 @@
 -- Control off. Only actions sent from the CLI need Remote Control.
 
 -- Change the key here.
-local KEY = "ctrl+cmd+t"
+local KEY = "cmd+s"
 
 local T = "com.superlogical.terminal"
--- `_` keeps this session out of the tws tree: tws ignores such labels.
-local HOME_LABEL = "tws_home"
+-- The shell runs without .zshrc here, and that is often where PATH gets
+-- ~/.local/bin, the install.sh directory.
+local BIN = os.getenv("HOME") .. "/.local/bin"
 
 local function basename(path)
   return path and path:match("([^/]+)$")
@@ -24,30 +25,27 @@ local function runs_tws(session_id, block_id)
   return fg ~= nil and (basename(fg.argv0) == "tws" or basename(fg.path) == "tws")
 end
 
+-- session.view only reads an attached session, and rex.session.attach exists
+-- only in `rex do` scripts. The server method works in an action too, and it
+-- returns the view.
+local function attach(session_id)
+  local a = rex.call("session.attach", {session_id = session_id})
+  return a and a.view
+end
+
 local function find_tws()
-  local home
   for _, s in ipairs(rex.call("session.list").sessions) do
-    if s.label == HOME_LABEL then home = s.session_id end
-    rex.session.attach{session_id = s.session_id}
-    local view = rex.session.view{session_id = s.session_id}
+    local view = attach(s.session_id)
     for _, w in ipairs(view and view.windows or {}) do
       for _, l in ipairs(w.layers or {}) do
         for _, b in ipairs(l.blocks or {}) do
           if runs_tws(s.session_id, b.block_id) then
-            return s.session_id, w.window_id, home
+            return s.session_id, w.window_id, b.block_id
           end
         end
       end
     end
   end
-  return nil, nil, home
-end
-
--- The shell runs without .zshrc here, and that is often where PATH gets
--- ~/.local/bin, the install.sh directory.
-local function tws_layout()
-  return rex.layout.block{flavor = T .. ".shell", options = {command = {"tws"},
-    path_prepend = {os.getenv("HOME") .. "/.local/bin"}}}
 end
 
 rex.action{
@@ -55,26 +53,25 @@ rex.action{
   title = "Open tws",
   keywords = "tws threads workspace",
   run = function(ctx, args)
-    local session_id, window_id, home = find_tws()
-    local created = false
-    if session_id == nil then
-      created = true
-      -- tws closes its tab when it quits, and the empty session stays.
-      -- Reuse it, so each press does not add one more.
-      if home ~= nil then
-        local w, err = rex.session.new_window{session_id = home, window_label = "tws",
-          layout = tws_layout()}
-        if w == nil then error(err, 0) end
-        session_id, window_id = home, w.window_id
-      else
-        local s, err = rex.call("session.create", {label = HOME_LABEL,
-          initial_windows = {{window_label = "tws", layout = tws_layout()}}})
-        if s == nil then error(err, 0) end
-        session_id, window_id = s.session_id, s.initial_windows[1].window_id
-      end
+    local session_id, window_id, block_id = find_tws()
+    if session_id ~= nil then
+      rex.client.queue("session.select", {session_id = session_id, window_id = window_id})
+      rex.call("session.focus_block", {session_id = session_id, block_id = block_id})
+      return {session_id = session_id, block_id = block_id, created = false}
     end
-    rex.client.queue("session.select", {session_id = session_id, window_id = window_id})
-    return {session_id = session_id, window_id = window_id, created = created}
+    -- A popup over the tab you are in. A block cannot move to another
+    -- session, so tws quits after it opens a session (--popup), and the
+    -- popup closes with it. tws restores its cursor from ui-state.json.
+    attach(ctx.session_id)
+    local layer, err = rex.call("session.new_layer", {
+      session_id = ctx.session_id,
+      bounds = {0.1, 0.1, 0.8, 0.8},
+      focus = true,
+      layout = rex.layout.block{flavor = T .. ".shell", options = {
+        command = {"tws", "--popup"}, path_prepend = {BIN}}},
+    })
+    if layer == nil then error(err, 0) end
+    return {session_id = ctx.session_id, block_id = layer.block_ids[1], created = true}
   end,
 }
 

@@ -164,8 +164,11 @@ fn find<'a>(sessions: &'a [RexSession], name: &str) -> Option<(&'a RexSession, &
     })
 }
 
+/// A PATH lookup, not a `rex --help` run: the open-tws key starts tws on each
+/// press, and the run costs about 20 ms of that start.
 pub fn installed() -> bool {
-    Command::new("rex").arg("--help").output().is_ok()
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rex").is_file()))
 }
 
 /// Rex has no last-attached time, so the recent bar stays empty.

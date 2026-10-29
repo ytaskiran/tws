@@ -22,6 +22,9 @@ use core::state::AppState;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Quit after a session opens. The Rex open-tws key uses it for its popup.
+    #[arg(long)]
+    popup: bool,
 }
 
 #[derive(Subcommand)]
@@ -95,7 +98,7 @@ fn main() -> std::io::Result<()> {
             bar::session_label(&session_name);
             Ok(())
         }
-        None => run_tui(),
+        None => run_tui(cli.popup),
     }
 }
 
@@ -106,7 +109,7 @@ fn ack_pane(pane_id: Option<String>) {
     }
 }
 
-fn run_tui() -> std::io::Result<()> {
+fn run_tui(popup: bool) -> std::io::Result<()> {
     // First, so a config that does not parse stops here with its own error.
     // Otherwise backend::current() reads it as the default backend.
     let cfg = config::load_config();
@@ -129,6 +132,7 @@ fn run_tui() -> std::io::Result<()> {
 
     // Before tui::init, so an unknown theme warning shows on a normal screen.
     let mut app = App::new(state, theme_name, cfg.palette, cfg.glass, keymap);
+    app.popup = popup;
     // Without this, a panic leaves the shell in raw mode, and each mouse move
     // prints an escape code into it.
     let hook = std::panic::take_hook();

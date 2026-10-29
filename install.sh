@@ -2225,7 +2225,7 @@ print_plan() {
         if [ "$plan_glow" -eq 1 ]; then
             if [ "$plan_glow_via" = brew ]; then plan_row "install glow" "brew install glow"; else plan_row "install glow" "go install $GLOW_GO_PKG"; fi
         fi
-        if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (ctrl+cmd+t)" "$(tilde "$REX_INIT")"; fi
+        if [ "$plan_rex_init" -eq 1 ]; then plan_row "Rex key to open tws (cmd+s)" "$(tilde "$REX_INIT")"; fi
     fi
 
     if [ "${#plan_notes[@]}" -gt 0 ]; then
@@ -2383,7 +2383,7 @@ configure_rex_init() {
         return
     fi
     if rex config reload &>/dev/null; then
-        ok "Rex key to open tws: ctrl+cmd+t"
+        ok "Rex key to open tws: cmd+s"
     else
         warn "Added the tws key to $(tilde "$REX_INIT"). Run: rex config reload"
     fi
