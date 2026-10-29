@@ -23,6 +23,9 @@ pub struct UiState {
     /// the pane_id is stable and the mapping is exact.
     #[serde(default)]
     pub pins: Vec<(String, u8)>,
+    /// Agent names the user set: `(pane_id, name)`. Restored like `pins`.
+    #[serde(default)]
+    pub names: Vec<(String, String)>,
 }
 
 fn ui_state_file() -> PathBuf {
@@ -88,6 +91,20 @@ fn save_to(path: &std::path::Path, threads: &[Thread]) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn ui_state_keeps_agent_names() {
+        // A file from before `names` existed still loads.
+        let old: UiState = serde_json::from_str(r#"{"open_nodes":[],"selected":null}"#).unwrap();
+        assert!(old.names.is_empty());
+
+        let ui = UiState {
+            names: vec![("%3".into(), "reviewer".into())],
+            ..Default::default()
+        };
+        let loaded: UiState = serde_json::from_str(&serde_json::to_string(&ui).unwrap()).unwrap();
+        assert_eq!(loaded.names, ui.names);
+    }
 
     #[test]
     fn round_trip_threads() {

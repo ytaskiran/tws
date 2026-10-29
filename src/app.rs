@@ -168,6 +168,8 @@ pub struct App {
     /// Drained on first successful agent rebuild; entries whose pane_id
     /// is no longer live are silently dropped.
     pending_pin_restore: Vec<(String, u8)>,
+    /// Agent names from UiState, reapplied at first scan like the pins.
+    pending_name_restore: Vec<(String, String)>,
     /// While Some, the next keystroke in agents view assigns this pane to a slot
     /// (digit 0-9), or cancels (Esc / any other key). Captured by pressing `P`.
     pin_assign_pending: Option<String>,
@@ -227,6 +229,7 @@ impl App {
             agents_scroll: 0,
             hits: None,
             pending_pin_restore: Vec::new(),
+            pending_name_restore: Vec::new(),
             pin_assign_pending: None,
         }
     }
@@ -251,6 +254,7 @@ impl App {
         ui_state: persistence::UiState,
     ) -> std::io::Result<()> {
         self.pending_pin_restore = ui_state.pins;
+        self.pending_name_restore = ui_state.names;
 
         self.do_refresh_sessions();
 
@@ -2115,6 +2119,17 @@ impl App {
                 }
             }
         }
+        for (pane_id, name) in std::mem::take(&mut self.pending_name_restore) {
+            if let Some(agent) = self
+                .state
+                .agent_sessions
+                .iter_mut()
+                .find(|a| a.pane_id == pane_id)
+            {
+                agent.display_name = name;
+                agent.renamed = true;
+            }
+        }
         // The scan rebuilt every agent with no subagents; count them now, so
         // no frame draws the zeros.
         self.recount_subagents();
@@ -2205,12 +2220,20 @@ impl App {
             .iter()
             .filter_map(|a| a.pin_slot.map(|s| (a.pane_id.clone(), s)))
             .collect();
+        let names: Vec<(String, String)> = self
+            .state
+            .agent_sessions
+            .iter()
+            .filter(|a| a.renamed)
+            .map(|a| (a.pane_id.clone(), a.display_name.clone()))
+            .collect();
         let ui = persistence::UiState {
             open_nodes,
             selected,
             agents_view_active,
             agent_list_pane,
             pins,
+            names,
         };
         if let Err(e) = persistence::save_ui(&ui) {
             eprintln!("Failed to save UI state: {}", e);
