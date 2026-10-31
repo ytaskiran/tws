@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::model::{AgentSession, AgentStatus};
 use crate::tmux::agent_scan::{self, PaneInfo};
@@ -15,6 +15,9 @@ use crate::tmux::agent_scan::{self, PaneInfo};
 /// One `rex do` call reads every session, window and terminal. Separate CLI
 /// calls cost about 20 ms each, which is a visible stall at 50 calls a scan.
 /// A view needs an attached session, so the script attaches to each one.
+/// The server method, not `rex.session.attach`: that one exists only in
+/// `rex do`, and the cmd+s action in tws.lua runs this script too. The
+/// method also returns the view.
 /// Rex encodes an empty Lua table as `{}`, so the script leaves empty lists
 /// out and serde fills them in.
 /// A program can report child records (a subagent), so the most urgent state
@@ -27,8 +30,8 @@ local T = "com.superlogical.terminal"
 local RANK = {blocked = 4, working = 3, done = 2, error = 2}
 local out = {}
 for _, s in ipairs(rex.call("session.list").sessions) do
-  rex.session.attach{session_id = s.session_id}
-  local view = rex.session.view{session_id = s.session_id}
+  local attached = rex.call("session.attach", {session_id = s.session_id})
+  local view = attached and attached.view
   local ws = {}
   for _, w in ipairs(view and view.windows or {}) do
     local blocks = {}
@@ -61,7 +64,7 @@ end
 return out
 "#;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RexSession {
     session_id: String,
     #[serde(default)]
@@ -72,7 +75,7 @@ struct RexSession {
     windows: Vec<RexWindow>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RexWindow {
     window_id: String,
     /// The pane that the app lands on when it shows the window.
@@ -81,7 +84,7 @@ struct RexWindow {
     blocks: Vec<RexBlock>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RexBlock {
     block_id: String,
     pid: Option<u32>,
@@ -167,6 +170,52 @@ pub fn refresh() -> bool {
 
 fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
     f(&CACHE.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// tws saves its last snapshot and `ps` output when it exits, so the next
+/// start draws before it asks Rex: a cold `rex` start costs about 0.2 s.
+/// The cmd+s action runs the saved script and writes a fresh snapshot just
+/// before it opens the popup, so the first frame has the current statuses.
+const CACHE_SNAPSHOT: &str = "rex-snapshot.json";
+const CACHE_PS: &str = "rex-ps";
+const CACHE_LUA: &str = "rex-snapshot.lua";
+
+pub fn save_cache() {
+    let sessions = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let processes = PROCESSES.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = crate::core::persistence::config_dir();
+    let _ = write_cache(&dir, &sessions, processes.as_deref());
+}
+
+/// False when there is no saved snapshot.
+pub fn load_cache() -> bool {
+    let Some((sessions, processes)) = read_cache(&crate::core::persistence::config_dir()) else {
+        return false;
+    };
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = sessions;
+    *PROCESSES.lock().unwrap_or_else(|e| e.into_inner()) = processes;
+    true
+}
+
+/// Atomic: the cmd+s action can write the snapshot while tws exits.
+fn write_cache(
+    dir: &Path,
+    sessions: &[RexSession],
+    processes: Option<&str>,
+) -> std::io::Result<()> {
+    use crate::core::status::write_atomic;
+    std::fs::create_dir_all(dir)?;
+    write_atomic(&dir.join(CACHE_LUA), SNAPSHOT_LUA)?;
+    write_atomic(&dir.join(CACHE_SNAPSHOT), &serde_json::to_string(sessions)?)?;
+    if let Some(ps) = processes {
+        write_atomic(&dir.join(CACHE_PS), ps)?;
+    }
+    Ok(())
+}
+
+fn read_cache(dir: &Path) -> Option<(Vec<RexSession>, Option<String>)> {
+    let sessions = parse_snapshot(&std::fs::read_to_string(dir.join(CACHE_SNAPSHOT)).ok()?)?;
+    Some((sessions, std::fs::read_to_string(dir.join(CACHE_PS)).ok()))
 }
 
 /// A session with no label has no name, so tws cannot show it.
@@ -682,6 +731,26 @@ mod tests {
             ("block:2".to_string(), "t2".to_string()),
         ]);
         assert_eq!(parse_seen(&format_seen(&seen)), seen);
+    }
+
+    #[test]
+    fn the_cache_reads_back_what_it_wrote() {
+        let dir = std::env::temp_dir().join(format!("tws-cache-{}", std::process::id()));
+        let sessions = parse_snapshot(SEEN_SNAPSHOT).unwrap();
+        write_cache(&dir, &sessions, Some("PID PPID COMMAND\n")).unwrap();
+        let (back, ps) = read_cache(&dir).unwrap();
+        assert_eq!(
+            serde_json::to_string(&back).unwrap(),
+            serde_json::to_string(&sessions).unwrap()
+        );
+        assert_eq!(ps.as_deref(), Some("PID PPID COMMAND\n"));
+        // The cmd+s action runs this copy of the script.
+        let lua = std::fs::read_to_string(dir.join(CACHE_LUA)).unwrap();
+        assert_eq!(lua, SNAPSHOT_LUA);
+        // No snapshot: no cache, so the first frame waits for Rex.
+        std::fs::remove_file(dir.join(CACHE_SNAPSHOT)).unwrap();
+        assert!(read_cache(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

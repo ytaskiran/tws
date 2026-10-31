@@ -246,7 +246,13 @@ impl App {
         self.pending_pin_restore = ui_state.pins;
         self.pending_name_restore = ui_state.names;
 
-        self.do_refresh_sessions();
+        // Under Rex the first frame comes from the last run's snapshot, and
+        // the live refresh follows it: a cold `rex` start costs about 0.2 s.
+        let cached = backend::cached_sessions();
+        match &cached {
+            Some(live) => self.apply_sessions(live),
+            None => self.do_refresh_sessions(),
+        }
 
         for path in ui_state.open_nodes {
             self.tree_state.open(path);
@@ -259,6 +265,10 @@ impl App {
         }
         self.reanchor_agent_cursor(ui_state.agent_list_pane);
         self.sync_note_editor();
+        if cached.is_some() {
+            self.draw(terminal)?;
+            self.do_refresh_sessions();
+        }
 
         while self.running {
             if self.last_refresh.elapsed() >= backend::refresh_interval() {
@@ -2009,6 +2019,16 @@ impl App {
     }
 
     fn do_refresh_sessions(&mut self) {
+        // A missed Rex poll keeps the last state: an empty list would drop
+        // every session, and with them the pins and agent names.
+        let Some(live) = backend::refresh() else {
+            self.last_refresh = Instant::now();
+            return;
+        };
+        self.apply_sessions(&live);
+    }
+
+    fn apply_sessions(&mut self, live: &[(String, i64)]) {
         // The cursor is an index into a list that a session change or a
         // status change reorders, so it follows its pane across the refresh.
         let anchor = self
@@ -2016,13 +2036,7 @@ impl App {
             .all_agents_flat()
             .get(self.agent_list_cursor)
             .map(|a| a.pane_id.clone());
-        // A missed Rex poll keeps the last state: an empty list would drop
-        // every session, and with them the pins and agent names.
-        let Some(live) = backend::refresh() else {
-            self.last_refresh = Instant::now();
-            return;
-        };
-        self.state.refresh_sessions(&live);
+        self.state.refresh_sessions(live);
         self.last_refresh = Instant::now();
         self.do_agent_scan();
         self.reanchor_agent_cursor(anchor);
