@@ -81,6 +81,21 @@ pub fn refresh() -> Option<Vec<(String, i64)>> {
     }
 }
 
+/// The sessions that the last run saved, for a first frame that does not
+/// wait for the backend. tmux answers fast, so only Rex saves them.
+pub fn cached_sessions() -> Option<Vec<(String, i64)>> {
+    match current() {
+        Backend::Tmux => None,
+        Backend::Rex => rex::load_cache().then(rex::list_sessions_with_timestamps),
+    }
+}
+
+pub fn save_cache() {
+    if is_rex() {
+        rex::save_cache();
+    }
+}
+
 pub fn new_session(name: &str, cwd: Option<&Path>) -> std::io::Result<bool> {
     match current() {
         Backend::Tmux => tmux::new_session(name, cwd),
