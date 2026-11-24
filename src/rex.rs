@@ -174,8 +174,8 @@ fn cached<T>(f: impl FnOnce(&[RexSession]) -> T) -> T {
 
 /// tws saves its last snapshot and `ps` output when it exits, so the next
 /// start draws before it asks Rex: a cold `rex` start costs about 0.2 s.
-/// The cmd+s action runs the saved script and writes a fresh snapshot just
-/// before it opens the popup, so the first frame has the current statuses.
+/// The cmd+s action runs the saved script and `ps`, and writes both just
+/// before it opens the popup, so the first frame shows the current data.
 const CACHE_SNAPSHOT: &str = "rex-snapshot.json";
 const CACHE_PS: &str = "rex-ps";
 const CACHE_LUA: &str = "rex-snapshot.lua";

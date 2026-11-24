@@ -49,16 +49,23 @@ local function find_tws()
   end
 end
 
--- tws draws its first frame from this file, so a fresh one shows the
--- statuses of this moment. tws writes the script when it exits; before the
--- first run there is none, and tws draws from its own last snapshot.
-local function save_snapshot()
-  local snapshot = dofile(DIR .. "/rex-snapshot.lua")
-  local tmp = DIR .. "/.rex-snapshot.json.tmp"
+-- Atomic: tws can read the file while this writes it.
+local function write(name, text)
+  local tmp = DIR .. "/." .. name .. ".tmp"
   local f = assert(io.open(tmp, "w"))
-  f:write(rex.json.encode(snapshot))
+  f:write(text)
   f:close()
-  assert(os.rename(tmp, DIR .. "/rex-snapshot.json"))
+  assert(os.rename(tmp, DIR .. "/" .. name))
+end
+
+-- tws draws its first frame from these files, so fresh ones show this
+-- moment, and the frame does not change when the live data comes. ps finds
+-- the agents. tws writes the script when it exits; before the first run
+-- there is none, and tws draws from its own last snapshot.
+local function save_snapshot()
+  write("rex-snapshot.json", rex.json.encode(dofile(DIR .. "/rex-snapshot.lua")))
+  local ps = rex.exec{"/bin/ps", "-e", "-ww", "-o", "pid,ppid,command"}
+  if ps.ok then write("rex-ps", ps.stdout) end
 end
 
 rex.action{
