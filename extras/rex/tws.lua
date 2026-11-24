@@ -8,9 +8,10 @@
 local KEY = "cmd+s"
 
 local T = "com.superlogical.terminal"
--- The shell runs without .zshrc here, and that is often where PATH gets
--- ~/.local/bin, the install.sh directory.
+-- The popup has no shell, so it gets the PATH of the Rex server. That PATH
+-- can miss ~/.local/bin, the install.sh directory.
 local BIN = os.getenv("HOME") .. "/.local/bin"
+local DIR = os.getenv("HOME") .. "/.config/tws"
 
 local function basename(path)
   return path and path:match("([^/]+)$")
@@ -48,6 +49,25 @@ local function find_tws()
   end
 end
 
+-- Atomic: tws can read the file while this writes it.
+local function write(name, text)
+  local tmp = DIR .. "/." .. name .. ".tmp"
+  local f = assert(io.open(tmp, "w"))
+  f:write(text)
+  f:close()
+  assert(os.rename(tmp, DIR .. "/" .. name))
+end
+
+-- tws draws its first frame from these files, so fresh ones show this
+-- moment, and the frame does not change when the live data comes. ps finds
+-- the agents. tws writes the script when it exits; before the first run
+-- there is none, and tws draws from its own last snapshot.
+local function save_snapshot()
+  write("rex-snapshot.json", rex.json.encode(dofile(DIR .. "/rex-snapshot.lua")))
+  local ps = rex.exec{"/bin/ps", "-e", "-ww", "-o", "pid,ppid,command"}
+  if ps.ok then write("rex-ps", ps.stdout) end
+end
+
 rex.action{
   name = "tws_open",
   title = "Open tws",
@@ -62,13 +82,15 @@ rex.action{
     -- A popup over the tab you are in. A block cannot move to another
     -- session, so tws quits after it opens a session (--popup), and the
     -- popup closes with it. tws restores its cursor from ui-state.json.
+    pcall(save_snapshot)
     attach(ctx.session_id)
+    -- No shell: a login shell reads the startup files before tws starts.
     local layer, err = rex.call("session.new_layer", {
       session_id = ctx.session_id,
       bounds = {0.1, 0.1, 0.8, 0.8},
       focus = true,
       layout = rex.layout.block{flavor = T .. ".shell", options = {
-        command = {"tws", "--popup"}, path_prepend = {BIN}}},
+        command = {"tws", "--popup"}, shell = "none", path_prepend = {BIN}}},
     })
     if layer == nil then error(err, 0) end
     return {session_id = ctx.session_id, block_id = layer.block_ids[1], created = true}
